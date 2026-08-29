@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs'
+
+import { PI_SESSION_ARG } from '../../constants.js'
 import type { RpcExtensionUIRequest, RpcExtensionUIResponse } from '../../pi/types.js'
 import type { CreatePiClient, PiClientLike } from '../../session/SessionConnection.js'
 import type { JsonAgentSessionEvent } from '../../pi/types.js'
@@ -37,6 +40,10 @@ export interface FakePiSpec {
   /** Emits events synchronously while the `prompt` request is in flight (before
    * the ack resolves), to exercise subscribe-before-send ordering. */
   onPrompt?: (emit: (event: JsonAgentSessionEvent) => void) => void
+  /** Reports the id in the header of the file a spawn opens with `--session`, the
+   * way Pi adopts the id of the session it opened. Off by default, so a spawn
+   * keeps reporting `state.sessionId` and an id mismatch stays exercisable. */
+  sessionIdFromSessionFile?: boolean
 }
 
 export interface FakePiClient {
@@ -52,6 +59,14 @@ export interface FakePiClient {
   exit: (error: Error) => void
   /** Drives an extension UI request through the wired `onExtensionUiRequest`. */
   requestUi: (request: RpcExtensionUIRequest) => Promise<RpcExtensionUIResponse>
+}
+
+function readHeaderSessionId(sessionFile: string | undefined): string {
+  if (sessionFile === undefined) throw new Error(`fake pi: ${PI_SESSION_ARG} carries no path`)
+  const [firstLine] = readFileSync(sessionFile, 'utf8').split('\n')
+  const header = JSON.parse(firstLine ?? '') as { id?: unknown }
+  if (typeof header.id !== 'string') throw new Error(`fake pi: no session id in the header of ${sessionFile}`)
+  return header.id
 }
 
 export function makeFakePiClient(spec: FakePiSpec): FakePiClient {
@@ -116,7 +131,12 @@ export function makeFakePiClient(spec: FakePiSpec): FakePiClient {
 
   const spawns: Array<{ cwd: string; args: readonly string[] }> = []
   const createPiClient: CreatePiClient = (options) => {
-    spawns.push({ cwd: options.cwd, args: options.args ?? [] })
+    const args = options.args ?? []
+    spawns.push({ cwd: options.cwd, args })
+    const sessionArgIndex = args.indexOf(PI_SESSION_ARG)
+    if (spec.sessionIdFromSessionFile && sessionArgIndex !== -1) {
+      state = { ...state, sessionId: readHeaderSessionId(args[sessionArgIndex + 1]) }
+    }
     onEvent = options.onEvent
     onExit = options.onExit
     onExtensionUiRequest = options.onExtensionUiRequest

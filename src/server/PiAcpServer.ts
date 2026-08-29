@@ -10,6 +10,8 @@ import type {
   CloseSessionResponse,
   DeleteSessionRequest,
   DeleteSessionResponse,
+  ForkSessionRequest,
+  ForkSessionResponse,
   InitializeRequest,
   InitializeResponse,
   ListSessionsRequest,
@@ -41,9 +43,12 @@ import type { PiLaunch } from '../pi/errors.js'
 import {
   findSessionFile,
   listSessions as listStoredSessions,
+  readSessionEntries,
   readSessionInfo,
   type SessionDirs,
   type SessionFileInfo,
+  settledEntries,
+  writeForkFile,
 } from '../session/sessionDirectory.js'
 import type { CreatePiClient, SessionConnection } from '../session/SessionConnection.js'
 import {
@@ -91,6 +96,7 @@ export class PiAcpServer {
       .onRequest(acp.methods.agent.session.list, (context) => this.guard(() => this.listSessions(context)))
       .onRequest(acp.methods.agent.session.resume, (context) => this.guard(() => this.resumeSession(context)))
       .onRequest(acp.methods.agent.session.load, (context) => this.guard(() => this.loadSession(context)))
+      .onRequest(acp.methods.agent.session.fork, (context) => this.guard(() => this.forkSession(context)))
       .onRequest(acp.methods.agent.session.close, (context) => this.guard(() => this.closeSession(context)))
       .onRequest(acp.methods.agent.session.delete, (context) => this.guard(() => this.deleteSession(context)))
       .onRequest(acp.methods.agent.session.setConfigOption, (context) =>
@@ -121,7 +127,7 @@ export class PiAcpServer {
       agentCapabilities: {
         loadSession: true,
         promptCapabilities: { image: true, audio: false, embeddedContext: true },
-        sessionCapabilities: { list: {}, resume: {}, close: {}, delete: {} },
+        sessionCapabilities: { list: {}, resume: {}, fork: {}, close: {}, delete: {} },
       },
     }
   }
@@ -171,6 +177,46 @@ export class PiAcpServer {
     await session.connection.replayHistory()
     session.connection.announceCommands(session.commands)
     return { configOptions: session.connection.configOptions }
+  }
+
+  /** The adapter materializes the fork's file itself rather than handing Pi the
+   * parent: Pi's own fork copies the parent verbatim, in-flight turn included,
+   * and its RPC fork replaces the session inside the parent's own subprocess.
+   * The result is opened like any stored session, so the fork is live and
+   * promptable when this returns. */
+  async forkSession(context: { params: ForkSessionRequest; client: AgentContext }): Promise<ForkSessionResponse> {
+    const request = context.params
+    validateSessionRequest(request)
+
+    // Same lookup as an open; no header-cwd equality, since forking a session
+    // into another project directory is the point of the method.
+    const parentPath =
+      (await findSessionFile({ dirs: this.options.sessionDirs, id: request.sessionId, cwd: request.cwd })) ??
+      (await findSessionFile({ dirs: this.options.sessionDirs, id: request.sessionId }))
+    // A parent that never flushed a turn has no file, so from the store it does
+    // not exist — the same reading `session/resume` and `session/delete` take.
+    if (parentPath === null) throw acp.RequestError.resourceNotFound(request.sessionId)
+
+    const parent = this.sessions.get(request.sessionId)
+    const entries = settledEntries(await readSessionEntries(parentPath), parent?.connection.hasActiveTurn ?? false)
+    const fork = writeForkFile({ dirs: this.options.sessionDirs, parentPath, entries, cwd: request.cwd })
+
+    let established: EstablishedSession
+    try {
+      established = await establishSession(request, this.setupDeps(context.client), {
+        kind: 'open',
+        sessionFile: fork.path,
+        expectedSessionId: fork.id,
+      })
+    } catch (error) {
+      // The client never receives the id, so a file left behind would be a
+      // listable, resumable session nobody asked for.
+      await unlink(fork.path)
+      throw error
+    }
+    const session = await this.registerSession(established)
+    session.connection.announceCommands(session.commands)
+    return { sessionId: established.sessionId, configOptions: established.configOptions }
   }
 
   async closeSession(context: { params: CloseSessionRequest }): Promise<CloseSessionResponse> {

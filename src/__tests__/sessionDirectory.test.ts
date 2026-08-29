@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
   DEFAULT_PI_AGENT_DIR_SEGMENTS,
@@ -10,18 +10,34 @@ import {
   PI_SESSIONS_DIR_NAME,
   PI_SETTINGS_FILE_NAME,
 } from '../constants.js'
-import type { SessionDirs } from '../session/sessionDirectory.js'
+import type { SessionDirs, SessionFileEntry } from '../session/sessionDirectory.js'
 import {
   findSessionFile,
   listSessions,
+  readSessionEntries,
   readSessionInfo,
   resolveSessionDirs,
   sessionDirForCwd,
+  settledEntries,
+  writeForkFile,
 } from '../session/sessionDirectory.js'
+
+/** The fork writer mints an id and reads the clock, so both are pinned where the
+ * test asserts exact bytes; every other test keeps the real generator. */
+const mintedId = vi.hoisted(() => ({ next: undefined as string | undefined }))
+vi.mock('../session/uuidv7.js', async (importOriginal) => {
+  const original = await importOriginal<typeof import('../session/uuidv7.js')>()
+  return { uuidv7: (nowMs?: number): string => mintedId.next ?? original.uuidv7(nowMs) }
+})
 
 const TEMP_PREFIX = 'pi-acp-session-dir-'
 const HEADER_TIME = '2026-01-01T00:00:00.000Z'
 const FILE_TIMESTAMP = '2026-01-01T00-00-00-000Z'
+const FORK_ID = '019903f2-3ae0-7a11-8e3e-6f2a1c4d5b6e'
+const FORK_TIME = '2026-08-29T12:34:56.789Z'
+const FORK_FILE_TIMESTAMP = '2026-08-29T12-34-56-789Z'
+const FORK_CWD = '/workspace/forked'
+const PARENT_CWD = '/workspace/parent'
 
 let root: string
 
@@ -232,6 +248,27 @@ describe('readSessionInfo', () => {
   })
 })
 
+describe('readSessionEntries', () => {
+  it('returns every parsed entry in file order, skipping malformed lines', async () => {
+    const path = writeSession(root, 'entries', [
+      header('entries', '/w'),
+      message('user', 'first'),
+      '{ broken',
+      '',
+      sessionInfo('named'),
+      message('assistant', 'second'),
+    ])
+
+    const entries = await readSessionEntries(path)
+    expect(entries.map((entry) => entry.type)).toEqual(['session', 'message', 'session_info', 'message'])
+    expect(entries[1]).toEqual(message('user', 'first'))
+  })
+
+  it('reads a file Pi has not written yet as no entries', async () => {
+    expect(await readSessionEntries(join(root, 'never-flushed.jsonl'))).toEqual([])
+  })
+})
+
 describe('listSessions', () => {
   it('filters a lossy directory-name collision on the header cwd', async () => {
     const dashed = '/workspace/beta-gamma'
@@ -306,6 +343,114 @@ describe('listSessions', () => {
     expect((await listSessions({ dirs: perCwd(root), cwd })).map((session) => session.id)).toEqual(['good'])
     expect(await listSessions({ dirs: perCwd(join(root, 'absent')) })).toEqual([])
     expect(await listSessions({ dirs: flat(join(root, 'absent')), cwd })).toEqual([])
+  })
+})
+
+describe('writeForkFile', () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date(FORK_TIME))
+    mintedId.next = FORK_ID
+  })
+
+  afterEach(() => {
+    mintedId.next = undefined
+    vi.useRealTimers()
+  })
+
+  it('writes a fresh header then every parent entry, one per line with a trailing newline', async () => {
+    const parentPath = writeSession(sessionDirForCwd(root, PARENT_CWD), 'parent', [
+      header('parent', PARENT_CWD),
+      message('user', 'hi'),
+      message('assistant', 'there'),
+    ])
+    const parentEntries = await readSessionEntries(parentPath)
+
+    const fork = writeForkFile({ dirs: perCwd(root), parentPath, entries: parentEntries, cwd: FORK_CWD })
+
+    expect(fork.id).toBe(FORK_ID)
+    expect(fork.path).toBe(join(sessionDirForCwd(root, FORK_CWD), `${FORK_FILE_TIMESTAMP}_${FORK_ID}.jsonl`))
+    const expected =
+      [
+        JSON.stringify({
+          type: 'session',
+          version: 3,
+          id: FORK_ID,
+          timestamp: FORK_TIME,
+          cwd: FORK_CWD,
+          parentSession: parentPath,
+        }),
+        JSON.stringify(message('user', 'hi')),
+        JSON.stringify(message('assistant', 'there')),
+      ].join('\n') + '\n'
+    expect(readFileSync(fork.path, 'utf8')).toBe(expected)
+  })
+
+  it('lands in the flat directory when the store is one flat directory', () => {
+    const dir = join(root, 'all')
+    const parentPath = writeSession(dir, 'parent', [header('parent', PARENT_CWD)])
+
+    const fork = writeForkFile({ dirs: flat(dir), parentPath, entries: [], cwd: FORK_CWD })
+
+    expect(fork.path).toBe(join(dir, `${FORK_FILE_TIMESTAMP}_${FORK_ID}.jsonl`))
+  })
+
+  it('carries over exactly one header, the minted one, wherever the parent kept its own', () => {
+    const parentPath = writeSession(sessionDirForCwd(root, PARENT_CWD), 'parent', [header('parent', PARENT_CWD)])
+    const entries = [
+      message('user', 'hi'),
+      header('parent', PARENT_CWD),
+      message('assistant', 'there'),
+    ] as SessionFileEntry[]
+
+    const fork = writeForkFile({ dirs: perCwd(root), parentPath, entries, cwd: FORK_CWD })
+
+    const lines = readFileSync(fork.path, 'utf8').trimEnd().split('\n').map((line) => JSON.parse(line) as SessionFileEntry)
+    expect(lines.filter((entry) => entry.type === 'session')).toEqual([lines[0]])
+    expect(lines[0]).toMatchObject({ id: FORK_ID, cwd: FORK_CWD })
+    expect(lines.slice(1)).toEqual([message('user', 'hi'), message('assistant', 'there')])
+  })
+
+  it('refuses to overwrite an existing file', () => {
+    const parentPath = writeSession(sessionDirForCwd(root, PARENT_CWD), 'parent', [header('parent', PARENT_CWD)])
+    const options = { dirs: perCwd(root), parentPath, entries: [], cwd: FORK_CWD }
+
+    writeForkFile(options)
+    expect(() => writeForkFile(options)).toThrow(/EEXIST/)
+  })
+})
+
+describe('settledEntries', () => {
+  const settled = [
+    header('parent', PARENT_CWD),
+    message('user', 'settled'),
+    message('assistant', 'answered'),
+  ] as SessionFileEntry[]
+  const inFlight = [
+    message('user', 'in flight'),
+    { type: 'toolCall', id: 'call', parentId: null, timestamp: HEADER_TIME, toolName: 'bash' },
+    { type: 'toolResult', id: 'result', parentId: null, timestamp: HEADER_TIME },
+  ] as SessionFileEntry[]
+
+  it('drops the in-flight turn from its user message on', () => {
+    expect(settledEntries([...settled, ...inFlight], true)).toEqual(settled)
+  })
+
+  it('keeps everything when the parent is idle', () => {
+    const all = [...settled, ...inFlight]
+    expect(settledEntries(all, false)).toEqual(all)
+  })
+
+  // Pi flushes the file as the turn produces entries, so a first turn can be in
+  // flight with its user message already on disk; the fork is then empty.
+  it('leaves nothing but the header when the in-flight turn is the first one', () => {
+    const first = [header('parent', PARENT_CWD), ...inFlight] as SessionFileEntry[]
+    expect(settledEntries(first, true)).toEqual([header('parent', PARENT_CWD)])
+  })
+
+  it('keeps everything when no user message was ever written', () => {
+    const noUser = [header('parent', PARENT_CWD), message('assistant', 'unprompted')] as SessionFileEntry[]
+    expect(settledEntries(noUser, true)).toEqual(noUser)
   })
 })
 

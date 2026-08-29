@@ -156,6 +156,8 @@ export const SESSION_DIR_WRAP = '--'
 export const SESSION_ENTRY_TYPE_HEADER = 'session'
 export const SESSION_ENTRY_TYPE_INFO = 'session_info'
 export const SESSION_ENTRY_TYPE_MESSAGE = 'message'
+/** Pi's current session file version, written into a fork's header. */
+export const SESSION_FILE_VERSION = 3
 /** Reopens a stored session; the value is always an absolute `.jsonl` path,
  * since a bare id can hit Pi's interactive resolution on the CLI. */
 export const PI_SESSION_ARG = '--session'

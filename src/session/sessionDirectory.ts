@@ -1,4 +1,4 @@
-import { createReadStream, existsSync, readFileSync } from 'node:fs'
+import { createReadStream, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { readdir, stat } from 'node:fs/promises'
 import { homedir as osHomedir } from 'node:os'
 import { basename, isAbsolute, join, resolve } from 'node:path'
@@ -15,13 +15,16 @@ import {
   SESSION_ENTRY_TYPE_INFO,
   SESSION_ENTRY_TYPE_MESSAGE,
   SESSION_FILE_EXTENSION,
+  SESSION_FILE_VERSION,
   SESSION_INFO_LOAD_CONCURRENCY,
 } from '../constants.js'
+import { uuidv7 } from './uuidv7.js'
 
-// Read-only view of Pi's session store, mirroring Pi's own session-manager
+// The adapter's view of Pi's session store, mirroring Pi's own session-manager
 // behavior: the directory precedence, the lossy cwd encoding, and the metadata
-// its session list builds. Nothing here writes to the store — Pi's reader
-// appends a missing trailing newline during a read, and the adapter must not.
+// its session list builds. The fork file is the single write, and it reproduces
+// what Pi's own fork writes. Reading never repairs a file — Pi's reader appends
+// a missing trailing newline during a read, and the adapter must not.
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -40,6 +43,12 @@ const TEXT_BLOCK_SEPARATOR = ' '
 const ROLE_USER = 'user'
 const ROLE_ASSISTANT = 'assistant'
 const CANDIDATE_PATH_SEPARATOR = ', '
+const ENTRY_LINE_SEPARATOR = '\n'
+/** Pi's file names carry the ISO timestamp with its `:` and `.` flattened. */
+const FILE_TIMESTAMP_UNSAFE = /[:.]/g
+const FILE_TIMESTAMP_REPLACEMENT = '-'
+/** Never clobber an existing session file: a collision is a bug, not a retry. */
+const FORK_FILE_WRITE_FLAG = 'wx'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -71,13 +80,30 @@ export interface FindSessionFileOptions {
   readonly cwd?: string | undefined
 }
 
-interface SessionEntryLine {
+/** One parsed session file line. Only the fields the adapter reads are named;
+ * the rest of an entry is carried opaquely, so a fork re-serializes it whole. */
+export interface SessionFileEntry {
   readonly type?: unknown
   readonly id?: unknown
   readonly cwd?: unknown
   readonly timestamp?: unknown
   readonly name?: unknown
   readonly message?: unknown
+}
+
+export interface WriteForkFileOptions {
+  readonly dirs: SessionDirs
+  /** The forked session's file; recorded verbatim as the fork's `parentSession`. */
+  readonly parentPath: string
+  /** The parent's entries in file order; its header is replaced, not copied. */
+  readonly entries: readonly SessionFileEntry[]
+  /** The fork's own cwd, which decides where the file lands. */
+  readonly cwd: string
+}
+
+export interface ForkFile {
+  readonly path: string
+  readonly id: string
 }
 
 interface SessionHeader {
@@ -244,7 +270,28 @@ export async function readSessionInfo(filePath: string): Promise<SessionFileInfo
   return { path: filePath, id: header.id, cwd: header.cwd, name, firstMessage, modified }
 }
 
-function parseEntryLine(line: string): SessionEntryLine | null {
+/** Every parsed entry in file order, the header included, with malformed lines
+ * skipped the way the metadata reader skips them. A file Pi has not written yet
+ * reads as no entries; any other read failure propagates. */
+export async function readSessionEntries(filePath: string): Promise<SessionFileEntry[]> {
+  if (!existsSync(filePath)) return []
+
+  const entries: SessionFileEntry[] = []
+  const input = createReadStream(filePath, { encoding: FILE_ENCODING })
+  const reader = createInterface({ input, crlfDelay: Infinity })
+  try {
+    for await (const line of reader) {
+      const entry = parseEntryLine(line)
+      if (entry !== null) entries.push(entry)
+    }
+  } finally {
+    reader.close()
+    input.destroy()
+  }
+  return entries
+}
+
+function parseEntryLine(line: string): SessionFileEntry | null {
   if (!line.trim()) return null
   let parsed: unknown
   try {
@@ -252,16 +299,16 @@ function parseEntryLine(line: string): SessionEntryLine | null {
   } catch {
     return null
   }
-  return parsed ? (parsed as SessionEntryLine) : null
+  return parsed ? (parsed as SessionFileEntry) : null
 }
 
-function asHeader(entry: SessionEntryLine): SessionHeader | null {
+function asHeader(entry: SessionFileEntry): SessionHeader | null {
   if (entry.type !== SESSION_ENTRY_TYPE_HEADER) return null
   if (typeof entry.id !== 'string') return null
   return { id: entry.id, cwd: typeof entry.cwd === 'string' ? entry.cwd : '', timestamp: entry.timestamp }
 }
 
-function messageActivityTime(entry: SessionEntryLine): number | undefined {
+function messageActivityTime(entry: SessionFileEntry): number | undefined {
   const message = entry.message
   if (!isMessageWithContent(message)) return undefined
   if (message.role !== ROLE_USER && message.role !== ROLE_ASSISTANT) return undefined
@@ -331,6 +378,67 @@ export async function findSessionFile(options: FindSessionFileOptions): Promise<
     throw new Error(`Session id "${options.id}" matches ${rest.length + 1} session files: ${candidates}`)
   }
   return match
+}
+
+// ── Fork ──────────────────────────────────────────────────────────────────────
+
+/** Writes a fork of `parentPath` the way Pi's own fork writes one: a fresh
+ * header under the target cwd's directory, then the parent's entries in file
+ * order, so the fork inherits the whole tree including its name. Entries are
+ * re-serialized from their parsed form, so key order survives while number
+ * formatting and escapes normalize. */
+export function writeForkFile(options: WriteForkFileOptions): ForkFile {
+  const dirs = options.dirs
+  const dir = dirs.mode === 'flat' ? dirs.dir : sessionDirForCwd(dirs.root, options.cwd)
+  mkdirSync(dir, { recursive: true })
+
+  const id = uuidv7()
+  const timestamp = new Date().toISOString()
+  const fileTimestamp = timestamp.replace(FILE_TIMESTAMP_UNSAFE, FILE_TIMESTAMP_REPLACEMENT)
+  const path = join(dir, `${fileTimestamp}${SESSION_ID_SEPARATOR}${id}${SESSION_FILE_EXTENSION}`)
+  const header = {
+    type: SESSION_ENTRY_TYPE_HEADER,
+    version: SESSION_FILE_VERSION,
+    id,
+    timestamp,
+    cwd: resolve(options.cwd),
+    parentSession: resolve(options.parentPath),
+  }
+
+  // One write: a per-entry append would hold the event loop, and with it every
+  // other session's RPC traffic, for the length of a long parent.
+  const body = options.entries
+    .filter((entry) => entry.type !== SESSION_ENTRY_TYPE_HEADER)
+    .map((entry) => serializeEntry(entry))
+    .join('')
+  writeFileSync(path, serializeEntry(header) + body, { encoding: FILE_ENCODING, flag: FORK_FILE_WRITE_FLAG })
+  return { path, id }
+}
+
+/** The parent's entries up to its last settled turn. Pi appends the user entry as
+ * a turn starts, so with a turn in flight everything from the last user message
+ * on is that unfinished turn; this adapter is the only writer of its own live
+ * sessions, so nothing else can have appended past it. */
+export function settledEntries(
+  entries: readonly SessionFileEntry[],
+  parentHasActiveTurn: boolean,
+): readonly SessionFileEntry[] {
+  if (!parentHasActiveTurn) return entries
+  for (let index = entries.length - 1; index >= 0; index--) {
+    const entry = entries[index]
+    if (entry !== undefined && isUserMessage(entry)) return entries.slice(0, index)
+  }
+  return entries
+}
+
+function isUserMessage(entry: SessionFileEntry): boolean {
+  if (entry.type !== SESSION_ENTRY_TYPE_MESSAGE) return false
+  const message = entry.message
+  return isMessageWithContent(message) && message.role === ROLE_USER
+}
+
+function serializeEntry(entry: unknown): string {
+  return `${JSON.stringify(entry)}${ENTRY_LINE_SEPARATOR}`
 }
 
 function sessionCwdMatches(headerCwd: string, cwd: string): boolean {

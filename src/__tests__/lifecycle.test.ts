@@ -1,6 +1,6 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 
 import * as acp from '@agentclientprotocol/sdk'
 import type { AgentContext } from '@agentclientprotocol/sdk'
@@ -349,6 +349,146 @@ describe('session/load', () => {
       'user_message_chunk',
       'agent_message_chunk',
     ])
+  })
+})
+
+// ── session/fork ──────────────────────────────────────────────────────────────
+
+describe('session/fork', () => {
+  /** A UUIDv7 in canonical form: version 7 and the RFC variant nibbles pinned. */
+  const MINTED_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+  const TOOL_CALL = { type: 'toolCall', id: 'call', parentId: null, timestamp: HEADER_TIME, toolName: 'bash' }
+
+  /** The file a spawn opened with `--session`, plus the cwd it ran in. */
+  function forkSpawn(fake: ReturnType<typeof makeFakePiClient>, index: number): { cwd: string; path: string } {
+    const spawn = fake.spawns[index]
+    if (spawn === undefined) throw new Error(`no spawn at index ${index}`)
+    const path = spawn.args[spawn.args.indexOf(PI_SESSION_ARG) + 1]
+    if (path === undefined) throw new Error(`the spawn at index ${index} carries no session file`)
+    return { cwd: spawn.cwd, path }
+  }
+
+  function readEntries(path: string): Array<Record<string, unknown>> {
+    return readFileSync(path, 'utf8')
+      .split('\n')
+      .filter((line) => line !== '')
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+  }
+
+  it('writes the fork file, opens it with --session, and registers the new session', async () => {
+    const parentPath = writeSession(CWD, SESSION_ID, [
+      sessionInfo('Parent name'),
+      message('user', 'earlier', 1_000),
+      message('assistant', 'done', 2_000),
+    ])
+    const { fake, server, client, notify } = makeServer(makeSpec({ sessionIdFromSessionFile: true }))
+
+    const response = await server.forkSession({ params: { sessionId: SESSION_ID, cwd: CWD }, client })
+
+    expect(response.sessionId).toMatch(MINTED_ID)
+    expect(response.configOptions?.map((option) => option.id)).toEqual(['model', 'thought_level'])
+
+    const spawn = forkSpawn(fake, 0)
+    expect(spawn.cwd).toBe(CWD)
+    expect(spawn.path.startsWith(sessionDirForCwd(root, CWD))).toBe(true)
+    expect(basename(spawn.path).endsWith(`_${response.sessionId}.jsonl`)).toBe(true)
+
+    // The whole tree is copied verbatim, so the fork carries the parent's name.
+    const entries = readEntries(spawn.path)
+    expect(entries[0]).toMatchObject({ id: response.sessionId, cwd: CWD, parentSession: parentPath })
+    expect(entries.slice(1)).toEqual([
+      sessionInfo('Parent name'),
+      message('user', 'earlier', 1_000),
+      message('assistant', 'done', 2_000),
+    ])
+
+    await flushAnnouncements()
+    expect(notify).toHaveBeenCalledWith(acp.methods.client.session.update, {
+      sessionId: response.sessionId,
+      update: {
+        sessionUpdate: 'available_commands_update',
+        availableCommands: [{ name: 'review', description: 'Review code' }],
+      },
+    })
+    await expect(server.closeSession({ params: { sessionId: response.sessionId } })).resolves.toEqual({})
+  })
+
+  it('forks into another cwd, landing the file under that cwd directory', async () => {
+    const parentPath = writeSession(CWD, SESSION_ID, [message('user', 'earlier', 1_000)])
+    const { fake, server, client } = makeServer(makeSpec({ sessionIdFromSessionFile: true }))
+
+    const response = await server.forkSession({ params: { sessionId: SESSION_ID, cwd: OTHER_CWD }, client })
+
+    const spawn = forkSpawn(fake, 0)
+    expect(spawn.cwd).toBe(OTHER_CWD)
+    expect(spawn.path.startsWith(sessionDirForCwd(root, OTHER_CWD))).toBe(true)
+    expect(readEntries(spawn.path)[0]).toEqual({
+      type: 'session',
+      version: 3,
+      id: response.sessionId,
+      timestamp: expect.any(String),
+      cwd: OTHER_CWD,
+      parentSession: parentPath,
+    })
+  })
+
+  it('forks a live parent from its last settled turn, leaving the in-flight one out', async () => {
+    const { fake, server, client } = makeServer(makeSpec({ sessionIdFromSessionFile: true }))
+    await startSession(server, client)
+    writeSession(CWD, SESSION_ID, [
+      message('user', 'settled', 1_000),
+      message('assistant', 'answered', 2_000),
+      message('user', 'in flight', 3_000),
+      TOOL_CALL,
+    ])
+
+    const turn = server.prompt({
+      params: { sessionId: SESSION_ID, prompt: HELLO_PROMPT },
+      signal: new AbortController().signal,
+    })
+    await Promise.resolve()
+    await server.forkSession({ params: { sessionId: SESSION_ID, cwd: CWD }, client })
+
+    expect(readEntries(forkSpawn(fake, 1).path).slice(1)).toEqual([
+      message('user', 'settled', 1_000),
+      message('assistant', 'answered', 2_000),
+    ])
+
+    await expect(server.closeSession({ params: { sessionId: SESSION_ID } })).resolves.toEqual({})
+    await expect(turn).resolves.toEqual({ stopReason: 'cancelled' })
+  })
+
+  it('reports an unknown parent, and a parent Pi never flushed, as resource_not_found', async () => {
+    const { fake, server, client } = makeServer()
+
+    await expect(server.forkSession({ params: { sessionId: 'absent', cwd: CWD }, client })).rejects.toMatchObject({
+      code: JSONRPC_RESOURCE_NOT_FOUND,
+    })
+
+    await startSession(server, client)
+    await expect(server.forkSession({ params: { sessionId: SESSION_ID, cwd: CWD }, client })).rejects.toMatchObject({
+      code: JSONRPC_RESOURCE_NOT_FOUND,
+    })
+    expect(fake.spawns).toHaveLength(1)
+  })
+
+  it('rejects a relative cwd without reading the store', async () => {
+    const { fake, server, client } = makeServer()
+    await expect(
+      server.forkSession({ params: { sessionId: SESSION_ID, cwd: 'relative/path' }, client }),
+    ).rejects.toMatchObject({ code: JSONRPC_INVALID_PARAMS })
+    expect(fake.spawns).toEqual([])
+  })
+
+  it('fails fast, stops the subprocess and removes the fork file when Pi opens the fork under another id', async () => {
+    writeSession(CWD, SESSION_ID, [message('user', 'earlier', 1_000)])
+    const { fake, server, client } = makeServer()
+
+    await expect(server.forkSession({ params: { sessionId: SESSION_ID, cwd: CWD }, client })).rejects.toMatchObject({
+      code: JSONRPC_INTERNAL_ERROR,
+    })
+    expect(fake.wasStopped()).toBe(true)
+    expect(existsSync(forkSpawn(fake, 0).path)).toBe(false)
   })
 })
 
