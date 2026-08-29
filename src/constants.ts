@@ -1,9 +1,9 @@
 import { PROTOCOL_VERSION as ACP_PROTOCOL_VERSION } from '@agentclientprotocol/sdk'
 import type { ToolKind } from '@agentclientprotocol/sdk'
 
-// Static JSON import (not createRequire): `bun build --compile` produces a
-// filesystem-less binary, so a runtime `require('../package.json')` dies on
-// startup. esbuild and Bun both inline this import at build time.
+// Static JSON import (not createRequire): the release artifact is the bundle
+// alone, with no package.json beside it, so a runtime `require('../package.json')`
+// would die on startup. esbuild inlines this import at build time.
 import { name as packageName, version as packageVersion } from '../package.json'
 
 export const AGENT_NAME = packageName

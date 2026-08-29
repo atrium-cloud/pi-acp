@@ -4,7 +4,10 @@
 
 ## Requirements
 
-- A configured Pi model provider. Pi Agent itself is a dependency of this package; set `PI_ACP_PI_BIN` to run a different `pi` binary instead.
+- Node 22.19 or newer, the same requirement as Pi Agent.
+- An installed and configured Pi Agent, named by `PI_ACP_PI_BIN` (the path to its `pi` executable). From a checkout, Pi is a dependency of this package and is launched directly when `PI_ACP_PI_BIN` is unset.
+
+The release is a single executable, `pi-acp`; put it on PATH or point your ACP client at it. On Windows run it as `node pi-acp`.
 
 ## ACP support
 

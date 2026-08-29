@@ -1,9 +1,8 @@
 // The MCP client that runs INSIDE Pi. Bundled self-contained by
 // scripts/generate-mcp-extension.mjs and loaded with `-e`, so it may import only
 // this package's MCP client and Node builtins: jiti resolves from the temp file
-// that has no node_modules above it, and a compiled binary has no filesystem at
-// all. The Pi package is never imported; `pi` is typed by the local interface
-// below.
+// that has no node_modules above it, and the release bundle ships without any.
+// The Pi package is never imported; `pi` is typed by the local interface below.
 
 import { Client, SSEClientTransport, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio'
