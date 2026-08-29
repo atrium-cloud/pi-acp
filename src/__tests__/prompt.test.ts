@@ -1,12 +1,12 @@
 import * as acp from '@agentclientprotocol/sdk'
 import type { AgentContext } from '@agentclientprotocol/sdk'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { AGENT_NAME } from '../constants.js'
+import { AGENT_NAME, AGENT_START_GRACE_MS, EXTENSION_COMMAND_QUIET_MS } from '../constants.js'
 import { PiAcpServer } from '../server/PiAcpServer.js'
 import { establishSession } from '../session/sessionSetup.js'
 import type { SessionConnection } from '../session/SessionConnection.js'
-import type { FlattenedPrompt } from '../turn/promptContent.js'
+import { type FlattenedPrompt, flattenPromptContent } from '../turn/promptContent.js'
 import { type FakePiSpec, makeFakePiClient } from './fixtures/fakePiClient.js'
 
 const LAUNCH = { command: 'pi', args: ['--mode', 'rpc'], source: 'test' }
@@ -162,6 +162,73 @@ describe('SessionConnection.runPrompt', () => {
     const { connection } = await connect(baseSpec())
     connection.handleExit(new Error('pi exited: code 1'))
     await expect(connection.runPrompt(HELLO, new AbortController().signal)).rejects.toThrow(/pi exited: code 1/)
+  })
+})
+
+const EXT_COMMANDS = [
+  { name: 'extcmd', description: 'ext', source: 'extension' },
+  { name: 'skill:summarize', source: 'skill' },
+  { name: 'review', description: 'Review code', source: 'prompt' },
+]
+const QUIET_WINDOW_MS = Math.max(EXTENSION_COMMAND_QUIET_MS, AGENT_START_GRACE_MS)
+/** Pi's dispatch rule, message by message: leading `/` on the untrimmed text and
+ * a name delimited by a literal space, matched against the advertised names. */
+const PARSE_TABLE: [message: string, invokesCommand: boolean][] = [
+  ['/extcmd', true],
+  ['/extcmd args', true],
+  ['/extcmd\nargs', false],
+  [' /extcmd', false],
+  ['/unknown', false],
+  ['/skill:summarize', false],
+  ['/review', false],
+  ['just text', false],
+]
+
+describe('extension command prompts', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  /** Prompts a Pi that acks and then stays silent, and waits out both windows. */
+  async function runQuiet(prompt: FlattenedPrompt) {
+    const { fake, connection } = await connect({ ...baseSpec(), commands: EXT_COMMANDS })
+    const settled = connection.runPrompt(prompt, new AbortController().signal).then(
+      (reason) => ({ reason, error: undefined as unknown }),
+      (error: unknown) => ({ reason: undefined, error }),
+    )
+    // Zero first, so the ack resolves and arms the timer before the clock moves.
+    await vi.advanceTimersByTimeAsync(0)
+    await vi.advanceTimersByTimeAsync(QUIET_WINDOW_MS)
+    return { ...(await settled), fake }
+  }
+
+  const textPrompt = (message: string): FlattenedPrompt => ({ message, images: [], firstText: message })
+
+  it.each(PARSE_TABLE)('reads %j as an advertised extension command: %s', async (message, invokesCommand) => {
+    const { reason, error } = await runQuiet(textPrompt(message))
+    if (invokesCommand) expect(reason).toBe('end_turn')
+    else expect(error).toMatchObject({ code: -32_603, message: expect.stringMatching(/no turn/) })
+  })
+
+  it('matches a multi-block prompt whose joined message begins with the command', async () => {
+    const prompt = flattenPromptContent([
+      { type: 'text', text: '/extcmd go' },
+      { type: 'text', text: 'second block' },
+    ])
+    expect(prompt.message).toBe('/extcmd go\nsecond block')
+    const { reason } = await runQuiet(prompt)
+    expect(reason).toBe('end_turn')
+  })
+
+  it('neither titles nor meters a command prompt that ran no turn', async () => {
+    const { reason, fake } = await runQuiet(textPrompt('/extcmd'))
+    expect(reason).toBe('end_turn')
+    const types = fake.calls.map((call) => call['type'])
+    expect(types).not.toContain('set_session_name')
+    expect(types).not.toContain('get_session_stats')
   })
 })
 
