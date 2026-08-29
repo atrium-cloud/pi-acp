@@ -6,9 +6,9 @@
       "name": "pi-acp",
       "dependencies": {
         "@agentclientprotocol/sdk": "^1.4.0",
+        "@earendil-works/pi-coding-agent": "^0.84.3",
       },
       "devDependencies": {
-        "@earendil-works/pi-coding-agent": "0.84.3",
         "@types/node": "^26.1.0",
         "esbuild": "^0.28.2",
         "typescript": "^7.0.2",

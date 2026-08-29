@@ -17,22 +17,24 @@ export const PROTOCOL_VERSION = 1
 const _acpProtocolVersionPin: 1 = ACP_PROTOCOL_VERSION
 void _acpProtocolVersionPin
 
-// ── Pi child ────────────────────────────────────────────────────────────────
+// ── Pi subprocess ───────────────────────────────────────────────────────────
 //
-// One `pi --mode rpc` child per ACP session (docs/todos.md, process model).
+// One Pi RPC subprocess per ACP session (docs/todos.md, process model).
 
 export const ENV_PI_BIN = 'PI_ACP_PI_BIN'
-export const DEFAULT_PI_BIN = 'pi'
+export const PI_RPC_ENTRY_SPECIFIER = '@earendil-works/pi-coding-agent/rpc-entry'
 export const PI_RPC_MODE_ARGS: readonly string[] = ['--mode', 'rpc']
 
-// ── Pi compatibility ────────────────────────────────────────────────────────
-//
-// Floor only: a newer Pi is untested, not known-broken, and pinning an upper
-// bound would make this adapter the thing that breaks on every Pi release.
-// Drift against newer releases is caught by the pinned devDependency and
-// typecheck (docs/refs.md), not at runtime.
+// ── RPC transport ─────────────────────────────────────────────────────────────
 
-export const SUPPORTED_PI_MIN = '0.84.3'
-export const ENV_SKIP_VERSION_CHECK = 'PI_ACP_SKIP_VERSION_CHECK'
-export const SKIP_VERSION_CHECK_VALUES: readonly string[] = ['1', 'true']
-export const KEEP_VERSION_CHECK_VALUES: readonly string[] = ['0', 'false']
+// Bounds every round-trip including the readiness get_state; Pi's cold start can
+// take ~15s before it answers, so readiness gets no shorter timeout of its own.
+// PI_ACP_RPC_TIMEOUT_MS overrides this at the §2 composition edge.
+export const DEFAULT_RPC_TIMEOUT_MS = 30_000
+
+// Teardown: stdin-close is Pi's lossless exit (flush then exit 0); SIGTERM skips
+// the flush. Stdin grace is generous — on Windows SIGTERM is effectively a kill.
+export const STDIN_END_GRACE_MS = 5_000
+export const SIGTERM_GRACE_MS = 1_000
+
+export const STDERR_TAIL_MAX_BYTES = 16_384

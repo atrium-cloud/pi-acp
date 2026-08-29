@@ -4,7 +4,7 @@
 
 ## Requirements
 
-- Pi Agent 0.84.3+, configured with a model provider
+- A configured Pi model provider. Pi Agent itself is a dependency of this package; set `PI_ACP_PI_BIN` to run a different `pi` binary instead.
 
 ## ACP support
 

@@ -1,10 +1,11 @@
 import { readFile } from 'node:fs/promises'
 import { build } from 'esbuild'
 
-// The Pi package is a type-only devDependency; a release bundle must never
-// reference it.
+// Pi stays external: the adapter spawns its RPC entry as a subprocess and only
+// ever imports its types, which esbuild erases. A value import would survive as
+// a runtime external import and pull Pi into the adapter process, so the bundle
+// is checked for any mention of the package.
 const OUTFILE = 'dist/index.js'
-const FORBIDDEN_BUNDLE_REFERENCES = ['pi-coding-agent']
 
 await build({
   entryPoints: ['src/index.ts'],
@@ -12,11 +13,9 @@ await build({
   bundle: true,
   platform: 'node',
   format: 'esm',
+  external: ['@earendil-works/pi-coding-agent'],
 })
 
-const bundled = await readFile(OUTFILE, 'utf8')
-for (const reference of FORBIDDEN_BUNDLE_REFERENCES) {
-  if (bundled.includes(reference)) {
-    throw new Error(`${OUTFILE} references ${reference}; upstream Pi code must stay out of the bundle`)
-  }
+if ((await readFile(OUTFILE, 'utf8')).includes('pi-coding-agent')) {
+  throw new Error(`${OUTFILE} references pi-coding-agent; upstream Pi code must stay out of the bundle`)
 }

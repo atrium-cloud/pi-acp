@@ -20,35 +20,30 @@
 
 ## 1. Transport and child lifecycle
 
-- [ ] Pi RPC client (`src/pi/PiRpcClient.ts`)
+- [x] Pi RPC client (`src/pi/PiRpcClient.ts`)
     - Strict LF-only JSONL framing in both directions; Pi's `docs/rpc.md` forbids `readline`.
     - `id` correlation for every command.
     - Typed wrappers for each consumed command; event dispatch.
     - `success: false` responses surface as typed errors.
-- [ ] Spawn
-    - `pi --mode rpc` from `PATH` or `PI_ACP_PI_BIN`.
+- [x] Spawn
+    - The `@earendil-works/pi-coding-agent` dependency's `rpc-entry` under the current Node, or `PI_ACP_PI_BIN --mode rpc` when set (`src/pi/launch.ts`, the codex-acp `CODEX_PATH` shape).
+    - `bun --compile` binaries have no `node_modules`, so `PI_ACP_PI_BIN` is required there.
     - Child `cwd` = ACP `cwd`; stdio piped.
     - Bounded stderr tail attached to startup and death errors.
     - Startup readiness is the first `get_state` response, not a sleep.
-- [ ] Per-command timeout (`PI_ACP_RPC_TIMEOUT_MS`)
+- [x] Per-command timeout (`PI_ACP_RPC_TIMEOUT_MS`)
     - Metadata commands are bounded.
     - `prompt` is bounded up to its response only; the response returns after preflight and the turn streams as events, so a stalled preflight fails the request instead of hanging it.
-- [ ] Clean teardown
+- [x] Clean teardown
     - Close the child's stdin first; Pi's RPC mode shuts down on stdin `end`.
     - Then SIGTERM→SIGKILL grace.
-    - Applies on `session/close`, `session/delete`, connection close, and adapter exit.
-- [ ] Child death mid-turn
+    - `stop()` mechanism done and tested; the triggers (`session/close`, `session/delete`, connection close, adapter exit) are wired in §2/§3.
+- [x] Child death mid-turn
     - Fails the in-flight prompt with the exit code and stderr tail.
-    - Tears the session down; the adapter keeps serving other sessions.
-- [ ] Version floor
-    - `pi --version` once at adapter start.
-    - Refuse below `SUPPORTED_PI_MIN` (0.84.3); no upper bound.
-    - `PI_ACP_SKIP_VERSION_CHECK` disarms.
-- [ ] Types for the consumed RPC subset
-    - Type-only imports from the pinned `@earendil-works/pi-coding-agent` devDependency: `RpcCommand`, `RpcResponse`, `RpcSessionState`, `RpcExtensionUIRequest`, `RpcExtensionUIResponse`, `JsonAgentSessionEvent`.
-    - The package is dev-only and never part of a release
-        - `import type` only; esbuild erases it.
-        - `build.mjs` fails if `dist/index.js` mentions `pi-coding-agent`.
+    - Client rejects in-flight work and fires `onExit` with the exit code + stderr tail; a dead child never crashes the adapter (EPIPE handled). Session teardown off `onExit` is wired in §3.
+- [x] Types for the consumed RPC subset
+    - Type-only imports from the `@earendil-works/pi-coding-agent` dependency: `RpcCommand`, `RpcResponse`, `RpcSessionState`, `RpcExtensionUIRequest`, `RpcExtensionUIResponse`, `JsonAgentSessionEvent`.
+    - No Pi code in the adapter bundle: `import type` only, and the package is `external` in `build.mjs`; Pi runs as a subprocess.
     - Exhaustive switches over event types with no `default` are the compile-time tripwire.
 
 ## 2. Stable ACP v1 baseline
@@ -197,7 +192,7 @@
 - [ ] CI (`.github/workflows/ci.yml`): typecheck, unit tests, esbuild bundle `--version` smoke, cross-compile of all six binaries on push/PR to main.
 - [ ] Release: `scripts/release.sh` and the tag-triggered `.github/workflows/release.yml`; six `bun --compile` binaries (`{x64,arm64}-{linux,darwin,windows}`).
 - [x] Pre-commit hook (`.githooks/pre-commit`, installed via `core.hooksPath` by the `prepare` script): typecheck, unit tests, build, `--version` smoke.
-- [ ] Upstream drift: bump the pinned `@earendil-works/pi-coding-agent` devDependency and run `bun run typecheck`; the pin in docs/refs.md moves in the same change.
+- [ ] Upstream drift: `bun update @earendil-works/pi-coding-agent` and run `bun run typecheck`.
 - [ ] docs/caveats.md is created when the first caveat is verified against a real client, not before.
 
 ## Known limits

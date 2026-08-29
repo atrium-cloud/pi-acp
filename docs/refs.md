@@ -16,9 +16,9 @@
 
 - Repo: https://github.com/earendil-works/pi
 - Package: `@earendil-works/pi-coding-agent` (bin `pi`, Node >= 22.19.0)
-- Pinned reference: Pi 0.84.3 (2026-08-24), the version the consumed RPC subset is verified against. Every bump re-verifies the subset, then moves this pin.
+- Dependency: `^0.84.3`, the same caret policy as codex-acp on `@openai/codex`. The adapter launches the installed package's `./rpc-entry` export by default (`src/pi/launch.ts`); `bun run typecheck` against the installed version is the drift check.
+- `PI_ACP_PI_BIN` launches a different `pi` binary instead.
 - RPC mode docs: https://pi.dev/docs/latest/rpc (upstream `packages/coding-agent/docs/rpc.md`)
-- Runtime floor: `SUPPORTED_PI_MIN` in `src/constants.ts`; `PI_ACP_SKIP_VERSION_CHECK=1|true` disarms.
 - Key upstream files, relative to `packages/coding-agent/`
     - RPC mode
         - `src/modes/rpc/rpc-types.ts`: `RpcCommand`, `RpcResponse`, `RpcSessionState`, `RpcExtensionUIRequest`, `RpcExtensionUIResponse`; all exported from the package root
