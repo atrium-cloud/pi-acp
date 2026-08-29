@@ -58,7 +58,7 @@
     - `mcpServers` rejected with invalid_params unless the section 4 seam is enabled.
     - `additionalDirectories` rejected.
     - `available_commands_update` is deferred a macrotask past the response: the SDK client only attaches its per-session update queue inside the `session/new` response callback, so an update sent before that lands is dropped.
-- [ ] `session/prompt`
+- [x] `session/prompt`
     - Content blocks
         - Text.
         - Image, via `images` on the `prompt` command.
@@ -66,22 +66,23 @@
     - `prompt` response `success: false` is a JSON-RPC error.
     - The turn ends on `agent_settled`, not `agent_end`; `agent_end` can be followed by retry, overflow compaction, or queued continuations.
     - A second prompt while the child is streaming is refused; ACP v1 has no steering surface.
-- [ ] Stop reasons
+    - A prompt accepted (preflight passed) that starts no turn within a bounded window is a protocol error, not a silent `end_turn`.
+- [x] Stop reasons
     - JSON-RPC errors carrying Pi's message
         - Assistant `stopReason: "error"` with `errorMessage`.
-        - `auto_retry_end` with `success: false`.
-        - `compaction_end` failure during an overflow retry.
+        - `auto_retry_end` with `success: false` and `compaction_end` `errorMessage` are captured as fallback error text.
     - `stopReason: "aborted"` after `session/cancel` → `cancelled`.
     - `length` → `max_tokens`.
     - A failed turn never ends with `end_turn`.
-- [ ] `session/cancel`
-    - `abort` with a sticky cancel flag.
+- [x] `session/cancel`
+    - `abort` with a sticky cancel flag, fire and forget (Pi defers the ack past `agent_settled`).
     - `$/cancel_request` on the prompt routes through the same path.
 - [ ] Streaming translation
-    - Stateful per-turn `src/turn/TurnHandler.ts` plus pure `src/turn/mappers.ts`.
-    - `message_update` deltas keyed by `contentIndex`
+    - Stateful per-turn `src/turn/TurnHandler.ts`; a pure `src/turn/mappers.ts` lands with the tool arm.
+    - `message_update` sub-events distinguish text from thinking by their own type (`text_delta` vs `thinking_delta`), not a `contentIndex → kind` map (done)
         - `text_*` → `agent_message_chunk`
         - `thinking_*` → `agent_thought_chunk`
+        - `contentIndex` is only tracked so a `*_end` re-emits the full content when no delta streamed for that index
     - `tool_execution_start/update/end` → `tool_call` / `tool_call_update`
         - Kinds for `read`, `bash`, `powershell`, `edit`, `write`, `grep`, `find`, `ls`.
         - `locations` from `path` args; `rawInput` / `rawOutput` carried.
@@ -136,6 +137,12 @@
     - After the first prompt of a session with no name, derive a title from the first user message excerpt.
     - Write it back with `set_session_name` so Pi's own session picker shows the same name.
     - `session_info_changed` then drives `session_info_update`; `session/list` reads the name from the session file.
+- [ ] Turn-lifecycle fixes deferred from the Batch C review
+    - Prompt-ack timeout is too tight: the ack is awaited under `PI_ACP_RPC_TIMEOUT_MS`, but Pi acks only after preflight, which can run a full compaction LLM call on a long session and exceed the bound; the request then rejects while Pi runs the turn unsubscribed. Exempt the `prompt` ack from the generic timeout, or race the ack against `agent_start`. This corrects the §1 line-35 claim that an over-bound preflight only ever means a genuine stall.
+    - Cancel before `agent_start` is a no-op: `session.abort` does nothing while the run is not active, so an early cancel lets the turn run to completion before the sticky flag reports `cancelled`; return `cancelled` at entry when `signal.aborted`, and re-send `abort` on `agent_start` when already cancelled.
+    - `stop()` mid-turn strands `runPrompt`: `notifyExit` returns early while stopping, so `handleExit` never fails the active turn and `settled` never resolves (dangling promise on connection-close teardown). Fail the active turn from `SessionConnection.stop()` before awaiting the client stop.
+    - A `null` last stop reason settles as `end_turn`: a post-`agent_start` Pi-internal failure can reach the client as an empty successful turn. Reject `null` as an internal error (invariant: a failed turn never ends `end_turn`).
+    - Empty prompt content (`[]`) is forwarded as an empty message instead of `invalid_params`; an embedded resource is inlined as `uri:\ntext` with no delimiter.
 
 ## 3. Capability-gated session lifecycle
 
@@ -159,6 +166,7 @@
     - Load replays `get_messages` synchronously before responding: user/agent/thought chunks, completed tool calls with `rawInput` / `rawOutput`.
 - [ ] `session/close` and `session/delete`
     - Close abandons in-flight turns (`cancelled`, never hangs) and kills the child.
+        - `SessionConnection.stop()` must fail or sticky-cancel `activeTurn` before killing the child: `notifyExit` suppresses `onExit` while `stopping`, so `handleExit → activeTurn.fail()` never fires during an intentional teardown and `runPrompt` would hang on an unresolved `settled` (the §2 "`stop()` mid-turn strands `runPrompt`" fix is load-bearing here).
     - Delete additionally removes the session file.
     - A `closing` flag refuses mid-teardown work.
 - [ ] Concurrent access to one session file (a pi-acp child alongside an open Pi TUI) has no lock upstream; recorded under Known limits once the failure shape is characterized.

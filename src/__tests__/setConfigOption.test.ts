@@ -29,7 +29,7 @@ async function connectionFor(spec: FakePiSpec) {
     launch: LAUNCH,
     rpcTimeoutMs: 1_000,
     notifier: stubNotifier,
-    createPiClient: () => fake.client,
+    createPiClient: fake.createPiClient,
   })
   return { fake, connection: established.connection }
 }
@@ -82,7 +82,7 @@ describe('PiAcpServer.setConfigOption', () => {
     return new PiAcpServer({
       launch: LAUNCH,
       rpcTimeoutMs: 1_000,
-      createPiClient: () => fake.client,
+      createPiClient: fake.createPiClient,
     })
   }
 

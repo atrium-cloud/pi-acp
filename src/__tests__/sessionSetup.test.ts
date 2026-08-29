@@ -53,8 +53,8 @@ const EXPECTED_OPTIONS = [
 
 const stubNotifier = { notify: vi.fn(async () => {}) } as unknown as AgentContext
 
-function makeDeps(fakeClient: ReturnType<typeof makeFakePiClient>['client']) {
-  return { launch: LAUNCH, rpcTimeoutMs: 1_000, notifier: stubNotifier, createPiClient: () => fakeClient }
+function makeDeps(fake: ReturnType<typeof makeFakePiClient>) {
+  return { launch: LAUNCH, rpcTimeoutMs: 1_000, notifier: stubNotifier, createPiClient: fake.createPiClient }
 }
 
 const ABS_CWD = '/tmp/pi-acp-session'
@@ -64,7 +64,7 @@ describe('establishSession', () => {
     const fake = makeFakePiClient(makeSpec())
     const established = await establishSession(
       { cwd: ABS_CWD, mcpServers: [] },
-      makeDeps(fake.client),
+      makeDeps(fake),
     )
     expect(established.sessionId).toBe('sess-1')
     expect(established.configOptions).toEqual(EXPECTED_OPTIONS)
@@ -77,7 +77,7 @@ describe('establishSession', () => {
 
   it('rejects a relative cwd with invalid params', async () => {
     const fake = makeFakePiClient(makeSpec())
-    await expect(establishSession({ cwd: 'relative/path', mcpServers: [] }, makeDeps(fake.client))).rejects.toMatchObject({
+    await expect(establishSession({ cwd: 'relative/path', mcpServers: [] }, makeDeps(fake))).rejects.toMatchObject({
       code: -32_602,
     })
   })
@@ -85,16 +85,16 @@ describe('establishSession', () => {
   it('rejects mcpServers and additionalDirectories', async () => {
     const fake = makeFakePiClient(makeSpec())
     await expect(
-      establishSession({ cwd: ABS_CWD, mcpServers: [{ name: 'x', command: 'y', args: [], env: [] }] }, makeDeps(fake.client)),
+      establishSession({ cwd: ABS_CWD, mcpServers: [{ name: 'x', command: 'y', args: [], env: [] }] }, makeDeps(fake)),
     ).rejects.toThrow(/mcpServers/)
     await expect(
-      establishSession({ cwd: ABS_CWD, mcpServers: [], additionalDirectories: ['/other'] }, makeDeps(fake.client)),
+      establishSession({ cwd: ABS_CWD, mcpServers: [], additionalDirectories: ['/other'] }, makeDeps(fake)),
     ).rejects.toThrow(/additionalDirectories/)
   })
 
   it('stops the subprocess when a post-start fetch fails (no orphan)', async () => {
     const fake = makeFakePiClient({ ...makeSpec(), failOn: 'get_commands' })
-    await expect(establishSession({ cwd: ABS_CWD, mcpServers: [] }, makeDeps(fake.client))).rejects.toThrow(
+    await expect(establishSession({ cwd: ABS_CWD, mcpServers: [] }, makeDeps(fake))).rejects.toThrow(
       /get_commands/,
     )
     expect(fake.wasStopped()).toBe(true)
@@ -102,7 +102,7 @@ describe('establishSession', () => {
 
   it('routes session-level and ignored events without emitting or throwing', async () => {
     const fake = makeFakePiClient(makeSpec())
-    const established = await establishSession({ cwd: ABS_CWD, mcpServers: [] }, makeDeps(fake.client))
+    const established = await establishSession({ cwd: ABS_CWD, mcpServers: [] }, makeDeps(fake))
     const notify = vi.mocked(stubNotifier.notify)
     notify.mockClear()
     established.connection.routeEvent({ type: 'session_info_changed', name: 'renamed' } as never)
@@ -113,7 +113,7 @@ describe('establishSession', () => {
 
   it('logs and drops an unrecognized event rather than throwing (it runs in the stdout handler)', async () => {
     const fake = makeFakePiClient(makeSpec())
-    const established = await establishSession({ cwd: ABS_CWD, mcpServers: [] }, makeDeps(fake.client))
+    const established = await establishSession({ cwd: ABS_CWD, mcpServers: [] }, makeDeps(fake))
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined)
     expect(() => established.connection.routeEvent({ type: 'brand_new_pi_event' } as never)).not.toThrow()
     expect(errorSpy).toHaveBeenCalledOnce()
@@ -127,7 +127,7 @@ describe('session/new over the wire', () => {
     const server = new PiAcpServer({
       launch: LAUNCH,
       rpcTimeoutMs: 1_000,
-      createPiClient: () => fake.client,
+      createPiClient: fake.createPiClient,
     })
     const app = server.register(acp.agent({ name: AGENT_NAME }))
 

@@ -1,10 +1,13 @@
 import * as acp from '@agentclientprotocol/sdk'
 import type {
   AgentContext,
+  CancelNotification,
   InitializeRequest,
   InitializeResponse,
   NewSessionRequest,
   NewSessionResponse,
+  PromptRequest,
+  PromptResponse,
   SetSessionConfigOptionRequest,
   SetSessionConfigOptionResponse,
 } from '@agentclientprotocol/sdk'
@@ -20,6 +23,7 @@ import {
 import type { PiLaunch } from '../pi/errors.js'
 import type { CreatePiClient, SessionConnection } from '../session/SessionConnection.js'
 import { establishSession } from '../session/sessionSetup.js'
+import { flattenPromptContent } from '../turn/promptContent.js'
 import { toRequestError } from './errors.js'
 
 export interface PiAcpServerOptions {
@@ -46,6 +50,10 @@ export class PiAcpServer {
       .onRequest(acp.methods.agent.session.setConfigOption, (context) =>
         this.guard(() => this.setConfigOption(context)),
       )
+      .onRequest(acp.methods.agent.session.prompt, (context) => this.guard(() => this.prompt(context)))
+      .onNotification(acp.methods.agent.session.cancel, (context) => {
+        this.cancel(context.params)
+      })
   }
 
   /** Stops every session subprocess; called once the client connection closes.
@@ -62,9 +70,9 @@ export class PiAcpServer {
     return {
       protocolVersion: PROTOCOL_VERSION,
       agentInfo: { name: AGENT_NAME, title: AGENT_TITLE, version: AGENT_VERSION },
-      // Text and resource_link are ACP baseline (no capability flag); only what
-      // is actually implemented is advertised, and nothing else is yet.
-      agentCapabilities: { promptCapabilities: { image: false, audio: false, embeddedContext: false } },
+      // Text and resource_link are ACP baseline (no capability flag). Image and
+      // embedded context are inlined by session/prompt; audio is not supported.
+      agentCapabilities: { promptCapabilities: { image: true, audio: false, embeddedContext: true } },
     }
   }
 
@@ -105,6 +113,20 @@ export class PiAcpServer {
     }
     const configOptions = await connection.applyConfigOption(params.configId, params.value)
     return { configOptions }
+  }
+
+  async prompt(context: { params: PromptRequest; signal: AbortSignal }): Promise<PromptResponse> {
+    const connection = this.sessions.get(context.params.sessionId)
+    if (connection === undefined) {
+      throw new acp.RequestError(JSONRPC_INVALID_PARAMS, `unknown session "${context.params.sessionId}"`)
+    }
+    const prompt = flattenPromptContent(context.params.prompt)
+    const stopReason = await connection.runPrompt(prompt, context.signal)
+    return { stopReason }
+  }
+
+  cancel(params: CancelNotification): void {
+    this.sessions.get(params.sessionId)?.cancel()
   }
 
   /** No auth methods are advertised, so the client must never call this. It is

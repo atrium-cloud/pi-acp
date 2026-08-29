@@ -26,7 +26,7 @@ describe('initialize (over an ACP connection)', () => {
     expect(result).toEqual({
       protocolVersion: PROTOCOL_VERSION,
       agentInfo: { name: AGENT_NAME, title: AGENT_TITLE, version: AGENT_VERSION },
-      agentCapabilities: { promptCapabilities: { image: false, audio: false, embeddedContext: false } },
+      agentCapabilities: { promptCapabilities: { image: true, audio: false, embeddedContext: true } },
     })
   })
 })

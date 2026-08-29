@@ -9,6 +9,9 @@ import { JSONRPC_INTERNAL_ERROR } from '../constants.js'
  * internal-error `RequestError` carrying its message. */
 export function toRequestError(error: unknown): acp.RequestError {
   if (error instanceof acp.RequestError) return error
-  const message = error instanceof Error ? error.message : String(error)
-  return new acp.RequestError(JSONRPC_INTERNAL_ERROR, message)
+  return new acp.RequestError(JSONRPC_INTERNAL_ERROR, asMessage(error))
+}
+
+export function asMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
 }

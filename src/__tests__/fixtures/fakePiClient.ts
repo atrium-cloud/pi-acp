@@ -1,4 +1,5 @@
-import type { PiClientLike } from '../../session/SessionConnection.js'
+import type { CreatePiClient, PiClientLike } from '../../session/SessionConnection.js'
+import type { JsonAgentSessionEvent } from '../../pi/types.js'
 
 // The subset of RpcSessionState the session layer reads; the rest is never
 // touched, so the fake omits it and casts on the way out.
@@ -17,12 +18,21 @@ export interface FakePiSpec {
   failOn?: string
   /** A command type that should reject only on its first call, then succeed. */
   failOnce?: string
+  /** Makes a `prompt` command reject as a failed preflight. */
+  preflightFails?: boolean
+  /** Emits events synchronously while the `prompt` request is in flight (before
+   * the ack resolves), to exercise subscribe-before-send ordering. */
+  onPrompt?: (emit: (event: JsonAgentSessionEvent) => void) => void
 }
 
 export interface FakePiClient {
-  client: PiClientLike
+  createPiClient: CreatePiClient
   calls: Array<Record<string, unknown>>
   wasStopped: () => boolean
+  /** Feeds an event through the transport's `onEvent` (the session router). */
+  emit: (event: JsonAgentSessionEvent) => void
+  /** Fires the transport's `onExit`. */
+  exit: (error: Error) => void
 }
 
 export function makeFakePiClient(spec: FakePiSpec): FakePiClient {
@@ -30,6 +40,9 @@ export function makeFakePiClient(spec: FakePiSpec): FakePiClient {
   const failedOnce = new Set<string>()
   let state = spec.state
   let stopped = false
+  let onEvent: ((event: JsonAgentSessionEvent) => void) | undefined
+  let onExit: ((error: Error) => void) | undefined
+  const emit = (event: JsonAgentSessionEvent): void => onEvent?.(event)
 
   const respond = async (command: Record<string, unknown> & { type: string }): Promise<unknown> => {
     calls.push(command)
@@ -55,6 +68,12 @@ export function makeFakePiClient(spec: FakePiSpec): FakePiClient {
       case 'set_thinking_level':
         state = { ...state, thinkingLevel: command['level'] as string }
         return { type: 'response', command: 'set_thinking_level', success: true }
+      case 'prompt':
+        if (spec.preflightFails) throw new Error('fake pi: prompt preflight failed')
+        spec.onPrompt?.(emit)
+        return { type: 'response', command: 'prompt', success: true }
+      case 'abort':
+        return { type: 'response', command: 'abort', success: true }
       default:
         throw new Error(`fake pi: unexpected command ${command.type}`)
     }
@@ -67,5 +86,18 @@ export function makeFakePiClient(spec: FakePiSpec): FakePiClient {
       stopped = true
     },
   }
-  return { client, calls, wasStopped: () => stopped }
+
+  const createPiClient: CreatePiClient = (options) => {
+    onEvent = options.onEvent
+    onExit = options.onExit
+    return client
+  }
+
+  return {
+    createPiClient,
+    calls,
+    wasStopped: () => stopped,
+    emit,
+    exit: (error) => onExit?.(error),
+  }
 }

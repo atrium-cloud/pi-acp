@@ -39,6 +39,11 @@ export const ENV_RPC_TIMEOUT_MS = 'PI_ACP_RPC_TIMEOUT_MS'
 export const STDIN_END_GRACE_MS = 5_000
 export const SIGTERM_GRACE_MS = 1_000
 
+// Bounded wait for `agent_start` after the prompt ack. The child is already warm
+// from session/new, so this only catches a prompt that started no turn at all
+// (a user-typed unadvertised extension command).
+export const AGENT_START_GRACE_MS = 10_000
+
 export const STDERR_TAIL_MAX_BYTES = 16_384
 
 // ── Session config options ────────────────────────────────────────────────────
@@ -53,10 +58,18 @@ export const CONFIG_NAME_MODEL = 'Model'
 export const CONFIG_NAME_THOUGHT_LEVEL = 'Thinking level'
 export const MODEL_VALUE_SEPARATOR = '/'
 
+// ── Prompt content ─────────────────────────────────────────────────────────────
+//
+// ACP prompt content is a block array; Pi's prompt takes one message string.
+// Blocks are joined with this separator, and non-text blocks are inlined as a
+// header line so Pi sees the referenced path.
+export const PROMPT_BLOCK_SEPARATOR = '\n'
+
 // ── ACP / JSON-RPC ────────────────────────────────────────────────────────────
 //
 // The SDK's RequestError statics bury the message as literal "Internal error",
 // so errors are thrown with `new RequestError(code, message)` and these codes.
+export const JSONRPC_INVALID_REQUEST = -32_600
 export const JSONRPC_INVALID_PARAMS = -32_602
 export const JSONRPC_INTERNAL_ERROR = -32_603
 

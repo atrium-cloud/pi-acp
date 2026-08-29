@@ -1,10 +1,19 @@
 import * as acp from '@agentclientprotocol/sdk'
-import type { AgentContext, AvailableCommand, SessionConfigOption } from '@agentclientprotocol/sdk'
+import type { AgentContext, AvailableCommand, SessionConfigOption, StopReason } from '@agentclientprotocol/sdk'
 
-import { AGENT_NAME, CONFIG_ID_MODEL, CONFIG_ID_THOUGHT_LEVEL, JSONRPC_INVALID_PARAMS } from '../constants.js'
+import {
+  AGENT_NAME,
+  CONFIG_ID_MODEL,
+  CONFIG_ID_THOUGHT_LEVEL,
+  JSONRPC_INVALID_PARAMS,
+  JSONRPC_INVALID_REQUEST,
+} from '../constants.js'
 import type { PiRpcClient, PiRpcClientOptions } from '../pi/PiRpcClient.js'
 import type { JsonAgentSessionEvent, RpcCommand, RpcSessionState } from '../pi/types.js'
+import { asMessage } from '../server/errors.js'
 import { buildConfigOptions, type ModelChoice, resolveModelSelection } from '../turn/configOptions.js'
+import type { FlattenedPrompt } from '../turn/promptContent.js'
+import { type TurnEventSink, TurnHandler } from '../turn/TurnHandler.js'
 
 // The exact `set_thinking_level` payload type, without importing the Pi package's
 // `ThinkingLevel` name (it is not re-exported from the package root).
@@ -19,12 +28,6 @@ export interface PiClientLike {
 }
 
 export type CreatePiClient = (options: PiRpcClientOptions) => PiClientLike
-
-/** A live turn consuming turn-scoped Pi events. Implemented by `TurnHandler`
- * (§2 batch C); until then no turn is ever active and these events drop. */
-export interface TurnEventSink {
-  handleEvent(event: JsonAgentSessionEvent): void
-}
 
 interface ConfigState {
   readonly models: readonly ModelChoice[]
@@ -191,10 +194,46 @@ export class SessionConnection {
     console.error(`[${AGENT_NAME}] [${this.sessionId}] dropping unrecognized Pi session event: ${JSON.stringify(unhandled)}`)
   }
 
+  /** Runs one turn: register the turn BEFORE sending the prompt, because the ack
+   * and a synchronously-dispatched `agent_start` can arrive in one stdout chunk,
+   * ahead of the `await request` continuation — subscribing after would miss it.
+   * Both cancel paths (`session/cancel` and the prompt's own `$/cancel_request`
+   * abort signal) converge on `cancel()`. */
+  async runPrompt(prompt: FlattenedPrompt, signal: AbortSignal): Promise<StopReason> {
+    if (this.exitError) throw this.exitError
+    const client = this.requireClient()
+    if (this.activeTurn !== null) {
+      throw new acp.RequestError(JSONRPC_INVALID_REQUEST, 'a turn is already in progress for this session')
+    }
+
+    const turn = new TurnHandler({ notifier: this.notifier, sessionId: this.sessionId })
+    this.activeTurn = turn
+    const onAbort = (): void => this.cancel()
+    if (signal.aborted) this.cancel()
+    else signal.addEventListener('abort', onAbort, { once: true })
+
+    try {
+      await client.request({ type: 'prompt', message: prompt.message, images: prompt.images })
+      turn.armStartTimer()
+      return await turn.settled
+    } finally {
+      signal.removeEventListener('abort', onAbort)
+      this.activeTurn = null
+    }
+  }
+
+  /** Sticky-cancels the active turn and asks Pi to abort. The abort is fire and
+   * forget: Pi defers it until the run is idle, so its ack can lag `agent_settled`
+   * or race teardown; the turn resolves off `agent_settled`/the sticky flag. */
+  cancel(): void {
+    if (this.activeTurn === null) return
+    this.activeTurn.cancel()
+    void this.piClient?.request({ type: 'abort' }).catch(() => undefined)
+  }
+
   handleExit(error: Error): void {
-    // Failing the active turn with this cause is wired in §2 batch C, when the
-    // turn sink exists; until then no turn is active and the cause is only stored.
     if (this.exitError === null) this.exitError = error
+    this.activeTurn?.fail(error)
   }
 
   async stop(): Promise<void> {
@@ -224,8 +263,4 @@ export class SessionConnection {
 
 function invalidParams(message: string): acp.RequestError {
   return new acp.RequestError(JSONRPC_INVALID_PARAMS, message)
-}
-
-function asMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
 }
