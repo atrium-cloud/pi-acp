@@ -19,6 +19,10 @@ export interface TurnEventSink {
   fail(error: Error): void
   /** A cancel was requested; the turn resolves `cancelled` once it settles. */
   cancel(): void
+  /** The session is going away at the client's request, so the turn settles now
+   * as `cancelled` rather than waiting for a Pi it will never hear from again.
+   * Unlike `fail`, nothing went wrong: the client asked for this. */
+  abandon(): void
   /** The input cached at `tool_execution_start` for a tool still running, so a
    * permission request can carry it without the gate re-sending it. Pi emits
    * the start event before it runs the `tool_call` hook, so a miss means the id
@@ -173,6 +177,10 @@ export class TurnHandler implements TurnEventSink {
 
   cancel(): void {
     this.cancelled = true
+  }
+
+  abandon(): void {
+    this.finish(() => this.resolve('cancelled'))
   }
 
   announcedToolCall(toolCallId: string): AnnouncedToolCall | undefined {

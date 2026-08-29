@@ -8,6 +8,7 @@ import { AGENT_NAME, AGENT_VERSION, resolveRpcTimeoutMs } from './constants.js'
 import { materializeGate } from './permissions/gate.js'
 import { resolvePiLaunch } from './pi/launch.js'
 import { PiAcpServer } from './server/PiAcpServer.js'
+import { resolveSessionDirs } from './session/sessionDirectory.js'
 
 // The SDK resolves `connection.closed` for both a clean stdin EOF and a
 // transport failure, distinguishing them only by the abort reason: a clean
@@ -28,6 +29,9 @@ async function main(): Promise<void> {
   const server = new PiAcpServer({
     launch: resolvePiLaunch(process.env),
     rpcTimeoutMs: resolveRpcTimeoutMs(process.env),
+    // The subprocess inherits this environment, so both sides resolve the same
+    // store; a later env change does not move it under a running adapter.
+    sessionDirs: resolveSessionDirs(process.env),
     // Written once at startup; every session loads it with `-e`.
     gateExtensionPath: materializeGate(),
   })

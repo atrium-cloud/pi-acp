@@ -1,9 +1,9 @@
 import { isAbsolute } from 'node:path'
 
 import * as acp from '@agentclientprotocol/sdk'
-import type { AgentContext, AvailableCommand, NewSessionRequest } from '@agentclientprotocol/sdk'
+import type { AgentContext, AvailableCommand } from '@agentclientprotocol/sdk'
 
-import { JSONRPC_INVALID_PARAMS } from '../constants.js'
+import { JSONRPC_INTERNAL_ERROR, JSONRPC_INVALID_PARAMS, PI_SESSION_ARG } from '../constants.js'
 import type { PiLaunch } from '../pi/errors.js'
 import { PiRpcClient } from '../pi/PiRpcClient.js'
 import type { ModelChoice } from '../turn/configOptions.js'
@@ -29,16 +29,32 @@ export interface EstablishedSession {
   readonly availableCommands: AvailableCommand[]
 }
 
+/** `new` starts an empty session; `open` reopens a stored one from its file. Pi's
+ * RPC mode has no id resolution, so `sessionFile` is always an absolute path. */
+export type SessionSetupMode =
+  | { readonly kind: 'new' }
+  | { readonly kind: 'open'; readonly sessionFile: string; readonly expectedSessionId: string }
+
+/** The shape shared by `session/new`, `session/resume` and `session/load`;
+ * structural so all three SDK request types satisfy it. */
+export interface SessionSetupRequest {
+  readonly cwd: string
+  readonly mcpServers?: readonly unknown[] | undefined
+  readonly additionalDirectories?: readonly string[] | undefined
+}
+
 export async function establishSession(
-  request: NewSessionRequest,
+  request: SessionSetupRequest,
   deps: SessionSetupDeps,
+  mode: SessionSetupMode = { kind: 'new' },
 ): Promise<EstablishedSession> {
-  validateNewSession(request)
+  validateSessionRequest(request)
 
   const connection = new SessionConnection({ notifier: deps.notifier, cwd: request.cwd })
   const createPiClient = deps.createPiClient ?? defaultCreatePiClient
   // The gate loads alongside the user's own extensions (no --no-extensions).
   const args = deps.gateExtensionPath !== undefined ? ['-e', deps.gateExtensionPath] : []
+  if (mode.kind === 'open') args.push(PI_SESSION_ARG, mode.sessionFile)
   const piClient = createPiClient({
     launch: deps.launch,
     cwd: request.cwd,
@@ -56,6 +72,15 @@ export async function establishSession(
   // start() self-cleans a failure inside itself; a failure in the follow-up
   // fetches would otherwise leave a live subprocess nobody holds.
   const state = await piClient.start()
+  if (mode.kind === 'open' && state.sessionId !== mode.expectedSessionId) {
+    // Pi opened something other than the requested session (a stale path, or an
+    // id the file no longer carries): nothing downstream can be trusted.
+    await piClient.stop()
+    throw new acp.RequestError(
+      JSONRPC_INTERNAL_ERROR,
+      `Pi opened session "${state.sessionId}" from ${mode.sessionFile}, expected "${mode.expectedSessionId}"`,
+    )
+  }
   try {
     const [models, levels, commands] = await Promise.all([
       piClient.request({ type: 'get_available_models' }),
@@ -86,9 +111,13 @@ export async function establishSession(
   }
 }
 
-function validateNewSession(request: NewSessionRequest): void {
+/** Shared by `session/new`, `session/resume` and `session/load`; resume and load
+ * run it before touching the store so a bad request never reads the filesystem. */
+export function validateSessionRequest(request: SessionSetupRequest): void {
   if (!isAbsolute(request.cwd)) throw invalidParams(`cwd must be an absolute path, got "${request.cwd}"`)
-  if (request.mcpServers.length > 0) throw invalidParams('mcpServers are not supported in this baseline')
+  if (request.mcpServers !== undefined && request.mcpServers.length > 0) {
+    throw invalidParams('mcpServers are not supported in this baseline')
+  }
   if (request.additionalDirectories !== undefined && request.additionalDirectories.length > 0) {
     throw invalidParams('additionalDirectories are not supported')
   }

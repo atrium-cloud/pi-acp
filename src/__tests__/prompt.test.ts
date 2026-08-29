@@ -171,6 +171,7 @@ describe('session/prompt over the wire', () => {
     const server = new PiAcpServer({
       launch: LAUNCH,
       rpcTimeoutMs: 1_000,
+      sessionDirs: { mode: 'flat', dir: '/tmp/pi-acp-sessions' },
       createPiClient: fake.createPiClient,
     })
     const app = server.register(acp.agent({ name: AGENT_NAME }))

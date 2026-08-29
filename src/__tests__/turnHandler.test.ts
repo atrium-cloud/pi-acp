@@ -138,6 +138,22 @@ describe('TurnHandler', () => {
     await expect(turn.settled).resolves.toBe('cancelled')
   })
 
+  it('abandons an in-flight turn as cancelled without waiting for Pi', async () => {
+    const { turn } = makeTurn()
+    turn.handleEvent(evt({ type: 'agent_start' }))
+    turn.abandon()
+    await expect(turn.settled).resolves.toBe('cancelled')
+  })
+
+  it('ignores an abandon of an already-settled turn', async () => {
+    const { turn } = makeTurn()
+    turn.handleEvent(evt({ type: 'agent_start' }))
+    turn.handleEvent(evt({ type: 'message_end', message: { role: 'assistant', stopReason: 'stop' } }))
+    turn.handleEvent(evt({ type: 'agent_settled' }))
+    turn.abandon()
+    await expect(turn.settled).resolves.toBe('end_turn')
+  })
+
   it('emits the full content on *_end when no delta streamed for that index', async () => {
     const { turn, notify } = makeTurn()
     turn.handleEvent(evt({ type: 'agent_start' }))

@@ -123,6 +123,33 @@ export const GATE_FILENAME = 'permission-gate.ts'
 // own session picker shows the same name. Pi rejects an empty-trim name.
 export const SESSION_TITLE_MAX_CHARS = 80
 
+// ── Pi session store ──────────────────────────────────────────────────────────
+//
+// Pi's own on-disk session directory, which the adapter reads and never writes.
+// The subprocess inherits this environment, so both sides resolve the same
+// directory. Pi's app-name override (`piConfig`, which renames both env vars and
+// the `.pi` directory) is not honored.
+
+export const ENV_PI_AGENT_DIR = 'PI_CODING_AGENT_DIR'
+export const ENV_PI_SESSION_DIR = 'PI_CODING_AGENT_SESSION_DIR'
+export const DEFAULT_PI_AGENT_DIR_SEGMENTS: readonly string[] = ['.pi', 'agent']
+export const PI_SESSIONS_DIR_NAME = 'sessions'
+export const PI_SETTINGS_FILE_NAME = 'settings.json'
+export const SESSION_FILE_EXTENSION = '.jsonl'
+/** Wraps the encoded cwd in a per-project directory name: `--home-user-app--`. */
+export const SESSION_DIR_WRAP = '--'
+export const SESSION_ENTRY_TYPE_HEADER = 'session'
+export const SESSION_ENTRY_TYPE_INFO = 'session_info'
+export const SESSION_ENTRY_TYPE_MESSAGE = 'message'
+/** Reopens a stored session; the value is always an absolute `.jsonl` path,
+ * since a bare id can hit Pi's interactive resolution on the CLI. */
+export const PI_SESSION_ARG = '--session'
+export const SESSION_LIST_PAGE_SIZE = 50
+/** `session/list` cursors are a decimal offset into the freshly sorted list. */
+export const SESSION_LIST_CURSOR_PATTERN = /^\d+$/
+/** Pi's own `MAX_CONCURRENT_SESSION_INFO_LOADS`. */
+export const SESSION_INFO_LOAD_CONCURRENCY = 10
+
 // ── ACP / JSON-RPC ────────────────────────────────────────────────────────────
 //
 // The SDK's RequestError statics bury the message as literal "Internal error",
