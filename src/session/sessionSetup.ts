@@ -3,7 +3,7 @@ import { isAbsolute } from 'node:path'
 import * as acp from '@agentclientprotocol/sdk'
 import type { AgentContext, AvailableCommand } from '@agentclientprotocol/sdk'
 
-import { JSONRPC_INTERNAL_ERROR, JSONRPC_INVALID_PARAMS, PI_SESSION_ARG } from '../constants.js'
+import { COMMAND_SOURCE_EXTENSION, JSONRPC_INTERNAL_ERROR, JSONRPC_INVALID_PARAMS, PI_SESSION_ARG } from '../constants.js'
 import type { PiLaunch } from '../pi/errors.js'
 import { PiRpcClient } from '../pi/PiRpcClient.js'
 import type { ModelChoice } from '../turn/configOptions.js'
@@ -27,6 +27,10 @@ export interface EstablishedSession {
   readonly sessionId: string
   readonly configOptions: acp.SessionConfigOption[]
   readonly availableCommands: AvailableCommand[]
+  /** Invocation names of the extension-sourced commands, verbatim as reported
+   * (Pi disambiguates two extensions registering one name as `name:1`/`name:2`,
+   * and dispatches on that form). */
+  readonly extensionCommandNames: readonly string[]
 }
 
 /** `new` starts an empty session; `open` reopens a stored one from its file. Pi's
@@ -92,18 +96,21 @@ export async function establishSession(
       id: model.id,
       name: model.name,
     }))
+    const extensionCommandNames = extensionNames(commands.data.commands)
     connection.attach({
       piClient,
       sessionId: state.sessionId,
       state,
       models: modelChoices,
       levels: levels.data.levels,
+      extensionCommandNames,
     })
     return {
       connection,
       sessionId: state.sessionId,
       configOptions: connection.configOptions,
       availableCommands: mapCommands(commands.data.commands),
+      extensionCommandNames,
     }
   } catch (error) {
     await piClient.stop()
@@ -123,12 +130,21 @@ export function validateSessionRequest(request: SessionSetupRequest): void {
   }
 }
 
-// Only prompt and skill commands run an agent turn; extension commands may not,
-// so a `session/prompt` awaiting agent_settled could hang on one.
-function mapCommands(commands: readonly { name: string; description?: string; source: string }[]): AvailableCommand[] {
-  return commands
-    .filter((command) => command.source === 'prompt' || command.source === 'skill')
-    .map((command) => ({ name: command.name, description: command.description ?? '' }))
+interface PiCommand {
+  readonly name: string
+  readonly description?: string | undefined
+  readonly source: string
+}
+
+// No `input`: Pi's command snapshot carries no argument hint to map onto it.
+function mapCommands(commands: readonly PiCommand[]): AvailableCommand[] {
+  return commands.map((command) => ({ name: command.name, description: command.description ?? '' }))
+}
+
+// An extension command is the only kind that can be handled without a turn, so
+// the turn layer needs the names to read a quiet window as `end_turn`.
+function extensionNames(commands: readonly PiCommand[]): string[] {
+  return commands.filter((command) => command.source === COMMAND_SOURCE_EXTENSION).map((command) => command.name)
 }
 
 function invalidParams(message: string): acp.RequestError {

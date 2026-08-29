@@ -3,6 +3,8 @@ import type { AgentContext, AvailableCommand, SessionConfigOption, SessionUpdate
 
 import {
   AGENT_NAME,
+  COMMAND_ARG_SEPARATOR,
+  COMMAND_PREFIX,
   CONFIG_ID_MODEL,
   CONFIG_ID_THOUGHT_LEVEL,
   JSONRPC_INVALID_PARAMS,
@@ -51,6 +53,7 @@ export interface SessionConnectionInit {
   readonly state: RpcSessionState
   readonly models: readonly ModelChoice[]
   readonly levels: readonly ThinkingLevelValue[]
+  readonly extensionCommandNames: readonly string[]
 }
 
 /** Persistent per-session object, created at `session/new` and living until the
@@ -75,6 +78,11 @@ export class SessionConnection {
   private closing = false
   /** True until this session gets a name; the first prompt derives one. */
   private needsTitle = false
+  /** The extension commands advertised at establishment. The snapshot can drift
+   * either way and both directions are safe: one Pi no longer knows falls through
+   * to a normal turn (`agent_start` clears the timer), and one registered later
+   * behaves as every prompt did before it was advertised. */
+  private extensionCommandNames: ReadonlySet<string> = new Set()
 
   constructor(init: { notifier: AgentContext; cwd: string }) {
     this.notifier = init.notifier
@@ -86,6 +94,7 @@ export class SessionConnection {
     this.sessionId = init.sessionId
     this.config = this.buildConfig(init.state, init.models, init.levels)
     this.needsTitle = (init.state.sessionName ?? '').trim() === ''
+    this.extensionCommandNames = new Set(init.extensionCommandNames)
   }
 
   get configOptions(): SessionConfigOption[] {
@@ -287,7 +296,7 @@ export class SessionConnection {
         // The ack returns only after preflight (which can run a compaction), so it
         // gets a far more generous bound than a metadata round-trip.
         await client.request({ type: 'prompt', message: prompt.message, images: prompt.images }, { timeoutMs: PROMPT_ACK_TIMEOUT_MS })
-        turn.armStartTimer()
+        turn.armStartTimer(this.invokesExtensionCommand(prompt.message))
       } catch (ackFailure) {
         // A close during preflight rejects the in-flight ack through the
         // transport. The turn was abandoned in the same breath, so it already
@@ -296,8 +305,10 @@ export class SessionConnection {
         if (!this.closing) throw ackFailure
       }
       const reason = await turn.settled
-      // Nothing left to name or meter on a session whose subprocess is stopping.
-      if (this.closing) return reason
+      // Nothing left to name or meter on a session whose subprocess is stopping,
+      // nor on a prompt an extension command handled without running a turn:
+      // its text is the command line, not a title, and no tokens were spent.
+      if (this.closing || !turn.startedTurn) return reason
       await this.maybeSetTitle(client, prompt.firstText)
       await this.emitEndOfTurnUsage(client)
       return reason
@@ -305,6 +316,17 @@ export class SessionConnection {
       signal.removeEventListener('abort', onAbort)
       this.activeTurn = null
     }
+  }
+
+  /** Mirrors Pi's own dispatch parse so the two agree on what is a command: the
+   * untrimmed message must start with `/`, and the name runs to the first literal
+   * space (`indexOf`, never a whitespace class — Pi's newline is part of the name
+   * and so matches nothing). */
+  private invokesExtensionCommand(message: string): boolean {
+    if (!message.startsWith(COMMAND_PREFIX)) return false
+    const separatorIndex = message.indexOf(COMMAND_ARG_SEPARATOR)
+    const name = message.slice(COMMAND_PREFIX.length, separatorIndex === -1 ? undefined : separatorIndex)
+    return this.extensionCommandNames.has(name)
   }
 
   /** Synthesizes `usage_update` from the authoritative post-turn context stats.

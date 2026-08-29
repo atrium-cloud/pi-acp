@@ -10,7 +10,7 @@ const SESSION_ID = 'sess-1'
 function makeTurn(graceMs = 10_000) {
   const notify = vi.fn(async (_method: string, _params: { sessionId: string; update: SessionUpdate }) => {})
   const notifier = { notify } as unknown as AgentContext
-  const turn = new TurnHandler({ notifier, sessionId: SESSION_ID, graceMs })
+  const turn = new TurnHandler({ notifier, sessionId: SESSION_ID, graceMs, quietMs: graceMs })
   return { turn, notify }
 }
 
@@ -75,8 +75,35 @@ describe('TurnHandler', () => {
 
   it('reports a protocol error when the prompt starts no turn', async () => {
     const { turn } = makeTurn(15)
-    turn.armStartTimer()
+    turn.armStartTimer(false)
     await expect(turn.settled).rejects.toMatchObject({ code: -32_603, message: expect.stringMatching(/no turn/) })
+    expect(turn.startedTurn).toBe(false)
+  })
+
+  it('resolves end_turn when an advertised extension command starts no turn', async () => {
+    const { turn } = makeTurn(15)
+    turn.armStartTimer(true)
+    await expect(turn.settled).resolves.toBe('end_turn')
+    expect(turn.startedTurn).toBe(false)
+  })
+
+  it('resolves cancelled rather than end_turn when a command prompt was cancelled', async () => {
+    const { turn } = makeTurn(15)
+    turn.armStartTimer(true)
+    turn.cancel()
+    await expect(turn.settled).resolves.toBe('cancelled')
+  })
+
+  it('reports the real stop reason when an advertised command does start a turn', async () => {
+    const { turn } = makeTurn(15)
+    turn.armStartTimer(true)
+    turn.handleEvent(evt({ type: 'agent_start' }))
+    expect(turn.startedTurn).toBe(true)
+    // `max_tokens` is unreachable from the quiet path, so it pins that the real
+    // turn settled this and the armed timer never decided anything.
+    turn.handleEvent(evt({ type: 'message_end', message: { role: 'assistant', stopReason: 'length' } }))
+    turn.handleEvent(evt({ type: 'agent_settled' }))
+    await expect(turn.settled).resolves.toBe('max_tokens')
   })
 
   it('fails the turn with the subprocess exit cause', async () => {

@@ -1,7 +1,7 @@
 import * as acp from '@agentclientprotocol/sdk'
 import type { AgentContext, SessionUpdate, StopReason } from '@agentclientprotocol/sdk'
 
-import { AGENT_NAME, AGENT_START_GRACE_MS, JSONRPC_INTERNAL_ERROR } from '../constants.js'
+import { AGENT_NAME, AGENT_START_GRACE_MS, EXTENSION_COMMAND_QUIET_MS, JSONRPC_INTERNAL_ERROR } from '../constants.js'
 import type { JsonAgentSessionEvent } from '../pi/types.js'
 import { asMessage, toRequestError } from '../server/errors.js'
 import { toolCallEnded, toolCallProgress, toolCallStarted } from './mappers.js'
@@ -36,6 +36,8 @@ export interface TurnHandlerOptions {
   readonly notifier: AgentContext
   readonly sessionId: string
   readonly graceMs?: number
+  /** The same bound for a prompt that invoked an advertised extension command. */
+  readonly quietMs?: number
   /** Re-issues Pi's `abort` when a cancel landed before the turn was running:
    * `session.abort` is a no-op while Pi is still in preflight, so an early cancel
    * has to be re-sent once `agent_start` proves the run is active. */
@@ -54,6 +56,7 @@ export class TurnHandler implements TurnEventSink {
   private readonly notifier: AgentContext
   private readonly sessionId: string
   private readonly graceMs: number
+  private readonly quietMs: number
   private readonly requestAbort: (() => void) | undefined
 
   private done = false
@@ -74,6 +77,7 @@ export class TurnHandler implements TurnEventSink {
     this.notifier = options.notifier
     this.sessionId = options.sessionId
     this.graceMs = options.graceMs ?? AGENT_START_GRACE_MS
+    this.quietMs = options.quietMs ?? EXTENSION_COMMAND_QUIET_MS
     this.requestAbort = options.requestAbort
     this.settled = new Promise<StopReason>((resolve, reject) => {
       this.resolve = resolve
@@ -87,27 +91,42 @@ export class TurnHandler implements TurnEventSink {
   }
 
   /** Arms the bounded wait for `agent_start`, called once the prompt ack lands.
-   * A no-`agent_start` window means the prompt started no turn — a protocol
-   * error, not a silent empty `end_turn`. */
-  armStartTimer(): void {
+   * `quietMeansEndTurn` is set when the prompt invoked an advertised extension
+   * command — the one case where a handler can settle a prompt without running a
+   * turn, so a quiet window is its normal outcome. Otherwise a quiet window means
+   * the prompt started no turn: a protocol error, not a silent empty `end_turn`. */
+  armStartTimer(quietMeansEndTurn: boolean): void {
     if (this.startSeen || this.done || this.startTimer !== null) return
-    this.startTimer = setTimeout(() => {
-      this.startTimer = null
-      if (this.startSeen || this.done) return
-      if (this.cancelled) {
-        this.finish(() => this.resolve('cancelled'))
-        return
-      }
-      this.finish(() =>
-        this.reject(
-          new acp.RequestError(
-            JSONRPC_INTERNAL_ERROR,
-            'the prompt was accepted but started no turn (an unadvertised extension command?)',
+    this.startTimer = setTimeout(
+      () => {
+        this.startTimer = null
+        if (this.startSeen || this.done) return
+        if (this.cancelled) {
+          this.finish(() => this.resolve('cancelled'))
+          return
+        }
+        if (quietMeansEndTurn) {
+          this.finish(() => this.resolve('end_turn'))
+          return
+        }
+        this.finish(() =>
+          this.reject(
+            new acp.RequestError(
+              JSONRPC_INTERNAL_ERROR,
+              'the prompt was accepted but started no turn (an unadvertised extension command, or an extension input handler)',
+            ),
           ),
-        ),
-      )
-    }, this.graceMs)
+        )
+      },
+      quietMeansEndTurn ? this.quietMs : this.graceMs,
+    )
     this.startTimer.unref()
+  }
+
+  /** False until `agent_start`: a prompt an extension command handled without a
+   * turn has nothing to title from and no new usage to meter. */
+  get startedTurn(): boolean {
+    return this.startSeen
   }
 
   handleEvent(event: JsonAgentSessionEvent): void {

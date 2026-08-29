@@ -22,6 +22,9 @@ function makeSpec(): FakePiSpec {
       { name: 'review', description: 'Review code', source: 'prompt' },
       { name: 'skill:summarize', source: 'skill' },
       { name: 'extcmd', description: 'ext', source: 'extension' },
+      // Two extensions registering one name; Pi dispatches on the disambiguated form.
+      { name: 'review:1', description: 'first', source: 'extension' },
+      { name: 'review:2', source: 'extension' },
     ],
   }
 }
@@ -52,6 +55,14 @@ const EXPECTED_OPTIONS = [
   },
 ]
 
+const EXPECTED_COMMANDS = [
+  { name: 'review', description: 'Review code' },
+  { name: 'skill:summarize', description: '' },
+  { name: 'extcmd', description: 'ext' },
+  { name: 'review:1', description: 'first' },
+  { name: 'review:2', description: '' },
+]
+
 const stubNotifier = { notify: vi.fn(async () => {}) } as unknown as AgentContext
 
 function makeDeps(fake: ReturnType<typeof makeFakePiClient>) {
@@ -61,9 +72,10 @@ function makeDeps(fake: ReturnType<typeof makeFakePiClient>) {
 const ABS_CWD = '/tmp/pi-acp-session'
 const SESSION_DIRS: SessionDirs = { mode: 'flat', dir: '/tmp/pi-acp-sessions' }
 const SESSION_FILE = '/tmp/pi-acp-sessions/2026-01-01T00-00-00-000Z_sess-1.jsonl'
+const GATE_PATH = '/tmp/gate.ts'
 
 describe('establishSession', () => {
-  it('spawns, reads state, and builds config options + filtered commands', async () => {
+  it('spawns, reads state, and builds config options + every advertised command', async () => {
     const fake = makeFakePiClient(makeSpec())
     const established = await establishSession(
       { cwd: ABS_CWD, mcpServers: [] },
@@ -71,11 +83,16 @@ describe('establishSession', () => {
     )
     expect(established.sessionId).toBe('sess-1')
     expect(established.configOptions).toEqual(EXPECTED_OPTIONS)
-    // Extension commands are dropped; a missing description becomes empty.
-    expect(established.availableCommands).toEqual([
-      { name: 'review', description: 'Review code' },
-      { name: 'skill:summarize', description: '' },
-    ])
+    // Extension commands are advertised too; a missing description becomes empty.
+    expect(established.availableCommands).toEqual(EXPECTED_COMMANDS)
+    // Pi's snapshot carries no argument hint, so no command gets an `input`.
+    expect(established.availableCommands.some((command) => 'input' in command)).toBe(false)
+  })
+
+  it('threads the extension invocation names through verbatim', async () => {
+    const fake = makeFakePiClient(makeSpec())
+    const established = await establishSession({ cwd: ABS_CWD, mcpServers: [] }, makeDeps(fake))
+    expect(established.extensionCommandNames).toEqual(['extcmd', 'review:1', 'review:2'])
   })
 
   it('rejects a relative cwd with invalid params', async () => {
@@ -107,11 +124,11 @@ describe('establishSession', () => {
     const fake = makeFakePiClient(makeSpec())
     const established = await establishSession(
       { cwd: ABS_CWD, mcpServers: [] },
-      { ...makeDeps(fake), gateExtensionPath: '/tmp/gate.ts' },
+      { ...makeDeps(fake), gateExtensionPath: GATE_PATH },
       { kind: 'open', sessionFile: SESSION_FILE, expectedSessionId: 'sess-1' },
     )
     expect(established.sessionId).toBe('sess-1')
-    expect(fake.spawns).toEqual([{ cwd: ABS_CWD, args: ['-e', '/tmp/gate.ts', PI_SESSION_ARG, SESSION_FILE] }])
+    expect(fake.spawns).toEqual([{ cwd: ABS_CWD, args: ['-e', GATE_PATH, PI_SESSION_ARG, SESSION_FILE] }])
   })
 
   it('stops the subprocess when Pi reports a different session id than the file holds', async () => {
@@ -191,13 +208,7 @@ describe('session/new over the wire', () => {
 
     expect(message).toMatchObject({
       kind: 'session_update',
-      update: {
-        sessionUpdate: 'available_commands_update',
-        availableCommands: [
-          { name: 'review', description: 'Review code' },
-          { name: 'skill:summarize', description: '' },
-        ],
-      },
+      update: { sessionUpdate: 'available_commands_update', availableCommands: EXPECTED_COMMANDS },
     })
   })
 })

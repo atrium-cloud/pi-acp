@@ -40,10 +40,15 @@ export const ENV_RPC_TIMEOUT_MS = 'PI_ACP_RPC_TIMEOUT_MS'
 export const STDIN_END_GRACE_MS = 5_000
 export const SIGTERM_GRACE_MS = 1_000
 
-// Bounded wait for `agent_start` after the prompt ack. The child is already warm
-// from session/new, so this only catches a prompt that started no turn at all
-// (a user-typed unadvertised extension command).
+// Bounded wait for `agent_start` after the prompt ack. The subprocess is already
+// warm from session/new, so this only catches a prompt that started no turn at
+// all (an extension command this session never advertised, or an extension
+// `input` handler that swallowed the prompt).
 export const AGENT_START_GRACE_MS = 10_000
+
+// The same wait for a prompt invoking an advertised extension command, where a
+// quiet window is the normal outcome rather than a fault; separate so it tunes on its own.
+export const EXTENSION_COMMAND_QUIET_MS = 10_000
 
 // The prompt ack returns only after preflight, which can run an overflow
 // compaction (a full summarization LLM call) on a long session. That legitimately
@@ -71,6 +76,16 @@ export const MODEL_VALUE_SEPARATOR = '/'
 // Blocks are joined with this separator, and non-text blocks are inlined as a
 // header line so Pi sees the referenced path.
 export const PROMPT_BLOCK_SEPARATOR = '\n'
+
+// ── Slash commands ────────────────────────────────────────────────────────────
+//
+// A command is invoked as prompt text. Pi dispatches an extension command by the
+// name between the leading `/` and the first LITERAL space (never any whitespace,
+// so a newline is not a delimiter there), matched against the invocation names
+// `get_commands` reports.
+export const COMMAND_PREFIX = '/'
+export const COMMAND_ARG_SEPARATOR = ' '
+export const COMMAND_SOURCE_EXTENSION = 'extension'
 
 // ── Tool calls ────────────────────────────────────────────────────────────────
 //
