@@ -52,11 +52,12 @@
     - Honest capabilities only, each advertised in the change that implements it; pinned by `initialize.test.ts`. Text-only prompt caps here; image/embeddedContext turn on with `session/prompt`.
     - No `authMethods`: Pi resolves credentials from its own `auth.json` and environment, and there is no non-interactive login to expose.
     - Provider auth failures surface as turn errors carrying Pi's message; wired with the turn layer (`session/prompt`).
-- [ ] `session/new`
+- [x] `session/new`
     - Validate an absolute `cwd`, spawn the child, read `get_state` for the session id and file.
     - Build `configOptions`; send `available_commands_update`.
     - `mcpServers` rejected with invalid_params unless the section 4 seam is enabled.
     - `additionalDirectories` rejected.
+    - `available_commands_update` is deferred a macrotask past the response: the SDK client only attaches its per-session update queue inside the `session/new` response callback, so an update sent before that lands is dropped.
 - [ ] `session/prompt`
     - Content blocks
         - Text.
@@ -108,17 +109,18 @@
     - Packaging
         - Extension source is embedded in the bundle and materialized to a temp file at startup so `bun --compile` binaries work.
         - The child is spawned without `--no-extensions` so the user's own extensions (pi-mcp-adapter among them) keep loading alongside the gate.
-- [ ] No session modes
+- [x] No session modes
     - Pi has no native permission policy to map onto.
     - `modes` is omitted from `session/new`; `session/set_mode` is not handled.
     - The client's own auto-approval is the only policy layer.
-- [ ] Config options (`src/turn/configOptions.ts`)
+- [x] Config options (`src/turn/configOptions.ts`)
     - `model`: category `model`, values `provider/id` from `get_available_models`, applied with `set_model`.
     - `thought_level`: category `thought_level`, values from `get_available_thinking_levels`, applied with `set_thinking_level`.
-    - Both are re-read after a model switch because the level set is per model; `config_option_update` is emitted for whatever moved.
+    - Both are re-read after a model switch because the level set is per model; the full set is returned in `SetSessionConfigOptionResponse`.
     - `initialize` is static; options are built per session at `session/new` from `get_state`.
     - Pi persists both as `thinking_level_change` and `model_change` session entries, so a resumed session reports the level and model it last ran with.
-- [ ] Slash commands
+    - Deferred to the streaming layer (`thinking_level_changed`): a client-initiated set already returns the full set, and the resulting Pi event will also push a `config_option_update`, so the event-driven push must suppress or tolerate that echo.
+- [x] Slash commands
     - `get_commands` snapshot sent as `available_commands_update`; invoked as `/name args` prompt text.
     - Command metadata comes from `sourceInfo` (`{ path, source, scope, origin }`).
     - Only `prompt` and `skill` sources are advertised.

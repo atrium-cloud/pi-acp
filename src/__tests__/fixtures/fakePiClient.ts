@@ -1,0 +1,71 @@
+import type { PiClientLike } from '../../session/SessionConnection.js'
+
+// The subset of RpcSessionState the session layer reads; the rest is never
+// touched, so the fake omits it and casts on the way out.
+export interface FakeState {
+  sessionId: string
+  thinkingLevel: string
+  model?: { provider: string; id: string; name: string } | undefined
+}
+
+export interface FakePiSpec {
+  state: FakeState
+  models: { provider: string; id: string; name: string }[]
+  levels: string[]
+  commands: { name: string; description?: string; source: string }[]
+  /** A command type that should reject, to exercise error paths. */
+  failOn?: string
+  /** A command type that should reject only on its first call, then succeed. */
+  failOnce?: string
+}
+
+export interface FakePiClient {
+  client: PiClientLike
+  calls: Array<Record<string, unknown>>
+  wasStopped: () => boolean
+}
+
+export function makeFakePiClient(spec: FakePiSpec): FakePiClient {
+  const calls: Array<Record<string, unknown>> = []
+  const failedOnce = new Set<string>()
+  let state = spec.state
+  let stopped = false
+
+  const respond = async (command: Record<string, unknown> & { type: string }): Promise<unknown> => {
+    calls.push(command)
+    if (spec.failOn === command.type) throw new Error(`fake pi: ${command.type} failed`)
+    if (spec.failOnce === command.type && !failedOnce.has(command.type)) {
+      failedOnce.add(command.type)
+      throw new Error(`fake pi: ${command.type} failed once`)
+    }
+    switch (command.type) {
+      case 'get_state':
+        return { type: 'response', command: 'get_state', success: true, data: state }
+      case 'get_available_models':
+        return { type: 'response', command: 'get_available_models', success: true, data: { models: spec.models } }
+      case 'get_available_thinking_levels':
+        return { type: 'response', command: 'get_available_thinking_levels', success: true, data: { levels: spec.levels } }
+      case 'get_commands':
+        return { type: 'response', command: 'get_commands', success: true, data: { commands: spec.commands } }
+      case 'set_model': {
+        const model = spec.models.find((m) => m.provider === command['provider'] && m.id === command['modelId'])
+        state = { ...state, model: model ?? state.model }
+        return { type: 'response', command: 'set_model', success: true, data: model }
+      }
+      case 'set_thinking_level':
+        state = { ...state, thinkingLevel: command['level'] as string }
+        return { type: 'response', command: 'set_thinking_level', success: true }
+      default:
+        throw new Error(`fake pi: unexpected command ${command.type}`)
+    }
+  }
+
+  const client: PiClientLike = {
+    start: (async () => state) as unknown as PiClientLike['start'],
+    request: respond as unknown as PiClientLike['request'],
+    stop: async () => {
+      stopped = true
+    },
+  }
+  return { client, calls, wasStopped: () => stopped }
+}

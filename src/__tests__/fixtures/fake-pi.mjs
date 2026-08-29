@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-// Spawned directly as `piBin`, so it relies on the shebang — POSIX only. On a
+// Spawned directly as the launch command, so it relies on the shebang — POSIX only. On a
 // future Windows CI runner the piRpcClient suite would need a node-prefixed
 // spawn or a describe.skipIf(process.platform === 'win32').
 //

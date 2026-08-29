@@ -5,7 +5,10 @@ import { AGENT_NAME, AGENT_TITLE, AGENT_VERSION, JSONRPC_INVALID_PARAMS, PROTOCO
 import { PiAcpServer } from '../server/PiAcpServer.js'
 
 function makeServer(): PiAcpServer {
-  return new PiAcpServer({ launch: { command: 'pi', args: ['--mode', 'rpc'], source: 'test' } })
+  return new PiAcpServer({
+    launch: { command: 'pi', args: ['--mode', 'rpc'], source: 'test' },
+    rpcTimeoutMs: 30_000,
+  })
 }
 
 const INIT_REQUEST = { protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} }

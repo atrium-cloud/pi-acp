@@ -4,7 +4,7 @@ import { Readable, Writable } from 'node:stream'
 
 import * as acp from '@agentclientprotocol/sdk'
 
-import { AGENT_NAME, AGENT_VERSION } from './constants.js'
+import { AGENT_NAME, AGENT_VERSION, resolveRpcTimeoutMs } from './constants.js'
 import { resolvePiLaunch } from './pi/launch.js'
 import { PiAcpServer } from './server/PiAcpServer.js'
 
@@ -24,7 +24,10 @@ async function main(): Promise<void> {
     return
   }
 
-  const server = new PiAcpServer({ launch: resolvePiLaunch(process.env) })
+  const server = new PiAcpServer({
+    launch: resolvePiLaunch(process.env),
+    rpcTimeoutMs: resolveRpcTimeoutMs(process.env),
+  })
 
   // The SDK speaks Web streams; first arg is the writable (stdout).
   const stream = acp.ndJsonStream(Writable.toWeb(process.stdout), Readable.toWeb(process.stdin))
@@ -32,7 +35,14 @@ async function main(): Promise<void> {
   const connection = server.register(acp.agent({ name: AGENT_NAME })).connect(stream)
   await connection.closed
 
+  // The transport close reason is the diagnostic that matters, so teardown is
+  // caught and logged rather than allowed to throw over it.
   const reason = connection.signal.reason
+  try {
+    await server.stopAllSessions()
+  } catch (teardownError) {
+    console.error(`[${AGENT_NAME}] session teardown failed: ${errorMessage(teardownError)}`)
+  }
   if (reason instanceof Error && reason.message !== CLEAN_CLOSE_MESSAGE) throw reason
 }
 
