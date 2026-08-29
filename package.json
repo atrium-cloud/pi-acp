@@ -16,6 +16,7 @@
     "build": "bun run generate && node build.mjs",
     "typecheck": "bun run generate && tsc --noEmit",
     "test": "bun run generate && vitest run",
+    "test:e2e": "bun run build && RUN_PI_E2E=true vitest run --no-file-parallelism src/__tests__/e2e",
     "release": "bash scripts/release.sh",
     "bundle:all": "bun run generate && bun run bundle:linux-x64 && bun run bundle:linux-arm64 && bun run bundle:darwin-x64 && bun run bundle:darwin-arm64 && bun run bundle:win-x64 && bun run bundle:win-arm64",
     "bundle:linux-x64": "bun run generate && bun build src/index.ts --minify --sourcemap --compile --target=bun-linux-x64-baseline --outfile dist/bin/pi-acp-x64-linux",
@@ -34,7 +35,7 @@
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "^1.4.0",
-    "@earendil-works/pi-coding-agent": "^0.84.3",
+    "@earendil-works/pi-coding-agent": "^0.84.4",
     "@modelcontextprotocol/client": "2.0.0",
     "zod": "^4.4.3"
   },

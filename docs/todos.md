@@ -216,20 +216,26 @@
 
 ## 5. Quality and integration
 
-- [ ] Snapshot test harness: scripted Pi RPC events in, recorded ACP transcript out, in-memory child double, no real Pi.
-- [ ] E2E harness (`src/__tests__/e2e/`)
-    - Drives the built `dist/index.js` as a real ACP client against a real `pi` with a scratch `PI_CODING_AGENT_DIR`.
-    - Gated on `RUN_PI_E2E=true`.
-    - Provider key via child environment only; `deepseek-v4-flash-0731` over OpenRouter per .rules.
-- [ ] Distribution
+- [x] Snapshot test harness (`src/__tests__/acpTestFixture.ts`): scripted Pi RPC events in, recorded ACP transcript out, no real Pi.
+    - The fake Pi (`fixtures/fakePiClient.ts`) stands in for the RPC transport; a recording ACP client app is connected in process to the real agent app, so every request and notification crosses the real SDK protocol layer.
+    - The transcript is the ordered list of `session/update` notifications and `session/request_permission` requests, with field-name or dotted-path anonymization for generated ids; permission requests fail closed unless a test scripts an answer. `flushAnnouncements` runs the macrotask the deferred `available_commands_update` needs.
+    - `transcript.test.ts` pins whole transcripts for a read-only turn, a gated edit (denied and allowed), and a mid-turn cancel; new adapter tests default to this style.
+- [x] E2E harness (`src/__tests__/e2e/`)
+    - Drives the built `dist/index.js` as a real ACP client over stdio against the host's own Pi install: Pi has no non-interactive way to hand a stored credential to a scratch agent dir, so the tier passes no key and authenticates with the host's `~/.pi/agent`. Only the session store is redirected, via `PI_CODING_AGENT_SESSION_DIR` to a scratch flat directory, so a live run never writes into the host's sessions. `PI_ACP_*` and `PI_CODING_AGENT_*` are scrubbed from the child environment first, then the host's `PI_CODING_AGENT_DIR` is put back when set (it names the Pi install whose credentials the tier runs on) and the scratch session dir and a 120 s RPC timeout (Pi's cold start) are added.
+    - Gated on `RUN_PI_E2E=true` (`bun run test:e2e` builds first, then runs the directory without file parallelism); the default suite collects and skips it.
+    - Model pinned to `openrouter/deepseek/deepseek-v4-flash-0731` through the adapter's own `model` config option, per .rules.
+    - Eighteen cases over the whole implemented surface, in three files. `piTurn`: an echo turn ends `end_turn` with the marker streamed and a `usage_update`; a cancel mid-stream resolves `cancelled` with the adapter still up; a real `bash` call reaches `session/request_permission` with the three option ids under the fail-closed answer; a second adapter process on the same session store replays the first's history through `session/load` and lists it. `piLifecycle` (one boot): `thought_level` switch, close then resume with context continuity and the other-cwd refusal, close of an unknown id and of a streaming turn (`cancelled`), delete then list/resume/delete miss, fork into another cwd (listed there with the inherited title, replayed, both sessions promptable), fork of a parent mid tool turn excluding that turn, and `$/cancel_request` on the prompt. `piExtensions` (one boot): allow once, allow always (no second ask), reject (`failed`), an image block (a real PNG built in the test), an embedded text resource, an MCP stdio server whose tool is gated and completes, and a global extension command that is advertised and settles `end_turn` off the quiet window while an unknown slash command runs as a prompt.
+    - Passed on the sprite against Pi 0.84.4 on 2026-08-29 (18/18, 92 s; the first four also against 0.84.3).
+- [x] Distribution
     - GitHub Releases only, no npm; `package.json` stays `private`.
-    - Release zips carry LICENSE and NOTICE alongside the binary.
-    - `#!/usr/bin/env node` hashbang.
+    - Release zips carry LICENSE and NOTICE alongside the binary (`package:*`).
+    - `#!/usr/bin/env node` hashbang on `src/index.ts`.
     - `package.json` via static import so `bun build --compile` binaries boot without a filesystem.
-- [ ] CI (`.github/workflows/ci.yml`): typecheck, unit tests, esbuild bundle `--version` smoke, cross-compile of all six binaries on push/PR to main.
-- [ ] Release: `scripts/release.sh` and the tag-triggered `.github/workflows/release.yml`; six `bun --compile` binaries (`{x64,arm64}-{linux,darwin,windows}`).
+    - `docs/changelogs/vX.Y.Z.md` is the release body; `v0.1.0.md` is drafted.
+- [x] CI (`.github/workflows/ci.yml`): typecheck, unit tests, esbuild bundle `--version` smoke, cross-compile of all six binaries on push/PR to main (Bun 1.4.0). The live tier is not run in CI; it needs an authorized Pi.
+- [x] Release: `scripts/release.sh [patch|minor|major|X.Y.Z] [--dry-run] [--push]` bumps `package.json` (the initial release tags the current version as-is), requires `docs/changelogs/vX.Y.Z.md`, runs the pre-commit gates, commits and annotated-tags; the tag-triggered `.github/workflows/release.yml` (`v*`) checks the changelog exists, compiles and zips the six `bun --compile` binaries (`{x64,arm64}-{linux,darwin,windows}`), and attaches them to the GitHub Release with the changelog as the body and generated commit notes appended.
 - [x] Pre-commit hook (`.githooks/pre-commit`, installed via `core.hooksPath` by the `prepare` script): typecheck, unit tests, build, `--version` smoke.
-- [ ] Upstream drift: `bun update @earendil-works/pi-coding-agent` and run `bun run typecheck`.
+- [x] Upstream drift: `bun update @earendil-works/pi-coding-agent` then `bun run typecheck`, `bun run test`, and the live tier on the sprite. Done 0.84.3 → 0.84.4 on 2026-08-29 with all three green; docs/refs.md carries the pin.
 - [x] docs/caveats.md holds the gaps that stay open by design (fork point, MCP tool-list changes and startup status, the extension-command quiet window, unforwarded extension notifications, session-replacing commands), each with the reason.
 
 ## Known limits
@@ -237,7 +243,7 @@
 - No fs proxying or ACP terminal methods: Pi does its own file IO and command execution in-process.
 - No steering: ACP v1 has no steering method; Pi's `steer` / `follow_up` stay typed but unused until an ACP surface exists.
 - Adapter shutdown is driven by stdin EOF / connection close; ACP v1 defines no `exit` notification, so a client that expects process death before closing stdin gets it only when it closes the pipe.
-- No transport mode has passed against a real client end-to-end yet; checkboxes track implementation plus unit coverage.
+- The stdio transport has passed end-to-end against the ACP SDK client driving `dist/index.js` (the §5 live tier); no editor client has been exercised yet.
 - Breakpoint fork: Pi's `fork` command takes an `entryId` from `get_fork_messages`, so it is feasible once ACP v1 carries a breakpoint marker; not offered until then.
 - An extension command whose handler calls `ctx.newSession`, `ctx.switchSession`, `ctx.fork`, or `ctx.navigateTree` replaces the session inside the Pi subprocess, so the adapter's `sessionId` silently stops matching the session Pi is now running. Nothing on the wire reports it, and a command's metadata says nothing about what its handler does, so there is nothing to filter on.
 - An interactive extension command runs with every one of its dialogs auto-cancelled: the adapter answers every non-sentinel `ctx.ui` request `cancelled: true`, so such a command completes as if the user dismissed each prompt.

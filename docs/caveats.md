@@ -22,6 +22,10 @@ A prompt that invokes an advertised extension command which starts no turn resol
 
 `ctx.ui.notify` from an extension arrives as an `extension_ui_request` and is logged to stderr, not forwarded as `agent_message_chunk`. An informational extension command therefore ends as an empty `end_turn`. Forwarding it would change every session's output, not only command prompts, so it stays off.
 
+## Project-local Pi resources need a prior trust decision
+
+Pi loads a cwd's `.pi/` resources (project settings, `.pi/extensions`, project packages) only for a trusted project. Its RPC mode never asks: without a saved decision in `<agent-dir>/trust.json` it follows the global `defaultProjectTrust` setting, where the default `ask` and `never` skip those resources and `always` trusts every project, and `--approve` overrides for one run. The adapter passes no flag and answers no prompt, so an ACP session in a project that was never trusted from Pi's own UI runs without that project's extensions and settings, silently. Verified on the sprite: a `.pi/extensions` command in a fresh cwd is not advertised. Mapping the trust decision onto ACP would need a client-facing prompt ACP v1 does not define, so this stays with Pi's own trust store.
+
 ## Extension commands that replace the session
 
 An extension command whose handler calls `ctx.newSession`, `switchSession`, `fork` or `navigateTree` rebinds the session inside the Pi subprocess; the adapter's session id no longer matches Pi's. Interactive extension commands run with every dialog auto-cancelled. There is no metadata to detect either kind ahead of time, so they are not filtered.
