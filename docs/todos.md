@@ -56,7 +56,7 @@
 - [x] `session/new`
     - Validate an absolute `cwd`, spawn the child, read `get_state` for the session id and file.
     - Build `configOptions`; send `available_commands_update`.
-    - `mcpServers` rejected with invalid_params unless the section 4 seam is enabled.
+    - `mcpServers` are translated and handed to the built-in MCP extension (section 4); only `type: "acp"`, duplicate names and unparseable urls are rejected.
     - `additionalDirectories` rejected.
     - `available_commands_update` is deferred a macrotask past the response: the SDK client only attaches its per-session update queue inside the `session/new` response callback, so an update sent before that lands is dropped.
 - [x] `session/prompt`
@@ -110,9 +110,9 @@
         - A blocked tool is finalized by Pi as an immediate error result, so it still gets a failed `tool_execution_end` carrying the denial reason; the adapter adds no synthetic terminal update.
     - Packaging
         - Extension source is embedded in the bundle (never naming the dev-only Pi package) and materialized to a temp file at startup so `bun --compile` binaries work.
-        - The child is spawned without `--no-extensions` so the user's own extensions (pi-mcp-adapter among them) keep loading alongside the gate.
+        - The subprocess is spawned without `--no-extensions` so the user's own extensions keep loading alongside the gate.
     - The sentinel prefix is a trust boundary, not a security boundary: any extension in the same Pi process can emit one, but the worst case is a spurious prompt for an already-announced id.
-    - The live permission round-trip is UNVERIFIED against live Pi.
+    - The live permission round-trip is verified against Pi 0.84.3 on the sprite (§3 and §4 runs: allow once, allow always, reject, for built-ins and MCP tools).
 - [x] No session modes
     - Pi has no native permission policy to map onto.
     - `modes` is omitted from `session/new`; `session/set_mode` is not handled.
@@ -127,8 +127,8 @@
 - [x] Slash commands
     - `get_commands` snapshot sent as `available_commands_update`; invoked as `/name args` prompt text.
     - Command metadata comes from `sourceInfo` (`{ path, source, scope, origin }`).
-    - Only `prompt` and `skill` sources are advertised.
-    - `extension` commands are deferred: nothing signals whether one starts an agent loop, so a `session/prompt` waiting on `agent_settled` could never resolve.
+    - All three sources are advertised (`prompt`, `skill`, `extension`); no `input` hint is emitted, since the snapshot carries no argument hint to map onto it.
+    - Nothing in the RPC stream says whether an `extension` command starts an agent loop, so the bounded `agent_start` window decides: a quiet window resolves `end_turn` when the prompt invoked an advertised extension command, and stays a protocol error for every other prompt.
 - [x] Other extension UI requests
     - `confirm`, `input`, `editor`, and non-sentinel `select` are answered `cancelled: true` immediately (fail closed, never auto-answered, never wedged) — `editor` too, since Pi never auto-resolves it.
         - Form-elicitation mapping when the client advertises `elicitation.form` is DEFERRED; the compliant fallback (cancelled) ships. The SDK surface exists (`AgentContext.createElicitation`, gated on `ClientCapabilities.elicitation`).
@@ -152,9 +152,9 @@
     - The file is located by scanning for a name ending in `_<id>.jsonl` (never by splitting on the first underscore: a `--session-id` may contain underscores, a timestamp cannot); the `cwd` is in the header line. With a request `cwd` that cwd's directory is scanned first and a miss falls back to the whole store, so a session that belongs to another cwd is refused as such rather than reported missing; `session/delete` carries no cwd and scans every directory. A full id matching files in more than one directory is an error listing the candidates, never a pick.
     - The per-project directory name is the cwd with its leading separator stripped and every `/`, `\`, `:` replaced by `-`, wrapped in `--`. The encoding is lossy, so the header `cwd` is always checked too.
     - The session directory follows Pi's own precedence: `PI_CODING_AGENT_SESSION_DIR` (one flat directory, tilde-expanded), else the `sessionDir` in `<agent-dir>/settings.json`, else `<agent-dir>/sessions/<encoded-cwd>/`, where `<agent-dir>` is `PI_CODING_AGENT_DIR` else `~/.pi/agent`. The child inherits the environment, so both sides agree on the directory. Pi's app-name override (`piConfig`, which renames the env vars and the `.pi` directory) is not honored.
-    - The adapter's scanner never writes. Pi's own reader repairs a missing trailing newline during a read; the adapter must not replicate that.
+    - The adapter's scanner never writes; the one file it creates is a fork (§4), in Pi's own format. Pi's own reader repairs a missing trailing newline during a read; the adapter must not replicate that.
 - Pi behaviors the adapter accounts for
-    - Pi buffers a new session in memory and creates the file on the first assistant message, not at spawn; a session that never completed a turn has no file, is absent from `session/list`, and cannot be resumed or deleted (`resource_not_found`).
+    - Pi buffers a new session in memory and creates the file on the first assistant message, not at spawn; a session that never completed a turn has no file, is absent from `session/list`, and cannot be resumed, forked, or deleted (`resource_not_found`).
     - The session name is not a header field: it is the latest `session_info` entry, and an empty name clears it.
     - Pi does not check the process `cwd` against the header `cwd` on `--session` (it adopts the header cwd); the adapter enforces the equality before spawning and refuses a mismatch with `invalid_params`.
     - Pi's RPC mode has no id resolution; only an absolute path is ever passed. A bare id on the CLI can resolve as a "global" match and trigger Pi's interactive fork confirmation on stdin, which is why the path form is used.
@@ -166,7 +166,7 @@
     - Page by decimal-offset cursor over the freshly sorted list (`invalid_params` when not a whole number); `nextCursor` omitted on the last page.
 - [x] `session/resume` and `session/load`
     - One shared flow (`establishSession` in an open mode) spawning a child with `--session <absolute .jsonl path>` and asserting the reported `sessionId` equals the requested one.
-    - `mcpServers` (optional on resume) and `additionalDirectories` are refused non-empty, as on `session/new`.
+    - `mcpServers` (optional on resume) are translated and registered for the reopened session, as on `session/new`; `additionalDirectories` are refused non-empty.
     - An id already live in this adapter is reused rather than opened again (no lock upstream; a second child on one file forks the history, see Known limits): the request `cwd` must equal the live connection's cwd.
     - Load replays `get_messages` (the active-branch, post-compaction view) before responding: `user_message_chunk` per block (string content is one text block, images map to image content), `agent_message_chunk` / `agent_thought_chunk`, and completed tool calls as `tool_call` + `tool_call_update` built by the live mappers from the cached `toolCall` arguments (edit diffs identical to live). A `toolCall` with no `toolResult` is omitted entirely so no row is stranded; `bashExecution`, `custom`, `branchSummary`, `compactionSummary` are skipped (no ACP surface). Pure `src/session/replay.ts`.
     - Both respond `{ configOptions }` (no modes); `available_commands_update` lands after the response, as on `session/new`.
@@ -175,23 +175,44 @@
     - Close cancels the in-flight turn so the pending `session/prompt` resolves `cancelled` (a new `TurnHandler.abandon` path; `fail` stays the error path for subprocess death), sends `abort` best-effort, stops the child, and drops the session. Unknown id is `invalid_params`.
     - A `closing` flag refuses mid-teardown work with `invalid_request`. A close during the prompt ack window (preflight) swallows the transport rejection of that ack, since the turn already holds `cancelled`; a closing turn skips the title and usage round-trips.
     - Delete locates the file first (`resource_not_found` before any side effect), closes the session if live, then unlinks.
-- [x] Concurrent access to one session file characterized on the sprite against Pi 0.84.4 (a pi-acp child plus a `pi -p --session <file>` run); recorded under Known limits.
+- [x] Concurrent access to one session file characterized on the sprite against Pi 0.84.3 (a pi-acp child plus a `pi -p --session <file>` run); recorded under Known limits.
 - [x] Verified live on the sprite: list (title, cwd, updatedAt, paging errors), close then resume with context continuity, load replay from both the live subprocess and disk (same tool call id as the live turn, `rawInput`/`rawOutput` present, `available_commands_update` after the response), delete, mid-turn close resolving `cancelled` in under 30 ms, never-flushed and other-cwd sessions.
 
 ## 4. Fork and extension seams
 
-- [ ] Fork, head-only
-    - `session/fork` spawns a child with `--fork <absolute parent path>` and the requested `cwd`.
-    - Pi writes a new session file under the target cwd's session directory with the full head history and `parentSession` set, so a fork into a different `cwd` is supported.
-    - `--session-id` can pin the child id if the adapter wants to answer before the child reports it.
-- [ ] MCP seam, opt-in and off by default
-    - Pi has no native MCP.
-    - Enabled by `PI_ACP_MCP_PASSTHROUGH` with pi-mcp-adapter installed in the Pi environment.
-    - ACP `mcpServers` (stdio and http; sse only if pi-mcp-adapter's SSE fallback counts) are handed to the pi-acp extension.
-    - The extension registers them through pi-mcp-adapter's `pi-mcp-adapter:runtime-register:v1` event; session-scoped, never persisted.
-    - `mcpCapabilities` is advertised only when the seam is enabled.
-    - pi-mcp-adapter's `MCP_TOOL_APPROVAL_REQUEST_EVENT` routes MCP tool approvals through the same permission path.
-- [ ] Extension-command slash commands: revisit once a reliable did-it-start-a-turn signal exists (`agent_start` within a bounded window, or an upstream change).
+- [x] Fork
+    - The adapter writes the fork's file itself, in Pi's own format — a fresh header (`version`, a minted UUIDv7 id, the request `cwd`, `parentSession` = the parent's absolute path) followed by every parent entry in file order, re-serialized from its parsed form (key order kept, number formatting and escapes normalized, a malformed line dropped as on read), written in one call — and then opens it like any stored session with `--session`. If Pi fails to open it, the file is removed so no session the client never heard of stays listable.
+    - It is written rather than delegated because Pi's `--fork` copies the parent's file as it stands, in-flight turn included, and Pi's RPC `fork` replaces the session inside the parent's own subprocess and aborts its turn; neither can produce a second live session the parent survives.
+    - A parent with a turn in flight in this adapter is forked from its last settled turn: Pi appends the user entry as a turn starts, so everything from the last user message on is dropped, and the adapter is the only writer of its own live sessions. A parent whose very first turn is in flight therefore forks to an empty session (header only).
+    - The copy is the whole tree (abandoned branches, summaries, labels, the `session_info` name included), so the fork inherits the parent's title until it is renamed.
+    - The fork's file exists before its first turn, so unlike a `session/new` session it is immediately listable, resumable and deletable.
+    - Forking into another `cwd` is supported and lands the file under that cwd's session directory; the parent's own cwd is never checked, since cross-project forking is the point of the method.
+    - A parent Pi never flushed has no file and is `resource_not_found`, the same reading `session/resume` and `session/delete` take.
+    - The fork is returned live and promptable (`{ sessionId, configOptions }`, commands announced after the response, as on `session/new`); history is not replayed, since replay is `session/load`'s contract.
+    - `sessionCapabilities.fork` is advertised even though the ACP SDK marks the method experimental.
+    - A fork point stays out (see Known limits); the fork always starts from the parent's last file entry.
+- [x] Built-in MCP
+    - Pi has no native MCP, so the adapter brings its own: a second pi-acp-owned Pi extension with `@modelcontextprotocol/client` 2.0 bundled self-contained by `scripts/generate-mcp-extension.mjs`, materialized to a temp file at startup and loaded with a second `-e` by a session whose request carries servers.
+    - The translated server list is handed over in `PI_ACP_MCP_SERVERS`, which the extension parses and deletes in its factory body before any tool or MCP subprocess can inherit it; the residue is the Pi process environment for its lifetime.
+    - A stdio server gets the SDK's safe-list environment (`HOME`, `LOGNAME`, `PATH`, `SHELL`, `TERM`, `USER`; the Windows equivalents there) plus the ACP `env` entries, never a `process.env` spread, so one server's secrets stay out of another's subprocess; the integration test spawns a server that reports its environment to pin this.
+    - Protocol negotiation is `auto`: a 2026-07-28 server is spoken to on its own revision via `server/discover`, an older one falls back to the `initialize` handshake.
+    - Tools are registered in the async extension factory, which Pi awaits before `session_start`, so they exist before the first prompt.
+    - `parameters` is the server's own JSON Schema (minus the root `$schema` and `additionalProperties`); Pi's validator handles raw JSON Schema natively, so the schema is not converted. At call time one layer of JSON string is unwrapped for an `object` or `array` parameter, since models emit that shape.
+    - Tool names are `mcp__<server>__<tool>` with each part sanitized to `[A-Za-z0-9_]`; a name that collides after sanitization is skipped with a stderr line.
+    - Every MCP tool goes through the permission gate: the gate asks for the mutating built-ins plus anything carrying the `mcp__` prefix, since third-party tool code cannot be classified.
+    - Results are flattened onto Pi's text/image content: text and images are kept, embedded resources, resource links and audio become text, `structuredContent` is the fallback when a result carries no content blocks, and text is bounded to 50 KiB / 2000 lines with images exempt from the byte count.
+    - `isError: true` throws, which Pi surfaces as a failed tool call.
+    - A server that fails to connect or to list its tools is skipped with one stderr line and the session proceeds without its tools; the client is not told in band, since ACP has no MCP status surface.
+    - `mcpCapabilities { http, sse }` is advertised at `initialize`; the experimental `acp` transport is rejected with invalid_params.
+    - Nothing persists across sessions: each of `session/new`, `session/resume`, `session/load` and `session/fork` registers exactly what its own request carries, and an absent list means none.
+    - `tools/list_changed` is ignored: Pi has no `unregisterTool`, and ACP has no tool-list surface to push a change to.
+    - A client that can name a stdio `command` can run anything in the Pi environment; that is inherent to the ACP schema, and no env or header value is interpolated.
+    - Image blocks are passed to the model unvalidated, as Pi does for its own tools; a server returning an image the provider rejects fails that turn and every later turn of the session, since the image stays in the transcript.
+- [x] Extension-command slash commands
+    - Advertised alongside `prompt` and `skill` commands, with their invocation names (Pi's `name:1` / `name:2` disambiguation included) threaded to the session connection.
+    - `runPrompt` recognizes an invocation with Pi's own parse — a leading `/` on the untrimmed message and a name delimited by the first literal space — and arms the start window with that flag, so a quiet `EXTENSION_COMMAND_QUIET_MS` resolves `end_turn` instead of the protocol error; a cancel still wins, and a command that does start a turn is indistinguishable from an ordinary prompt.
+    - A prompt that ran no turn skips the title and usage round-trips: its text is a command line, not a title, and no tokens were spent.
+- [x] Verified on the sprite against Pi 0.84.3: advertised extension commands resolve `end_turn` after the quiet window (a throwing handler included) while an unknown slash command runs as an ordinary prompt; a fork into another cwd is listed there with the inherited title, remembers the parent's history, leaves the parent untouched, replays through `session/load`, and a fork taken while the parent runs a tool turn excludes that turn's user message; MCP over stdio registers `mcp__probe__*` tools that the model calls through the permission gate (allow once, allow always, reject), `isError` surfaces as a failed tool call, an object parameter passes Pi's validation from the raw JSON Schema, a server whose command fails is skipped, and streamable HTTP and legacy SSE servers work with a custom header while a server that rejects the header contributes no tools. The MCP checks also pass through the `bun --compile` Linux binary (with `PI_ACP_PI_BIN`), which is the shape the embedded extension exists for.
 
 ## 5. Quality and integration
 
@@ -209,7 +230,7 @@
 - [ ] Release: `scripts/release.sh` and the tag-triggered `.github/workflows/release.yml`; six `bun --compile` binaries (`{x64,arm64}-{linux,darwin,windows}`).
 - [x] Pre-commit hook (`.githooks/pre-commit`, installed via `core.hooksPath` by the `prepare` script): typecheck, unit tests, build, `--version` smoke.
 - [ ] Upstream drift: `bun update @earendil-works/pi-coding-agent` and run `bun run typecheck`.
-- [ ] docs/caveats.md is created when the first caveat is verified against a real client, not before.
+- [x] docs/caveats.md holds the gaps that stay open by design (fork point, MCP tool-list changes and startup status, the extension-command quiet window, unforwarded extension notifications, session-replacing commands), each with the reason.
 
 ## Known limits
 
@@ -218,7 +239,9 @@
 - Adapter shutdown is driven by stdin EOF / connection close; ACP v1 defines no `exit` notification, so a client that expects process death before closing stdin gets it only when it closes the pipe.
 - No transport mode has passed against a real client end-to-end yet; checkboxes track implementation plus unit coverage.
 - Breakpoint fork: Pi's `fork` command takes an `entryId` from `get_fork_messages`, so it is feasible once ACP v1 carries a breakpoint marker; not offered until then.
-- Two Pi processes on one session file (a pi-acp session alongside a Pi TUI or `pi -p --session` run on the same file) take no lock, and the adapter adds none. Observed on Pi 0.84.4: appends do not interleave mid-record and the file stays well-formed, but each process keeps its own in-memory leaf, so the second writer's entries become a sibling branch off the entry that was last when it opened. The pi-acp side never sees the other branch, a fresh open follows the last-written leaf, and `session/load` replays only that branch; the other branch stays in the file as abandoned history. Reuse of a live id inside one adapter prevents the adapter from doing this to itself; a user running Pi's own tools on the same file is on their own.
+- An extension command whose handler calls `ctx.newSession`, `ctx.switchSession`, `ctx.fork`, or `ctx.navigateTree` replaces the session inside the Pi subprocess, so the adapter's `sessionId` silently stops matching the session Pi is now running. Nothing on the wire reports it, and a command's metadata says nothing about what its handler does, so there is nothing to filter on.
+- An interactive extension command runs with every one of its dialogs auto-cancelled: the adapter answers every non-sentinel `ctx.ui` request `cancelled: true`, so such a command completes as if the user dismissed each prompt.
+- Two Pi processes on one session file (a pi-acp session alongside a Pi TUI or `pi -p --session` run on the same file) take no lock, and the adapter adds none. Observed on Pi 0.84.3: appends do not interleave mid-record and the file stays well-formed, but each process keeps its own in-memory leaf, so the second writer's entries become a sibling branch off the entry that was last when it opened. The pi-acp side never sees the other branch, a fresh open follows the last-written leaf, and `session/load` replays only that branch; the other branch stays in the file as abandoned history. Reuse of a live id inside one adapter prevents the adapter from doing this to itself; a user running Pi's own tools on the same file is on their own.
 
 ## Exit criteria
 

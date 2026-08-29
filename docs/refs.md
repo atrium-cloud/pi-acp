@@ -38,13 +38,16 @@
     - Tools
         - `src/core/tools/edit.ts`: `EditToolDetails` (`diff`, `patch`, `firstChangedLine`) behind the ACP `diff` content block
 
-## pi-mcp-adapter
+## MCP
 
-- Package page: https://pi.dev/packages/pi-mcp-adapter
-- Repo: https://github.com/nicobailon/pi-mcp-adapter
-- Seams for the opt-in MCP passthrough (docs/todos.md section 4)
-    - Runtime registration event `pi-mcp-adapter:runtime-register:v1`
-    - Approval event `MCP_TOOL_APPROVAL_REQUEST_EVENT`
+- Specification, current revision 2026-07-28: https://modelcontextprotocol.io/specification/2026-07-28
+    - Changelog versus 2025-11-25: https://modelcontextprotocol.io/specification/2026-07-28/changelog (stateless requests with the version in `_meta`, `server/discover`, no `initialize` handshake, no `Mcp-Session-Id`, `subscriptions/listen` instead of the GET stream, HTTP+SSE transport deprecated)
+    - Versioning and negotiation: https://modelcontextprotocol.io/specification/versioning
+- TypeScript SDK v2 (implements 2026-07-28): https://github.com/modelcontextprotocol/typescript-sdk, docs https://ts.sdk.modelcontextprotocol.io/v2/
+    - The 2026-07-28 support guide: https://ts.sdk.modelcontextprotocol.io/v2/migration/support-2026-07-28.html
+- Packages: `@modelcontextprotocol/client` 2.0.0 (pulls `@modelcontextprotocol/core`), bundled into the adapter's own Pi extension (`src/mcp/extension-entry.ts`, docs/todos.md section 4); `@modelcontextprotocol/server` 2.0.0 is a dev dependency for the in-process probe server in tests
+    - Client transports: `StdioClientTransport` (`@modelcontextprotocol/client/stdio`), `StreamableHTTPClientTransport`, `SSEClientTransport`
+    - `Client` defaults to the legacy `initialize` handshake; the adapter passes `versionNegotiation: { mode: 'auto' }` so a `server/discover` probe selects 2026-07-28 where the server offers it and falls back to the handshake otherwise
 
 ## Reference adapters
 
