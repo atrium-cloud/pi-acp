@@ -2,8 +2,9 @@ import * as acp from '@agentclientprotocol/sdk'
 import type { AgentContext } from '@agentclientprotocol/sdk'
 import { describe, expect, it, vi } from 'vitest'
 
-import { AGENT_NAME, CONFIG_ID_MODEL, CONFIG_ID_THOUGHT_LEVEL } from '../constants.js'
+import { AGENT_NAME, CONFIG_ID_MODEL, CONFIG_ID_THOUGHT_LEVEL, PI_SESSION_ARG } from '../constants.js'
 import { PiAcpServer } from '../server/PiAcpServer.js'
+import type { SessionDirs } from '../session/sessionDirectory.js'
 import { establishSession } from '../session/sessionSetup.js'
 import { type FakePiSpec, makeFakePiClient } from './fixtures/fakePiClient.js'
 
@@ -58,6 +59,8 @@ function makeDeps(fake: ReturnType<typeof makeFakePiClient>) {
 }
 
 const ABS_CWD = '/tmp/pi-acp-session'
+const SESSION_DIRS: SessionDirs = { mode: 'flat', dir: '/tmp/pi-acp-sessions' }
+const SESSION_FILE = '/tmp/pi-acp-sessions/2026-01-01T00-00-00-000Z_sess-1.jsonl'
 
 describe('establishSession', () => {
   it('spawns, reads state, and builds config options + filtered commands', async () => {
@@ -98,6 +101,31 @@ describe('establishSession', () => {
       /get_commands/,
     )
     expect(fake.wasStopped()).toBe(true)
+  })
+
+  it('opens a stored session with --session after the gate args', async () => {
+    const fake = makeFakePiClient(makeSpec())
+    const established = await establishSession(
+      { cwd: ABS_CWD, mcpServers: [] },
+      { ...makeDeps(fake), gateExtensionPath: '/tmp/gate.ts' },
+      { kind: 'open', sessionFile: SESSION_FILE, expectedSessionId: 'sess-1' },
+    )
+    expect(established.sessionId).toBe('sess-1')
+    expect(fake.spawns).toEqual([{ cwd: ABS_CWD, args: ['-e', '/tmp/gate.ts', PI_SESSION_ARG, SESSION_FILE] }])
+  })
+
+  it('stops the subprocess when Pi reports a different session id than the file holds', async () => {
+    const fake = makeFakePiClient(makeSpec())
+    await expect(
+      establishSession({ cwd: ABS_CWD, mcpServers: [] }, makeDeps(fake), {
+        kind: 'open',
+        sessionFile: SESSION_FILE,
+        expectedSessionId: 'sess-other',
+      }),
+    ).rejects.toMatchObject({ code: -32_603, message: expect.stringContaining('sess-other') })
+    expect(fake.wasStopped()).toBe(true)
+    // Fail-fast: the metadata fetches never ran against the wrong session.
+    expect(fake.calls.map((call) => call['type'])).not.toContain('get_commands')
   })
 
   it('translates a name change to session_info_update and a level change to config_option_update', async () => {
@@ -149,6 +177,7 @@ describe('session/new over the wire', () => {
     const server = new PiAcpServer({
       launch: LAUNCH,
       rpcTimeoutMs: 1_000,
+      sessionDirs: SESSION_DIRS,
       createPiClient: fake.createPiClient,
     })
     const app = server.register(acp.agent({ name: AGENT_NAME }))

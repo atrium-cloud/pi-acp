@@ -8,6 +8,7 @@ function makeServer(): PiAcpServer {
   return new PiAcpServer({
     launch: { command: 'pi', args: ['--mode', 'rpc'], source: 'test' },
     rpcTimeoutMs: 30_000,
+    sessionDirs: { mode: 'flat', dir: '/tmp/pi-acp-sessions' },
   })
 }
 
@@ -26,7 +27,11 @@ describe('initialize (over an ACP connection)', () => {
     expect(result).toEqual({
       protocolVersion: PROTOCOL_VERSION,
       agentInfo: { name: AGENT_NAME, title: AGENT_TITLE, version: AGENT_VERSION },
-      agentCapabilities: { promptCapabilities: { image: true, audio: false, embeddedContext: true } },
+      agentCapabilities: {
+        loadSession: true,
+        promptCapabilities: { image: true, audio: false, embeddedContext: true },
+        sessionCapabilities: { list: {}, resume: {}, close: {}, delete: {} },
+      },
     })
   })
 })

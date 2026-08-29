@@ -82,6 +82,7 @@ describe('PiAcpServer.setConfigOption', () => {
     return new PiAcpServer({
       launch: LAUNCH,
       rpcTimeoutMs: 1_000,
+      sessionDirs: { mode: 'flat', dir: '/tmp/pi-acp-sessions' },
       createPiClient: fake.createPiClient,
     })
   }

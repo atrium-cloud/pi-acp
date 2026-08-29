@@ -11,7 +11,6 @@ import {
   PERMISSION_OPTION_ALLOW_ONCE,
   PERMISSION_REQUEST_TIMEOUT_MS,
   PROMPT_ACK_TIMEOUT_MS,
-  SESSION_TITLE_MAX_CHARS,
 } from '../constants.js'
 import { buildPermissionOptions, decodeSentinelTitle } from '../permissions/gate.js'
 import type { PiRpcClient, PiRpcClientOptions } from '../pi/PiRpcClient.js'
@@ -21,6 +20,8 @@ import { buildConfigOptions, type ModelChoice, resolveModelSelection } from '../
 import { configOptionUpdate, sessionInfoUpdate, toolKind, toolTitle, usageUpdate } from '../turn/mappers.js'
 import type { FlattenedPrompt } from '../turn/promptContent.js'
 import { type AnnouncedToolCall, type TurnEventSink, TurnHandler } from '../turn/TurnHandler.js'
+import { replayUpdates } from './replay.js'
+import { deriveTitle } from './title.js'
 
 // The exact `set_thinking_level` payload type, without importing the Pi package's
 // `ThinkingLevel` name (it is not re-exported from the package root).
@@ -53,8 +54,8 @@ export interface SessionConnectionInit {
 }
 
 /** Persistent per-session object, created at `session/new` and living until the
- * client connection closes. It owns the single exhaustive router over
- * `JsonAgentSessionEvent`: session-level arms it handles itself; turn-scoped arms
+ * client closes it or the connection ends. It owns the single exhaustive router
+ * over `JsonAgentSessionEvent`: session-level arms it handles itself; turn-scoped arms
  * it forwards to the active turn. Subscribing here once (rather than per turn)
  * keeps session-level updates that fire between turns from being lost. */
 export class SessionConnection {
@@ -69,6 +70,9 @@ export class SessionConnection {
   private activeTurn: TurnEventSink | null = null
   /** Set once the subprocess dies; a later request answers with this cause. */
   private exitError: Error | null = null
+  /** Set by `close()`; a closed session is never used again, so every later
+   * request is rejected rather than raced against the teardown. */
+  private closing = false
   /** True until this session gets a name; the first prompt derives one. */
   private needsTitle = false
 
@@ -98,7 +102,7 @@ export class SessionConnection {
    * update sent before that response lands is dropped for an unknown session. */
   announceCommands(commands: readonly AvailableCommand[]): void {
     setTimeout(() => {
-      if (this.exitError) return
+      if (this.exitError || this.closing) return
       void this.notifier
         .notify(acp.methods.client.session.update, {
           sessionId: this.sessionId,
@@ -110,7 +114,21 @@ export class SessionConnection {
     }, 0)
   }
 
+  /** Replays the stored transcript for `session/load`. ACP puts the history
+   * before the response, so unlike `emit` these are awaited in order rather than
+   * fired and forgotten, and a failure fails the load. */
+  async replayHistory(): Promise<void> {
+    if (this.closing) throw closingError()
+    if (this.exitError) throw this.exitError
+    const client = this.requireClient()
+    const history = await client.request({ type: 'get_messages' })
+    for (const update of replayUpdates(history.data.messages)) {
+      await this.notifier.notify(acp.methods.client.session.update, { sessionId: this.sessionId, update })
+    }
+  }
+
   async applyConfigOption(configId: string, value: string): Promise<SessionConfigOption[]> {
+    if (this.closing) throw closingError()
     if (this.exitError) throw this.exitError
     const client = this.requireClient()
     if (this.configStale) await this.refresh(client)
@@ -232,7 +250,7 @@ export class SessionConnection {
   }
 
   private emit(update: SessionUpdate): void {
-    if (this.exitError) return
+    if (this.exitError || this.closing) return
     void this.notifier
       .notify(acp.methods.client.session.update, { sessionId: this.sessionId, update })
       .catch((error: unknown) => {
@@ -246,6 +264,7 @@ export class SessionConnection {
    * Both cancel paths (`session/cancel` and the prompt's own `$/cancel_request`
    * abort signal) converge on `cancel()`. */
   async runPrompt(prompt: FlattenedPrompt, signal: AbortSignal): Promise<StopReason> {
+    if (this.closing) throw closingError()
     if (this.exitError) throw this.exitError
     const client = this.requireClient()
     if (this.activeTurn !== null) {
@@ -264,11 +283,21 @@ export class SessionConnection {
     signal.addEventListener('abort', onAbort, { once: true })
 
     try {
-      // The ack returns only after preflight (which can run a compaction), so it
-      // gets a far more generous bound than a metadata round-trip.
-      await client.request({ type: 'prompt', message: prompt.message, images: prompt.images }, { timeoutMs: PROMPT_ACK_TIMEOUT_MS })
-      turn.armStartTimer()
+      try {
+        // The ack returns only after preflight (which can run a compaction), so it
+        // gets a far more generous bound than a metadata round-trip.
+        await client.request({ type: 'prompt', message: prompt.message, images: prompt.images }, { timeoutMs: PROMPT_ACK_TIMEOUT_MS })
+        turn.armStartTimer()
+      } catch (ackFailure) {
+        // A close during preflight rejects the in-flight ack through the
+        // transport. The turn was abandoned in the same breath, so it already
+        // holds `cancelled`; reporting the teardown as a prompt failure would
+        // turn the client's own close into an error.
+        if (!this.closing) throw ackFailure
+      }
       const reason = await turn.settled
+      // Nothing left to name or meter on a session whose subprocess is stopping.
+      if (this.closing) return reason
       await this.maybeSetTitle(client, prompt.firstText)
       await this.emitEndOfTurnUsage(client)
       return reason
@@ -385,10 +414,22 @@ export class SessionConnection {
     this.activeTurn?.fail(error)
   }
 
+  /** Ends the session at the client's request (`session/close`). The abort goes
+   * out before the teardown so Pi stops the run while its stdin is still open,
+   * and the turn is abandoned rather than failed: the client asked for this, so
+   * its pending `session/prompt` answers `cancelled` instead of erroring. */
+  async close(): Promise<void> {
+    this.closing = true
+    this.cancel()
+    this.activeTurn?.abandon()
+    await this.piClient?.stop()
+  }
+
   async stop(): Promise<void> {
     // An intentional stop suppresses the client's onExit, so handleExit won't
     // fire; fail the active turn here or runPrompt hangs on a promise nobody
-    // resolves. (§3 will refine this to resolve `cancelled` for session/close.)
+    // resolves. This is connection-close teardown, not `session/close` — the
+    // client is gone, so the turn ends as an error rather than a cancel.
     this.activeTurn?.fail(new Error('the session was closed while a turn was in progress'))
     await this.piClient?.stop()
   }
@@ -418,6 +459,10 @@ function invalidParams(message: string): acp.RequestError {
   return new acp.RequestError(JSONRPC_INVALID_PARAMS, message)
 }
 
+function closingError(): acp.RequestError {
+  return new acp.RequestError(JSONRPC_INVALID_REQUEST, 'the session is closing')
+}
+
 /** Rejects if the promise has not settled within `ms`, running `onTimeout` first
  * so the caller can cancel the underlying request; a late settle is ignored. */
 function withTimeout<T>(promise: Promise<T>, ms: number, onTimeout: () => void): Promise<T> {
@@ -440,7 +485,3 @@ function withTimeout<T>(promise: Promise<T>, ms: number, onTimeout: () => void):
   })
 }
 
-function deriveTitle(text: string): string {
-  const firstLine = (text.split('\n', 1)[0] ?? '').trim()
-  return firstLine.length > SESSION_TITLE_MAX_CHARS ? firstLine.slice(0, SESSION_TITLE_MAX_CHARS) : firstLine
-}

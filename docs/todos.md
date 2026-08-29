@@ -149,28 +149,34 @@
 
 - Id namespace
     - The ACP `sessionId` is the Pi session id from the session header.
-    - The file is located by scanning `<sessions-dir>/*/<timestamp>_<id>.jsonl`; the id is in the file name, the `cwd` in the header line.
-    - The per-project directory name is the cwd with `/`, `\`, and `:` replaced by `-`, wrapped in `--`.
-    - `PI_CODING_AGENT_DIR` and `PI_CODING_AGENT_SESSION_DIR` are honored the way Pi honors them; the child inherits both.
+    - The file is located by scanning for a name ending in `_<id>.jsonl` (never by splitting on the first underscore: a `--session-id` may contain underscores, a timestamp cannot); the `cwd` is in the header line. With a request `cwd` that cwd's directory is scanned first and a miss falls back to the whole store, so a session that belongs to another cwd is refused as such rather than reported missing; `session/delete` carries no cwd and scans every directory. A full id matching files in more than one directory is an error listing the candidates, never a pick.
+    - The per-project directory name is the cwd with its leading separator stripped and every `/`, `\`, `:` replaced by `-`, wrapped in `--`. The encoding is lossy, so the header `cwd` is always checked too.
+    - The session directory follows Pi's own precedence: `PI_CODING_AGENT_SESSION_DIR` (one flat directory, tilde-expanded), else the `sessionDir` in `<agent-dir>/settings.json`, else `<agent-dir>/sessions/<encoded-cwd>/`, where `<agent-dir>` is `PI_CODING_AGENT_DIR` else `~/.pi/agent`. The child inherits the environment, so both sides agree on the directory. Pi's app-name override (`piConfig`, which renames the env vars and the `.pi` directory) is not honored.
+    - The adapter's scanner never writes. Pi's own reader repairs a missing trailing newline during a read; the adapter must not replicate that.
 - Pi behaviors the adapter accounts for
-    - Pi creates the session file on the first appended entry, not at spawn; a session that never received a prompt has no file, is absent from `session/list`, and cannot be resumed.
-    - Pi does not check the process `cwd` against the header `cwd` on `--session`; the adapter enforces the equality.
-    - A session whose header `cwd` no longer exists makes Pi exit 1 at open with a stderr message; the adapter reports it as the resume error.
-
-- [ ] `session/list` (`src/session/sessionDirectory.ts`)
-    - Read the header line and file mtime only.
-    - Filter by `cwd`.
-    - Page by decimal-offset cursor.
-- [ ] `session/resume` and `session/load`
-    - One shared flow spawning a child with `--session <absolute .jsonl path>`; a bare id can resolve as a "global" match and trigger Pi's interactive fork confirmation on stdin.
-    - The request `cwd` must equal the header `cwd` or the request is refused.
-    - Load replays `get_messages` synchronously before responding: user/agent/thought chunks, completed tool calls with `rawInput` / `rawOutput`.
-- [ ] `session/close` and `session/delete`
-    - Close abandons in-flight turns (`cancelled`, never hangs) and kills the child.
-        - `SessionConnection.stop()` already fails `activeTurn` before killing the child (so `runPrompt` never hangs); §3 refines that to resolve `cancelled` rather than throw, since a close is not a turn error.
-    - Delete additionally removes the session file.
-    - A `closing` flag refuses mid-teardown work.
-- [ ] Concurrent access to one session file (a pi-acp child alongside an open Pi TUI) has no lock upstream; recorded under Known limits once the failure shape is characterized.
+    - Pi buffers a new session in memory and creates the file on the first assistant message, not at spawn; a session that never completed a turn has no file, is absent from `session/list`, and cannot be resumed or deleted (`resource_not_found`).
+    - The session name is not a header field: it is the latest `session_info` entry, and an empty name clears it.
+    - Pi does not check the process `cwd` against the header `cwd` on `--session` (it adopts the header cwd); the adapter enforces the equality before spawning and refuses a mismatch with `invalid_params`.
+    - Pi's RPC mode has no id resolution; only an absolute path is ever passed. A bare id on the CLI can resolve as a "global" match and trigger Pi's interactive fork confirmation on stdin, which is why the path form is used.
+    - A session whose header `cwd` no longer exists makes Pi exit 1 at open with a stderr message; the adapter reports it through the existing start-failure path (a missing request cwd fails at spawn the same way `session/new` does).
+    - Pi has no delete API; its docs bless removing the `.jsonl`. Delete is a plain `unlink`.
+- [x] `session/list` (`src/session/sessionDirectory.ts`)
+    - Each file is streamed fully the way Pi's own session list reads it: `title` is the latest `session_info` name, else the first user message's first line (bounded by `SESSION_TITLE_MAX_CHARS`), else `null`; `updatedAt` is the latest message timestamp, else the header timestamp, else the file mtime. Reads are capped at Pi's concurrency (10). Malformed lines and header-less files are skipped as Pi skips them.
+    - Filter by `cwd` (absolute, else `invalid_params`) on header equality; sorted by `updatedAt` descending.
+    - Page by decimal-offset cursor over the freshly sorted list (`invalid_params` when not a whole number); `nextCursor` omitted on the last page.
+- [x] `session/resume` and `session/load`
+    - One shared flow (`establishSession` in an open mode) spawning a child with `--session <absolute .jsonl path>` and asserting the reported `sessionId` equals the requested one.
+    - `mcpServers` (optional on resume) and `additionalDirectories` are refused non-empty, as on `session/new`.
+    - An id already live in this adapter is reused rather than opened again (no lock upstream; a second child on one file forks the history, see Known limits): the request `cwd` must equal the live connection's cwd.
+    - Load replays `get_messages` (the active-branch, post-compaction view) before responding: `user_message_chunk` per block (string content is one text block, images map to image content), `agent_message_chunk` / `agent_thought_chunk`, and completed tool calls as `tool_call` + `tool_call_update` built by the live mappers from the cached `toolCall` arguments (edit diffs identical to live). A `toolCall` with no `toolResult` is omitted entirely so no row is stranded; `bashExecution`, `custom`, `branchSummary`, `compactionSummary` are skipped (no ACP surface). Pure `src/session/replay.ts`.
+    - Both respond `{ configOptions }` (no modes); `available_commands_update` lands after the response, as on `session/new`.
+    - Load on an id that is already live replays the full history again from the live subprocess: the replay is unconditional by design, the client asked for a load, and `cwd` equality is checked the same way. Path equality everywhere is `path.resolve` on both sides with no case folding, which is Pi's own rule.
+- [x] `session/close` and `session/delete`
+    - Close cancels the in-flight turn so the pending `session/prompt` resolves `cancelled` (a new `TurnHandler.abandon` path; `fail` stays the error path for subprocess death), sends `abort` best-effort, stops the child, and drops the session. Unknown id is `invalid_params`.
+    - A `closing` flag refuses mid-teardown work with `invalid_request`. A close during the prompt ack window (preflight) swallows the transport rejection of that ack, since the turn already holds `cancelled`; a closing turn skips the title and usage round-trips.
+    - Delete locates the file first (`resource_not_found` before any side effect), closes the session if live, then unlinks.
+- [x] Concurrent access to one session file characterized on the sprite against Pi 0.84.4 (a pi-acp child plus a `pi -p --session <file>` run); recorded under Known limits.
+- [x] Verified live on the sprite: list (title, cwd, updatedAt, paging errors), close then resume with context continuity, load replay from both the live subprocess and disk (same tool call id as the live turn, `rawInput`/`rawOutput` present, `available_commands_update` after the response), delete, mid-turn close resolving `cancelled` in under 30 ms, never-flushed and other-cwd sessions.
 
 ## 4. Fork and extension seams
 
@@ -178,7 +184,6 @@
     - `session/fork` spawns a child with `--fork <absolute parent path>` and the requested `cwd`.
     - Pi writes a new session file under the target cwd's session directory with the full head history and `parentSession` set, so a fork into a different `cwd` is supported.
     - `--session-id` can pin the child id if the adapter wants to answer before the child reports it.
-- [ ] Breakpoint fork: Pi's `fork` command takes an `entryId` from `get_fork_messages`, so it is feasible once ACP v1 carries a breakpoint marker; not offered until then.
 - [ ] MCP seam, opt-in and off by default
     - Pi has no native MCP.
     - Enabled by `PI_ACP_MCP_PASSTHROUGH` with pi-mcp-adapter installed in the Pi environment.
@@ -212,6 +217,8 @@
 - No steering: ACP v1 has no steering method; Pi's `steer` / `follow_up` stay typed but unused until an ACP surface exists.
 - Adapter shutdown is driven by stdin EOF / connection close; ACP v1 defines no `exit` notification, so a client that expects process death before closing stdin gets it only when it closes the pipe.
 - No transport mode has passed against a real client end-to-end yet; checkboxes track implementation plus unit coverage.
+- Breakpoint fork: Pi's `fork` command takes an `entryId` from `get_fork_messages`, so it is feasible once ACP v1 carries a breakpoint marker; not offered until then.
+- Two Pi processes on one session file (a pi-acp session alongside a Pi TUI or `pi -p --session` run on the same file) take no lock, and the adapter adds none. Observed on Pi 0.84.4: appends do not interleave mid-record and the file stays well-formed, but each process keeps its own in-memory leaf, so the second writer's entries become a sibling branch off the entry that was last when it opened. The pi-acp side never sees the other branch, a fresh open follows the last-written leaf, and `session/load` replays only that branch; the other branch stays in the file as abandoned history. Reuse of a live id inside one adapter prevents the adapter from doing this to itself; a user running Pi's own tools on the same file is on their own.
 
 ## Exit criteria
 

@@ -26,6 +26,8 @@ export interface FakePiSpec {
   commands: { name: string; description?: string; source: string }[]
   /** End-of-turn `get_session_stats` payload; defaults to DEFAULT_STATS. */
   stats?: FakeStats
+  /** The `get_messages` history a `session/load` replays. */
+  messages?: readonly unknown[]
   /** A command type that should reject, to exercise error paths. */
   failOn?: string
   /** A command type that should reject only on its first call, then succeed. */
@@ -40,6 +42,9 @@ export interface FakePiSpec {
 export interface FakePiClient {
   createPiClient: CreatePiClient
   calls: Array<Record<string, unknown>>
+  /** One entry per spawn, so a test can assert the `--session` args and that a
+   * reused session spawned nothing new. */
+  spawns: Array<{ cwd: string; args: readonly string[] }>
   wasStopped: () => boolean
   /** Feeds an event through the transport's `onEvent` (the session router). */
   emit: (event: JsonAgentSessionEvent) => void
@@ -75,6 +80,8 @@ export function makeFakePiClient(spec: FakePiSpec): FakePiClient {
         return { type: 'response', command: 'get_available_thinking_levels', success: true, data: { levels: spec.levels } }
       case 'get_commands':
         return { type: 'response', command: 'get_commands', success: true, data: { commands: spec.commands } }
+      case 'get_messages':
+        return { type: 'response', command: 'get_messages', success: true, data: { messages: spec.messages ?? [] } }
       case 'set_model': {
         const model = spec.models.find((m) => m.provider === command['provider'] && m.id === command['modelId'])
         state = { ...state, model: model ?? state.model }
@@ -107,7 +114,9 @@ export function makeFakePiClient(spec: FakePiSpec): FakePiClient {
     },
   }
 
+  const spawns: Array<{ cwd: string; args: readonly string[] }> = []
   const createPiClient: CreatePiClient = (options) => {
+    spawns.push({ cwd: options.cwd, args: options.args ?? [] })
     onEvent = options.onEvent
     onExit = options.onExit
     onExtensionUiRequest = options.onExtensionUiRequest
@@ -117,6 +126,7 @@ export function makeFakePiClient(spec: FakePiSpec): FakePiClient {
   return {
     createPiClient,
     calls,
+    spawns,
     wasStopped: () => stopped,
     emit,
     exit: (error) => onExit?.(error),
