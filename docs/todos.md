@@ -48,10 +48,10 @@
 
 ## 2. Stable ACP v1 baseline
 
-- [ ] `initialize`
-    - Honest capabilities only, each advertised in the change that implements it; pinned by `initialize.test.ts`.
+- [x] `initialize`
+    - Honest capabilities only, each advertised in the change that implements it; pinned by `initialize.test.ts`. Text-only prompt caps here; image/embeddedContext turn on with `session/prompt`.
     - No `authMethods`: Pi resolves credentials from its own `auth.json` and environment, and there is no non-interactive login to expose.
-    - Provider auth failures surface as turn errors carrying Pi's message.
+    - Provider auth failures surface as turn errors carrying Pi's message; wired with the turn layer (`session/prompt`).
 - [ ] `session/new`
     - Validate an absolute `cwd`, spawn the child, read `get_state` for the session id and file.
     - Build `configOptions`; send `available_commands_update`.
@@ -199,6 +199,7 @@
 
 - No fs proxying or ACP terminal methods: Pi does its own file IO and command execution in-process.
 - No steering: ACP v1 has no steering method; Pi's `steer` / `follow_up` stay typed but unused until an ACP surface exists.
+- Adapter shutdown is driven by stdin EOF / connection close; ACP v1 defines no `exit` notification, so a client that expects process death before closing stdin gets it only when it closes the pipe.
 - No transport mode has passed against a real client end-to-end yet; checkboxes track implementation plus unit coverage.
 
 ## Exit criteria

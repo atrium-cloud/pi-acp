@@ -29,7 +29,8 @@ export const PI_RPC_MODE_ARGS: readonly string[] = ['--mode', 'rpc']
 
 // Bounds every round-trip including the readiness get_state; Pi's cold start can
 // take ~15s before it answers, so readiness gets no shorter timeout of its own.
-// PI_ACP_RPC_TIMEOUT_MS overrides this at the §2 composition edge.
+// PI_ACP_RPC_TIMEOUT_MS overrides this; the env resolver lands in §2 batch B,
+// where session setup passes the timeout into the spawned client.
 export const DEFAULT_RPC_TIMEOUT_MS = 30_000
 
 // Teardown: stdin-close is Pi's lossless exit (flush then exit 0); SIGTERM skips
@@ -38,3 +39,10 @@ export const STDIN_END_GRACE_MS = 5_000
 export const SIGTERM_GRACE_MS = 1_000
 
 export const STDERR_TAIL_MAX_BYTES = 16_384
+
+// ── ACP / JSON-RPC ────────────────────────────────────────────────────────────
+//
+// The SDK's RequestError statics bury the message as literal "Internal error",
+// so errors are thrown with `new RequestError(code, message)` and these codes.
+export const JSONRPC_INVALID_PARAMS = -32_602
+export const JSONRPC_INTERNAL_ERROR = -32_603

@@ -33,7 +33,8 @@
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "^1.4.0",
-    "@earendil-works/pi-coding-agent": "^0.84.3"
+    "@earendil-works/pi-coding-agent": "^0.84.3",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/node": "^26.1.0",
