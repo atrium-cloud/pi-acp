@@ -1,10 +1,10 @@
 // Bundles the MCP extension into a single self-contained ESM string and writes
 // it as a TypeScript module the adapter imports. Pi loads extensions with jiti
-// from the temp file's own path, and a `bun --compile` binary has no filesystem,
-// so the bundle must resolve nothing at runtime but Node builtins.
+// from the temp file's own path, and the release bundle ships without any
+// node_modules, so the bundle must resolve nothing at runtime but Node builtins.
 //
-// Run explicitly at the front of build, typecheck, test, and every bundle
-// script: bun does not run npm pre-hooks.
+// Run explicitly at the front of build, typecheck, test, and start: bun does
+// not run npm pre-hooks.
 
 import { writeFileSync } from 'node:fs'
 import { builtinModules } from 'node:module'

@@ -24,7 +24,7 @@ A prompt that invokes an advertised extension command which starts no turn resol
 
 ## Project-local Pi resources need a prior trust decision
 
-Pi loads a cwd's `.pi/` resources (project settings, `.pi/extensions`, project packages) only for a trusted project. Its RPC mode never asks: without a saved decision in `<agent-dir>/trust.json` it follows the global `defaultProjectTrust` setting, where the default `ask` and `never` skip those resources and `always` trusts every project, and `--approve` overrides for one run. The adapter passes no flag and answers no prompt, so an ACP session in a project that was never trusted from Pi's own UI runs without that project's extensions and settings, silently. Verified on the sprite: a `.pi/extensions` command in a fresh cwd is not advertised. Mapping the trust decision onto ACP would need a client-facing prompt ACP v1 does not define, so this stays with Pi's own trust store.
+Pi loads a cwd's `.pi/` resources (settings, extensions, packages) only for a trusted project, and its RPC mode never asks: without a saved decision in `<agent-dir>/trust.json` it follows `defaultProjectTrust` (`ask`, the default, skips them). The adapter passes no `--approve`, so a project never trusted from Pi's own UI runs without its `.pi/` resources, silently. ACP v1 has no prompt to map the decision onto.
 
 ## Extension commands that replace the session
 
