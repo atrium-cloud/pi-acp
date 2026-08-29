@@ -13,6 +13,9 @@ export interface PromptImage {
 export interface FlattenedPrompt {
   readonly message: string
   readonly images: PromptImage[]
+  /** The first `text` block verbatim ('' when there is none); the session title
+   * derives from it so an inlined resource header never becomes the name. */
+  readonly firstText: string
 }
 
 /** ACP prompt `ContentBlock[]` → Pi's flat `{ message, images }`. Text is joined;
@@ -21,11 +24,13 @@ export interface FlattenedPrompt {
 export function flattenPromptContent(blocks: readonly ContentBlock[]): FlattenedPrompt {
   const segments: string[] = []
   const images: PromptImage[] = []
+  let firstText: string | undefined
 
   for (const block of blocks) {
     switch (block.type) {
       case 'text':
         segments.push(block.text)
+        firstText ??= block.text
         break
       case 'image':
         images.push({ type: 'image', data: block.data, mimeType: block.mimeType })
@@ -45,7 +50,9 @@ export function flattenPromptContent(blocks: readonly ContentBlock[]): Flattened
     }
   }
 
-  return { message: segments.join(PROMPT_BLOCK_SEPARATOR), images }
+  const message = segments.join(PROMPT_BLOCK_SEPARATOR)
+  if (message === '' && images.length === 0) throw invalidParams('the prompt has no content')
+  return { message, images, firstText: firstText ?? '' }
 }
 
 function inlineResource(resource: { uri: string; text?: string; blob?: string }): string {

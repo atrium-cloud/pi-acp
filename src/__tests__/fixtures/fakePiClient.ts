@@ -1,3 +1,4 @@
+import type { RpcExtensionUIRequest, RpcExtensionUIResponse } from '../../pi/types.js'
 import type { CreatePiClient, PiClientLike } from '../../session/SessionConnection.js'
 import type { JsonAgentSessionEvent } from '../../pi/types.js'
 
@@ -7,13 +8,24 @@ export interface FakeState {
   sessionId: string
   thinkingLevel: string
   model?: { provider: string; id: string; name: string } | undefined
+  sessionName?: string
 }
+
+/** The `SessionStats` subset the adapter reads for end-of-turn usage. */
+export interface FakeStats {
+  cost: number
+  contextUsage?: { tokens: number | null; contextWindow: number; percent: number | null }
+}
+
+const DEFAULT_STATS: FakeStats = { cost: 0.05, contextUsage: { tokens: 1234, contextWindow: 200_000, percent: 1 } }
 
 export interface FakePiSpec {
   state: FakeState
   models: { provider: string; id: string; name: string }[]
   levels: string[]
   commands: { name: string; description?: string; source: string }[]
+  /** End-of-turn `get_session_stats` payload; defaults to DEFAULT_STATS. */
+  stats?: FakeStats
   /** A command type that should reject, to exercise error paths. */
   failOn?: string
   /** A command type that should reject only on its first call, then succeed. */
@@ -33,6 +45,8 @@ export interface FakePiClient {
   emit: (event: JsonAgentSessionEvent) => void
   /** Fires the transport's `onExit`. */
   exit: (error: Error) => void
+  /** Drives an extension UI request through the wired `onExtensionUiRequest`. */
+  requestUi: (request: RpcExtensionUIRequest) => Promise<RpcExtensionUIResponse>
 }
 
 export function makeFakePiClient(spec: FakePiSpec): FakePiClient {
@@ -42,6 +56,7 @@ export function makeFakePiClient(spec: FakePiSpec): FakePiClient {
   let stopped = false
   let onEvent: ((event: JsonAgentSessionEvent) => void) | undefined
   let onExit: ((error: Error) => void) | undefined
+  let onExtensionUiRequest: ((request: RpcExtensionUIRequest) => Promise<RpcExtensionUIResponse>) | undefined
   const emit = (event: JsonAgentSessionEvent): void => onEvent?.(event)
 
   const respond = async (command: Record<string, unknown> & { type: string }): Promise<unknown> => {
@@ -68,6 +83,11 @@ export function makeFakePiClient(spec: FakePiSpec): FakePiClient {
       case 'set_thinking_level':
         state = { ...state, thinkingLevel: command['level'] as string }
         return { type: 'response', command: 'set_thinking_level', success: true }
+      case 'set_session_name':
+        state = { ...state, sessionName: command['name'] as string }
+        return { type: 'response', command: 'set_session_name', success: true }
+      case 'get_session_stats':
+        return { type: 'response', command: 'get_session_stats', success: true, data: spec.stats ?? DEFAULT_STATS }
       case 'prompt':
         if (spec.preflightFails) throw new Error('fake pi: prompt preflight failed')
         spec.onPrompt?.(emit)
@@ -90,6 +110,7 @@ export function makeFakePiClient(spec: FakePiSpec): FakePiClient {
   const createPiClient: CreatePiClient = (options) => {
     onEvent = options.onEvent
     onExit = options.onExit
+    onExtensionUiRequest = options.onExtensionUiRequest
     return client
   }
 
@@ -99,5 +120,9 @@ export function makeFakePiClient(spec: FakePiSpec): FakePiClient {
     wasStopped: () => stopped,
     emit,
     exit: (error) => onExit?.(error),
+    requestUi: (request) => {
+      if (onExtensionUiRequest === undefined) throw new Error('fake pi: no onExtensionUiRequest handler wired')
+      return onExtensionUiRequest(request)
+    },
   }
 }

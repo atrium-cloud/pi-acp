@@ -1,9 +1,15 @@
 import * as acp from '@agentclientprotocol/sdk'
-import type { AgentContext, StopReason } from '@agentclientprotocol/sdk'
+import type { AgentContext, SessionUpdate, StopReason } from '@agentclientprotocol/sdk'
 
 import { AGENT_NAME, AGENT_START_GRACE_MS, JSONRPC_INTERNAL_ERROR } from '../constants.js'
 import type { JsonAgentSessionEvent } from '../pi/types.js'
 import { asMessage, toRequestError } from '../server/errors.js'
+import { toolCallEnded, toolCallProgress, toolCallStarted } from './mappers.js'
+
+export interface AnnouncedToolCall {
+  readonly toolName: string
+  readonly args: unknown
+}
 
 /** A live turn consuming the turn-scoped Pi events the session router forwards.
  * `SessionConnection` registers exactly one at a time as its `activeTurn`. */
@@ -13,6 +19,11 @@ export interface TurnEventSink {
   fail(error: Error): void
   /** A cancel was requested; the turn resolves `cancelled` once it settles. */
   cancel(): void
+  /** The input cached at `tool_execution_start` for a tool still running, so a
+   * permission request can carry it without the gate re-sending it. Pi emits
+   * the start event before it runs the `tool_call` hook, so a miss means the id
+   * was never announced this turn. */
+  announcedToolCall(toolCallId: string): AnnouncedToolCall | undefined
 }
 
 type MessageUpdate = Extract<JsonAgentSessionEvent, { type: 'message_update' }>['assistantMessageEvent']
@@ -21,6 +32,10 @@ export interface TurnHandlerOptions {
   readonly notifier: AgentContext
   readonly sessionId: string
   readonly graceMs?: number
+  /** Re-issues Pi's `abort` when a cancel landed before the turn was running:
+   * `session.abort` is a no-op while Pi is still in preflight, so an early cancel
+   * has to be re-sent once `agent_start` proves the run is active. */
+  readonly requestAbort?: () => void
 }
 
 /** Translates one Pi turn into ACP `session/update`s and a final `StopReason`.
@@ -35,6 +50,7 @@ export class TurnHandler implements TurnEventSink {
   private readonly notifier: AgentContext
   private readonly sessionId: string
   private readonly graceMs: number
+  private readonly requestAbort: (() => void) | undefined
 
   private done = false
   private startSeen = false
@@ -46,11 +62,15 @@ export class TurnHandler implements TurnEventSink {
    * cleared on each `message_start` because `contentIndex` restarts at 0 per
    * message (a tool loop emits several assistant messages in one turn). */
   private readonly streamedIndices = new Set<number>()
+  /** Announced tool calls → the input cached at `tool_execution_start`, since the
+   * end event carries no args and an edit diff is built from the input. */
+  private readonly announcedToolCalls = new Map<string, AnnouncedToolCall>()
 
   constructor(options: TurnHandlerOptions) {
     this.notifier = options.notifier
     this.sessionId = options.sessionId
     this.graceMs = options.graceMs ?? AGENT_START_GRACE_MS
+    this.requestAbort = options.requestAbort
     this.settled = new Promise<StopReason>((resolve, reject) => {
       this.resolve = resolve
       this.reject = reject
@@ -91,6 +111,9 @@ export class TurnHandler implements TurnEventSink {
       case 'agent_start':
         this.startSeen = true
         this.clearStartTimer()
+        // A cancel during preflight couldn't reach a running turn; now that one is
+        // active, re-issue the abort so it actually stops.
+        if (this.cancelled) this.requestAbort?.()
         return
       case 'message_start':
         // The real per-message boundary on the wire: the stream's `start`
@@ -100,6 +123,31 @@ export class TurnHandler implements TurnEventSink {
       case 'message_update':
         this.handleMessageUpdate(event.assistantMessageEvent)
         return
+      case 'tool_execution_start':
+        this.announcedToolCalls.set(event.toolCallId, { toolName: event.toolName, args: event.args })
+        this.emitUpdate(toolCallStarted({ toolCallId: event.toolCallId, toolName: event.toolName, args: event.args }))
+        return
+      case 'tool_execution_update': {
+        const update = toolCallProgress(event.toolCallId, event.partialResult)
+        if (update !== undefined) this.emitUpdate(update)
+        return
+      }
+      // A gate-blocked tool also ends here: Pi finalizes a blocked call as an
+      // immediate error result, so the denial reason arrives as a failed end.
+      case 'tool_execution_end': {
+        const cached = this.announcedToolCalls.get(event.toolCallId)
+        this.emitUpdate(
+          toolCallEnded({
+            toolCallId: event.toolCallId,
+            toolName: event.toolName,
+            result: event.result,
+            isError: event.isError,
+            args: cached?.args,
+          }),
+        )
+        this.announcedToolCalls.delete(event.toolCallId)
+        return
+      }
       case 'message_end':
         if ('role' in event.message && event.message.role === 'assistant') {
           this.captureStop(event.message.stopReason, event.message.errorMessage)
@@ -127,6 +175,10 @@ export class TurnHandler implements TurnEventSink {
     this.cancelled = true
   }
 
+  announcedToolCall(toolCallId: string): AnnouncedToolCall | undefined {
+    return this.announcedToolCalls.get(toolCallId)
+  }
+
   /** Only `text_*`/`thinking_*`/`toolcall_*` sub-events ride a `message_update`;
    * the union's `start`/`done`/`error` are hoisted to `message_start`/`message_end`
    * by the agent loop and never reach here (hence no arms for them). */
@@ -152,14 +204,15 @@ export class TurnHandler implements TurnEventSink {
   }
 
   private emitChunk(sessionUpdate: 'agent_message_chunk' | 'agent_thought_chunk', text: string): void {
+    this.emitUpdate({ sessionUpdate, content: { type: 'text', text } })
+  }
+
+  private emitUpdate(update: SessionUpdate): void {
     if (this.done) return
     void this.notifier
-      .notify(acp.methods.client.session.update, {
-        sessionId: this.sessionId,
-        update: { sessionUpdate, content: { type: 'text', text } },
-      })
+      .notify(acp.methods.client.session.update, { sessionId: this.sessionId, update })
       .catch((error: unknown) => {
-        console.error(`[${AGENT_NAME}] [${this.sessionId}] failed to send ${sessionUpdate}: ${asMessage(error)}`)
+        console.error(`[${AGENT_NAME}] [${this.sessionId}] failed to send ${update.sessionUpdate}: ${asMessage(error)}`)
       })
   }
 
@@ -172,6 +225,16 @@ export class TurnHandler implements TurnEventSink {
     if (this.done) return
     if (this.cancelled) {
       this.finish(() => this.resolve('cancelled'))
+      return
+    }
+    if (this.lastStopReason === null) {
+      // Every real turn emits an assistant `message_end` before `agent_settled`;
+      // a null reason means a Pi-internal failure slipped past without an error
+      // frame, and reporting it as `end_turn` would surface a failed turn as a
+      // clean one (a failed turn never ends `end_turn`).
+      this.finish(() =>
+        this.reject(new acp.RequestError(JSONRPC_INTERNAL_ERROR, 'the turn settled without a stop reason')),
+      )
       return
     }
     switch (this.lastStopReason) {

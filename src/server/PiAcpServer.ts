@@ -29,6 +29,8 @@ import { toRequestError } from './errors.js'
 export interface PiAcpServerOptions {
   readonly launch: PiLaunch
   readonly rpcTimeoutMs: number
+  /** Absolute path to the permission gate extension (`-e`); omitted in tests. */
+  readonly gateExtensionPath?: string | undefined
   /** Injectable for tests; defaults to spawning a real Pi RPC subprocess. */
   readonly createPiClient?: CreatePiClient | undefined
 }
@@ -66,7 +68,7 @@ export class PiAcpServer {
     await Promise.all(connections.map((connection) => connection.stop()))
   }
 
-  async initialize(_params: InitializeRequest): Promise<InitializeResponse> {
+  initialize(_params: InitializeRequest): InitializeResponse {
     return {
       protocolVersion: PROTOCOL_VERSION,
       agentInfo: { name: AGENT_NAME, title: AGENT_TITLE, version: AGENT_VERSION },
@@ -81,6 +83,7 @@ export class PiAcpServer {
       launch: this.options.launch,
       rpcTimeoutMs: this.options.rpcTimeoutMs,
       notifier: context.client,
+      gateExtensionPath: this.options.gateExtensionPath,
       createPiClient: this.options.createPiClient,
     })
     if (this.stopped || this.sessions.has(established.sessionId)) {

@@ -1,5 +1,5 @@
 import * as acp from '@agentclientprotocol/sdk'
-import type { AgentContext, AvailableCommand, SessionConfigOption, StopReason } from '@agentclientprotocol/sdk'
+import type { AgentContext, AvailableCommand, SessionConfigOption, SessionUpdate, StopReason } from '@agentclientprotocol/sdk'
 
 import {
   AGENT_NAME,
@@ -7,13 +7,20 @@ import {
   CONFIG_ID_THOUGHT_LEVEL,
   JSONRPC_INVALID_PARAMS,
   JSONRPC_INVALID_REQUEST,
+  PERMISSION_OPTION_ALLOW_ALWAYS,
+  PERMISSION_OPTION_ALLOW_ONCE,
+  PERMISSION_REQUEST_TIMEOUT_MS,
+  PROMPT_ACK_TIMEOUT_MS,
+  SESSION_TITLE_MAX_CHARS,
 } from '../constants.js'
+import { buildPermissionOptions, decodeSentinelTitle } from '../permissions/gate.js'
 import type { PiRpcClient, PiRpcClientOptions } from '../pi/PiRpcClient.js'
-import type { JsonAgentSessionEvent, RpcCommand, RpcSessionState } from '../pi/types.js'
+import type { JsonAgentSessionEvent, RpcCommand, RpcExtensionUIRequest, RpcExtensionUIResponse, RpcSessionState } from '../pi/types.js'
 import { asMessage } from '../server/errors.js'
 import { buildConfigOptions, type ModelChoice, resolveModelSelection } from '../turn/configOptions.js'
+import { configOptionUpdate, sessionInfoUpdate, toolKind, toolTitle, usageUpdate } from '../turn/mappers.js'
 import type { FlattenedPrompt } from '../turn/promptContent.js'
-import { type TurnEventSink, TurnHandler } from '../turn/TurnHandler.js'
+import { type AnnouncedToolCall, type TurnEventSink, TurnHandler } from '../turn/TurnHandler.js'
 
 // The exact `set_thinking_level` payload type, without importing the Pi package's
 // `ThinkingLevel` name (it is not re-exported from the package root).
@@ -32,6 +39,8 @@ export type CreatePiClient = (options: PiRpcClientOptions) => PiClientLike
 interface ConfigState {
   readonly models: readonly ModelChoice[]
   readonly levels: readonly ThinkingLevelValue[]
+  readonly currentModel: { readonly provider: string; readonly id: string } | undefined
+  readonly currentLevel: string
   readonly options: SessionConfigOption[]
 }
 
@@ -60,6 +69,8 @@ export class SessionConnection {
   private activeTurn: TurnEventSink | null = null
   /** Set once the subprocess dies; a later request answers with this cause. */
   private exitError: Error | null = null
+  /** True until this session gets a name; the first prompt derives one. */
+  private needsTitle = false
 
   constructor(init: { notifier: AgentContext; cwd: string }) {
     this.notifier = init.notifier
@@ -70,6 +81,7 @@ export class SessionConnection {
     this.piClient = init.piClient
     this.sessionId = init.sessionId
     this.config = this.buildConfig(init.state, init.models, init.levels)
+    this.needsTitle = (init.state.sessionName ?? '').trim() === ''
   }
 
   get configOptions(): SessionConfigOption[] {
@@ -154,9 +166,13 @@ export class SessionConnection {
 
   routeEvent(event: JsonAgentSessionEvent): void {
     switch (event.type) {
-      // Session-level arms (handled here, filled in §2 batch D).
+      // Session-level arms handled here, not by the turn (they can fire between
+      // turns, which is why the router — not a per-turn handler — subscribes).
       case 'session_info_changed':
+        this.handleSessionInfoChanged(event)
+        return
       case 'thinking_level_changed':
+        this.handleThinkingLevelChanged(event)
         return
       // Deliberately ignored.
       case 'entry_appended':
@@ -194,6 +210,36 @@ export class SessionConnection {
     console.error(`[${AGENT_NAME}] [${this.sessionId}] dropping unrecognized Pi session event: ${JSON.stringify(unhandled)}`)
   }
 
+  private handleSessionInfoChanged(event: Extract<JsonAgentSessionEvent, { type: 'session_info_changed' }>): void {
+    if (typeof event.name !== 'string') return
+    this.emit(sessionInfoUpdate(event.name))
+  }
+
+  /** Rebuilds the option set with the new level (no round-trip; the current model
+   * is cached) and pushes the full set. A client-initiated set already returned
+   * the same set, so the client tolerates this idempotent echo. */
+  private handleThinkingLevelChanged(event: Extract<JsonAgentSessionEvent, { type: 'thinking_level_changed' }>): void {
+    const config = this.config
+    if (config === null) return
+    const options = buildConfigOptions({
+      models: config.models,
+      currentModel: config.currentModel,
+      levels: config.levels,
+      currentLevel: event.level,
+    })
+    this.config = { ...config, currentLevel: event.level, options }
+    this.emit(configOptionUpdate(options))
+  }
+
+  private emit(update: SessionUpdate): void {
+    if (this.exitError) return
+    void this.notifier
+      .notify(acp.methods.client.session.update, { sessionId: this.sessionId, update })
+      .catch((error: unknown) => {
+        console.error(`[${AGENT_NAME}] [${this.sessionId}] failed to send ${update.sessionUpdate}: ${asMessage(error)}`)
+      })
+  }
+
   /** Runs one turn: register the turn BEFORE sending the prompt, because the ack
    * and a synchronously-dispatched `agent_start` can arrive in one stdout chunk,
    * ahead of the `await request` continuation — subscribing after would miss it.
@@ -205,20 +251,119 @@ export class SessionConnection {
     if (this.activeTurn !== null) {
       throw new acp.RequestError(JSONRPC_INVALID_REQUEST, 'a turn is already in progress for this session')
     }
+    // Already cancelled before anything was sent: no turn runs, nothing to abort.
+    if (signal.aborted) return 'cancelled'
 
-    const turn = new TurnHandler({ notifier: this.notifier, sessionId: this.sessionId })
+    const turn = new TurnHandler({
+      notifier: this.notifier,
+      sessionId: this.sessionId,
+      requestAbort: () => this.requestAbort(),
+    })
     this.activeTurn = turn
     const onAbort = (): void => this.cancel()
-    if (signal.aborted) this.cancel()
-    else signal.addEventListener('abort', onAbort, { once: true })
+    signal.addEventListener('abort', onAbort, { once: true })
 
     try {
-      await client.request({ type: 'prompt', message: prompt.message, images: prompt.images })
+      // The ack returns only after preflight (which can run a compaction), so it
+      // gets a far more generous bound than a metadata round-trip.
+      await client.request({ type: 'prompt', message: prompt.message, images: prompt.images }, { timeoutMs: PROMPT_ACK_TIMEOUT_MS })
       turn.armStartTimer()
-      return await turn.settled
+      const reason = await turn.settled
+      await this.maybeSetTitle(client, prompt.firstText)
+      await this.emitEndOfTurnUsage(client)
+      return reason
     } finally {
       signal.removeEventListener('abort', onAbort)
       this.activeTurn = null
+    }
+  }
+
+  /** Synthesizes `usage_update` from the authoritative post-turn context stats.
+   * Best-effort: usage never fails a turn, and `null` tokens (right after a
+   * compaction, before the next response) are skipped and self-heal next turn. */
+  private async emitEndOfTurnUsage(client: PiClientLike): Promise<void> {
+    try {
+      const stats = await client.request({ type: 'get_session_stats' })
+      const usage = stats.data.contextUsage
+      if (usage === undefined || usage.tokens === null) return
+      this.emit(usageUpdate(usage.tokens, usage.contextWindow, stats.data.cost))
+    } catch (error) {
+      console.error(`[${AGENT_NAME}] [${this.sessionId}] failed to report end-of-turn usage: ${asMessage(error)}`)
+    }
+  }
+
+  /** Answers a Pi extension dialog. Only a sentinel `select` from the permission
+   * gate is mapped to `session/request_permission`; every other dialog fails
+   * closed (the gate reads a cancel as deny). Never throws — a rejection here
+   * would escape the transport's sync stdout handler. */
+  async handleExtensionUiRequest(request: RpcExtensionUIRequest): Promise<RpcExtensionUIResponse> {
+    const cancelled: RpcExtensionUIResponse = { type: 'extension_ui_response', id: request.id, cancelled: true }
+    if (request.method !== 'select') return cancelled
+    const decoded = decodeSentinelTitle(request.title)
+    if (decoded === null) return cancelled
+    // Pi emits `tool_execution_start` before running the `tool_call` hook, so the
+    // turn already announced this id and cached its input. A miss is a sentinel
+    // from outside a live tool call (no turn, or a forged title): deny silently.
+    const announced = this.activeTurn?.announcedToolCall(decoded.toolCallId)
+    if (announced === undefined) {
+      console.error(`[${AGENT_NAME}] [${this.sessionId}] permission sentinel for unannounced tool call ${decoded.toolCallId}, denying`)
+      return cancelled
+    }
+    const optionId = await this.requestPermission(decoded.toolCallId, announced)
+    // Mirror the gate's default-deny: only an explicit allow runs the tool. A
+    // blocked tool still gets a failed `tool_execution_end` from Pi, which
+    // closes the announced row.
+    if (optionId === PERMISSION_OPTION_ALLOW_ONCE || optionId === PERMISSION_OPTION_ALLOW_ALWAYS) {
+      return { type: 'extension_ui_response', id: request.id, value: optionId }
+    }
+    return cancelled
+  }
+
+  /** The selected option id (echoed verbatim to the gate) or null on
+   * cancel/timeout/closed — all of which the gate treats as deny. On timeout the
+   * client is sent `$/cancel_request` so its dialog closes too; cancellation is
+   * cooperative, so the timer stays the hard bound. */
+  private async requestPermission(toolCallId: string, tool: AnnouncedToolCall): Promise<string | null> {
+    const cancellation = new AbortController()
+    try {
+      const response = await withTimeout(
+        this.notifier.request(
+          acp.methods.client.session.requestPermission,
+          {
+            sessionId: this.sessionId,
+            toolCall: {
+              toolCallId,
+              title: toolTitle(tool.toolName, tool.args),
+              kind: toolKind(tool.toolName),
+              rawInput: tool.args,
+            },
+            options: buildPermissionOptions(),
+          },
+          { cancellationSignal: cancellation.signal },
+        ),
+        PERMISSION_REQUEST_TIMEOUT_MS,
+        () => cancellation.abort(),
+      )
+      return response.outcome.outcome === 'selected' ? response.outcome.optionId : null
+    } catch (error) {
+      console.error(`[${AGENT_NAME}] [${this.sessionId}] permission request failed, denying: ${asMessage(error)}`)
+      return null
+    }
+  }
+
+  /** Titles a nameless session from the first line of the prompt's first text
+   * block (never an inlined resource's `uri:` header). Skipped when that trims
+   * empty (an image- or resource-only prompt), since Pi rejects an empty name.
+   * Fire-and-forget: the resulting `session_info_changed` drives the update. */
+  private async maybeSetTitle(client: PiClientLike, firstText: string): Promise<void> {
+    if (!this.needsTitle) return
+    const title = deriveTitle(firstText)
+    if (title === '') return
+    this.needsTitle = false
+    try {
+      await client.request({ type: 'set_session_name', name: title })
+    } catch (error) {
+      console.error(`[${AGENT_NAME}] [${this.sessionId}] failed to set the session name: ${asMessage(error)}`)
     }
   }
 
@@ -228,6 +373,10 @@ export class SessionConnection {
   cancel(): void {
     if (this.activeTurn === null) return
     this.activeTurn.cancel()
+    this.requestAbort()
+  }
+
+  private requestAbort(): void {
     void this.piClient?.request({ type: 'abort' }).catch(() => undefined)
   }
 
@@ -237,6 +386,10 @@ export class SessionConnection {
   }
 
   async stop(): Promise<void> {
+    // An intentional stop suppresses the client's onExit, so handleExit won't
+    // fire; fail the active turn here or runPrompt hangs on a promise nobody
+    // resolves. (§3 will refine this to resolve `cancelled` for session/close.)
+    this.activeTurn?.fail(new Error('the session was closed while a turn was in progress'))
     await this.piClient?.stop()
   }
 
@@ -247,7 +400,7 @@ export class SessionConnection {
   ): ConfigState {
     const currentModel = state.model === undefined ? undefined : { provider: state.model.provider, id: state.model.id }
     const options = buildConfigOptions({ models, currentModel, levels, currentLevel: state.thinkingLevel })
-    return { models, levels, options }
+    return { models, levels, currentModel, currentLevel: state.thinkingLevel, options }
   }
 
   private requireClient(): PiClientLike {
@@ -263,4 +416,31 @@ export class SessionConnection {
 
 function invalidParams(message: string): acp.RequestError {
   return new acp.RequestError(JSONRPC_INVALID_PARAMS, message)
+}
+
+/** Rejects if the promise has not settled within `ms`, running `onTimeout` first
+ * so the caller can cancel the underlying request; a late settle is ignored. */
+function withTimeout<T>(promise: Promise<T>, ms: number, onTimeout: () => void): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      onTimeout()
+      reject(new Error(`timed out after ${ms}ms`))
+    }, ms)
+    timer.unref()
+    promise.then(
+      (value) => {
+        clearTimeout(timer)
+        resolve(value)
+      },
+      (error: unknown) => {
+        clearTimeout(timer)
+        reject(error instanceof Error ? error : new Error(String(error)))
+      },
+    )
+  })
+}
+
+function deriveTitle(text: string): string {
+  const firstLine = (text.split('\n', 1)[0] ?? '').trim()
+  return firstLine.length > SESSION_TITLE_MAX_CHARS ? firstLine.slice(0, SESSION_TITLE_MAX_CHARS) : firstLine
 }
