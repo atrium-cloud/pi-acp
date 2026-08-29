@@ -2,6 +2,7 @@ import { existsSync, readFileSync, rmSync } from 'node:fs'
 
 import { describe, expect, it } from 'vitest'
 
+import { MCP_TOOL_PREFIX } from '../constants.js'
 import {
   buildPermissionOptions,
   decodeSentinelTitle,
@@ -93,6 +94,20 @@ describe('gate source behavior (default-deny)', () => {
     const handler = loadGateHandler()
     const result = await handler(mutating, { hasUI: false } as unknown as GateCtx)
     expect(result).toMatchObject({ block: true })
+  })
+
+  it('asks for every MCP tool, which is third-party code the adapter cannot classify', async () => {
+    expect(PERMISSION_GATE_SOURCE).toContain(JSON.stringify(MCP_TOOL_PREFIX))
+    const handler = loadGateHandler()
+    const ctx = ctxSelecting('allow_once')
+    expect(await handler({ toolName: 'mcp__probe__echo', toolCallId: 't', input: {} }, ctx)).toBeUndefined()
+    expect(ctx.titles).toHaveLength(1)
+    expect(decodeSentinelTitle(ctx.titles[0] ?? '')).toEqual({ toolCallId: 't', toolName: 'mcp__probe__echo' })
+  })
+
+  it('blocks a rejected MCP tool', async () => {
+    const mcpCall: GateEvent = { toolName: 'mcp__probe__echo', toolCallId: 't', input: {} }
+    expect(await loadGateHandler()(mcpCall, ctxSelecting('reject_once'))).toMatchObject({ block: true })
   })
 
   it('remembers allow_always per tool and stops asking', async () => {

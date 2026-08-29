@@ -11,6 +11,7 @@ import { type FakePiSpec, makeFakePiClient } from './fixtures/fakePiClient.js'
 
 const LAUNCH = { command: 'pi', args: ['--mode', 'rpc'], source: 'test' }
 const ABS_CWD = '/tmp/pi-acp-session'
+const MCP_EXTENSION_PATH = '/tmp/mcp-extension.mjs'
 const HELLO: FlattenedPrompt = { message: 'hi', images: [], firstText: 'hi' }
 type Emit = Parameters<NonNullable<FakePiSpec['onPrompt']>>[0]
 
@@ -36,6 +37,7 @@ async function connect(spec: FakePiSpec): Promise<{
     launch: LAUNCH,
     rpcTimeoutMs: 1_000,
     notifier,
+    mcpExtensionPath: MCP_EXTENSION_PATH,
     createPiClient: fake.createPiClient,
   })
   return { fake, connection: established.connection, notify }
@@ -239,6 +241,7 @@ describe('session/prompt over the wire', () => {
       launch: LAUNCH,
       rpcTimeoutMs: 1_000,
       sessionDirs: { mode: 'flat', dir: '/tmp/pi-acp-sessions' },
+      mcpExtensionPath: MCP_EXTENSION_PATH,
       createPiClient: fake.createPiClient,
     })
     const app = server.register(acp.agent({ name: AGENT_NAME }))

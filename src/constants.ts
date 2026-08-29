@@ -125,12 +125,20 @@ export const PERMISSION_OPTION_ALLOW_ONCE = 'allow_once'
 export const PERMISSION_OPTION_ALLOW_ALWAYS = 'allow_always'
 export const PERMISSION_OPTION_REJECT_ONCE = 'reject_once'
 export const PERMISSION_DENIED_REASON = 'Denied by the ACP client'
-// Mutating built-ins the gate intercepts; everything else runs ungated.
+// Mutating built-ins the gate intercepts; every other built-in runs ungated
+// (MCP tools are gated by their name prefix, not by this list).
 export const MUTATING_TOOL_NAMES: readonly string[] = ['bash', 'powershell', 'edit', 'write']
 // A real user answers, so the window is generous; a timeout fails closed (deny).
 export const PERMISSION_REQUEST_TIMEOUT_MS = 300_000
 export const GATE_DIR_PREFIX = 'pi-acp-'
 export const GATE_FILENAME = 'permission-gate.ts'
+
+// ── MCP ───────────────────────────────────────────────────────────────────────
+//
+// The extension bundle cannot import this file (its ACP SDK value import would
+// be bundled too), so the MCP constants live in a leaf, re-exported here.
+
+export * from './mcp/mcpConstants.js'
 
 // ── Session title ──────────────────────────────────────────────────────────────
 //

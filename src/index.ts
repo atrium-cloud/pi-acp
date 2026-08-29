@@ -5,6 +5,7 @@ import { Readable, Writable } from 'node:stream'
 import * as acp from '@agentclientprotocol/sdk'
 
 import { AGENT_NAME, AGENT_VERSION, resolveRpcTimeoutMs } from './constants.js'
+import { materializeMcpExtension } from './mcp/extension.js'
 import { materializeGate } from './permissions/gate.js'
 import { resolvePiLaunch } from './pi/launch.js'
 import { PiAcpServer } from './server/PiAcpServer.js'
@@ -34,6 +35,8 @@ async function main(): Promise<void> {
     sessionDirs: resolveSessionDirs(process.env),
     // Written once at startup; every session loads it with `-e`.
     gateExtensionPath: materializeGate(),
+    // Written alongside the gate; loaded only by a session that asked for MCP.
+    mcpExtensionPath: materializeMcpExtension(),
   })
 
   // The SDK speaks Web streams; first arg is the writable (stdout).

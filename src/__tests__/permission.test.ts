@@ -11,6 +11,7 @@ import { type FakePiSpec, makeFakePiClient } from './fixtures/fakePiClient.js'
 
 const LAUNCH = { command: 'pi', args: ['--mode', 'rpc'], source: 'test' }
 const ABS_CWD = '/tmp/pi-acp-session'
+const MCP_EXTENSION_PATH = '/tmp/mcp-extension.mjs'
 const GO = { message: 'go', images: [], firstText: 'go' }
 
 function baseSpec(onPrompt?: FakePiSpec['onPrompt']): FakePiSpec {
@@ -41,6 +42,7 @@ async function connect(spec: FakePiSpec, requestImpl: RequestImpl): Promise<Conn
     launch: LAUNCH,
     rpcTimeoutMs: 1_000,
     notifier,
+    mcpExtensionPath: MCP_EXTENSION_PATH,
     createPiClient: fake.createPiClient,
   })
   return { fake, connection: established.connection, request, notify }

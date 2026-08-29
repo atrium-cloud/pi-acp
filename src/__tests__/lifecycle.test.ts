@@ -22,6 +22,7 @@ import { type FakePiSpec, makeFakePiClient } from './fixtures/fakePiClient.js'
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const LAUNCH = { command: 'pi', args: ['--mode', 'rpc'], source: 'test' }
+const MCP_EXTENSION_PATH = '/tmp/mcp-extension.mjs'
 const TEMP_PREFIX = 'pi-acp-lifecycle-'
 const HEADER_TIME = '2026-01-01T00:00:00.000Z'
 const FILE_TIMESTAMP = '2026-01-01T00-00-00-000Z'
@@ -96,6 +97,7 @@ function makeServer(spec: FakePiSpec = makeSpec()): {
     launch: LAUNCH,
     rpcTimeoutMs: 1_000,
     sessionDirs: dirs,
+    mcpExtensionPath: MCP_EXTENSION_PATH,
     createPiClient: fake.createPiClient,
   })
   const notify = vi.fn(async () => {})
@@ -310,6 +312,7 @@ describe('session/load', () => {
       launch: LAUNCH,
       rpcTimeoutMs: 1_000,
       sessionDirs: dirs,
+      mcpExtensionPath: MCP_EXTENSION_PATH,
       createPiClient: fake.createPiClient,
     })
     const app = server.register(acp.agent({ name: AGENT_NAME }))
