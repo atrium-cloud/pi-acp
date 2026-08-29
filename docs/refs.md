@@ -16,7 +16,7 @@
 
 - Repo: https://github.com/earendil-works/pi
 - Package: `@earendil-works/pi-coding-agent` (bin `pi`, Node >= 22.19.0)
-- Dependency: `^0.84.3`, the same caret policy as codex-acp on `@openai/codex`. The adapter launches the installed package's `./rpc-entry` export by default (`src/pi/launch.ts`); `bun run typecheck` against the installed version is the drift check.
+- Dependency: `^0.84.4` (moved from `^0.84.3` on 2026-08-29), the same caret policy as codex-acp on `@openai/codex`. The adapter launches the installed package's `./rpc-entry` export by default (`src/pi/launch.ts`); `bun run typecheck` against the installed version is the drift check.
 - `PI_ACP_PI_BIN` launches a different `pi` binary instead.
 - RPC mode docs: https://pi.dev/docs/latest/rpc (upstream `packages/coding-agent/docs/rpc.md`)
 - Key upstream files, relative to `packages/coding-agent/`
