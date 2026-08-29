@@ -8,6 +8,7 @@ import { type FakePiSpec, makeFakePiClient } from './fixtures/fakePiClient.js'
 
 const LAUNCH = { command: 'pi', args: ['--mode', 'rpc'], source: 'test' }
 const ABS_CWD = '/tmp/pi-acp-session'
+const MCP_EXTENSION_PATH = '/tmp/mcp-extension.mjs'
 const DEEPSEEK_VALUE = 'openrouter/deepseek/deepseek-v4-flash-0731'
 const stubNotifier = { notify: vi.fn(async () => {}) } as unknown as AgentContext
 
@@ -29,6 +30,7 @@ async function connectionFor(spec: FakePiSpec) {
     launch: LAUNCH,
     rpcTimeoutMs: 1_000,
     notifier: stubNotifier,
+    mcpExtensionPath: MCP_EXTENSION_PATH,
     createPiClient: fake.createPiClient,
   })
   return { fake, connection: established.connection }
@@ -83,6 +85,7 @@ describe('PiAcpServer.setConfigOption', () => {
       launch: LAUNCH,
       rpcTimeoutMs: 1_000,
       sessionDirs: { mode: 'flat', dir: '/tmp/pi-acp-sessions' },
+      mcpExtensionPath: MCP_EXTENSION_PATH,
       createPiClient: fake.createPiClient,
     })
   }

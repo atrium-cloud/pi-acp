@@ -1,9 +1,17 @@
 import { isAbsolute } from 'node:path'
 
 import * as acp from '@agentclientprotocol/sdk'
-import type { AgentContext, AvailableCommand } from '@agentclientprotocol/sdk'
+import type { AgentContext, AvailableCommand, McpServer } from '@agentclientprotocol/sdk'
 
-import { COMMAND_SOURCE_EXTENSION, JSONRPC_INTERNAL_ERROR, JSONRPC_INVALID_PARAMS, PI_SESSION_ARG } from '../constants.js'
+import {
+  COMMAND_SOURCE_EXTENSION,
+  ENV_MCP_SERVERS,
+  JSONRPC_INTERNAL_ERROR,
+  JSONRPC_INVALID_PARAMS,
+  PI_SESSION_ARG,
+} from '../constants.js'
+import type { McpServerSpec } from '../mcp/servers.js'
+import { translateMcpServers } from '../mcp/servers.js'
 import type { PiLaunch } from '../pi/errors.js'
 import { PiRpcClient } from '../pi/PiRpcClient.js'
 import type { ModelChoice } from '../turn/configOptions.js'
@@ -18,6 +26,9 @@ export interface SessionSetupDeps {
   /** Absolute path to the materialized permission gate, loaded with `-e`. Absent
    * in tests (the fake client ignores args), so no temp file is written. */
   readonly gateExtensionPath?: string | undefined
+  /** Absolute path to the materialized MCP extension, loaded with a second `-e`
+   * only by a session whose request carries servers. */
+  readonly mcpExtensionPath: string
   /** Injectable for tests; defaults to spawning a real Pi RPC subprocess. */
   readonly createPiClient?: CreatePiClient | undefined
 }
@@ -43,7 +54,7 @@ export type SessionSetupMode =
  * structural so all three SDK request types satisfy it. */
 export interface SessionSetupRequest {
   readonly cwd: string
-  readonly mcpServers?: readonly unknown[] | undefined
+  readonly mcpServers?: McpServer[] | undefined
   readonly additionalDirectories?: readonly string[] | undefined
 }
 
@@ -52,17 +63,21 @@ export async function establishSession(
   deps: SessionSetupDeps,
   mode: SessionSetupMode = { kind: 'new' },
 ): Promise<EstablishedSession> {
-  validateSessionRequest(request)
+  const mcpServers = validateSessionRequest(request)
 
   const connection = new SessionConnection({ notifier: deps.notifier, cwd: request.cwd })
   const createPiClient = deps.createPiClient ?? defaultCreatePiClient
   // The gate loads alongside the user's own extensions (no --no-extensions).
   const args = deps.gateExtensionPath !== undefined ? ['-e', deps.gateExtensionPath] : []
+  // Only a session that asked for servers loads the MCP extension; it reads the
+  // list from the environment and deletes it before anything can inherit it.
+  if (mcpServers.length > 0) args.push('-e', deps.mcpExtensionPath)
   if (mode.kind === 'open') args.push(PI_SESSION_ARG, mode.sessionFile)
   const piClient = createPiClient({
     launch: deps.launch,
     cwd: request.cwd,
     args,
+    ...(mcpServers.length > 0 ? { env: { [ENV_MCP_SERVERS]: JSON.stringify(mcpServers) } } : {}),
     timeoutMs: deps.rpcTimeoutMs,
     onEvent: (event) => {
       connection.routeEvent(event)
@@ -118,16 +133,16 @@ export async function establishSession(
   }
 }
 
-/** Shared by `session/new`, `session/resume` and `session/load`; resume and load
- * run it before touching the store so a bad request never reads the filesystem. */
-export function validateSessionRequest(request: SessionSetupRequest): void {
+/** Shared by `session/new`, `session/resume`, `session/load` and `session/fork`;
+ * the store-reading methods run it before touching the store so a bad request
+ * never reads the filesystem. Returns the request's MCP servers translated for
+ * the extension; an absent list means none. */
+export function validateSessionRequest(request: SessionSetupRequest): McpServerSpec[] {
   if (!isAbsolute(request.cwd)) throw invalidParams(`cwd must be an absolute path, got "${request.cwd}"`)
-  if (request.mcpServers !== undefined && request.mcpServers.length > 0) {
-    throw invalidParams('mcpServers are not supported in this baseline')
-  }
   if (request.additionalDirectories !== undefined && request.additionalDirectories.length > 0) {
     throw invalidParams('additionalDirectories are not supported')
   }
+  return translateMcpServers(request.mcpServers)
 }
 
 interface PiCommand {

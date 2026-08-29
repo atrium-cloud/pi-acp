@@ -68,6 +68,9 @@ export interface PiAcpServerOptions {
   readonly sessionDirs: SessionDirs
   /** Absolute path to the permission gate extension (`-e`); omitted in tests. */
   readonly gateExtensionPath?: string | undefined
+  /** Absolute path to the MCP extension, loaded only by a session whose request
+   * carries `mcpServers`. */
+  readonly mcpExtensionPath: string
   /** Injectable for tests; defaults to spawning a real Pi RPC subprocess. */
   readonly createPiClient?: CreatePiClient | undefined
 }
@@ -127,6 +130,9 @@ export class PiAcpServer {
       agentCapabilities: {
         loadSession: true,
         promptCapabilities: { image: true, audio: false, embeddedContext: true },
+        // Both remote transports are served by the built-in MCP extension; the
+        // experimental `acp` transport has no client to proxy to and is refused.
+        mcpCapabilities: { http: true, sse: true },
         sessionCapabilities: { list: {}, resume: {}, fork: {}, close: {}, delete: {} },
       },
     }
@@ -349,6 +355,7 @@ export class PiAcpServer {
       rpcTimeoutMs: this.options.rpcTimeoutMs,
       notifier: client,
       gateExtensionPath: this.options.gateExtensionPath,
+      mcpExtensionPath: this.options.mcpExtensionPath,
       createPiClient: this.options.createPiClient,
     }
   }

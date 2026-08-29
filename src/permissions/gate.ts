@@ -7,6 +7,7 @@ import type { PermissionOption } from '@agentclientprotocol/sdk'
 import {
   GATE_DIR_PREFIX,
   GATE_FILENAME,
+  MCP_TOOL_PREFIX,
   MUTATING_TOOL_NAMES,
   PERMISSION_DENIED_REASON,
   PERMISSION_OPTION_ALLOW_ALWAYS,
@@ -57,9 +58,12 @@ export function buildPermissionOptions(): PermissionOption[] {
 // and option ids. Plain (untyped) TS so jiti loads it and — critically — so the
 // bundled string never mentions the dev-only Pi package (the build purity guard
 // greps `dist/index.js` for it). Default-deny: only an explicit allow id runs the
-// tool; undefined/cancelled/any foreign value blocks.
+// tool; undefined/cancelled/any foreign value blocks. Gated tools are the
+// mutating built-ins plus every MCP tool, which is third-party code the adapter
+// cannot classify.
 export const PERMISSION_GATE_SOURCE = [
   `const SENTINEL_PREFIX = ${JSON.stringify(SENTINEL_PREFIX)}`,
+  `const MCP_PREFIX = ${JSON.stringify(MCP_TOOL_PREFIX)}`,
   `const ALLOW_ONCE = ${JSON.stringify(PERMISSION_OPTION_ALLOW_ONCE)}`,
   `const ALLOW_ALWAYS = ${JSON.stringify(PERMISSION_OPTION_ALLOW_ALWAYS)}`,
   `const DENIED_REASON = ${JSON.stringify(PERMISSION_DENIED_REASON)}`,
@@ -67,7 +71,7 @@ export const PERMISSION_GATE_SOURCE = [
   `export default function (pi) {`,
   `  const alwaysAllowed = new Set()`,
   `  pi.on('tool_call', async (event, ctx) => {`,
-  `    if (!MUTATING.has(event.toolName)) return undefined`,
+  `    if (!MUTATING.has(event.toolName) && !event.toolName.startsWith(MCP_PREFIX)) return undefined`,
   `    if (alwaysAllowed.has(event.toolName)) return undefined`,
   `    if (!ctx.hasUI) return { block: true, reason: DENIED_REASON }`,
   `    const title = SENTINEL_PREFIX + JSON.stringify({ toolCallId: event.toolCallId, toolName: event.toolName })`,

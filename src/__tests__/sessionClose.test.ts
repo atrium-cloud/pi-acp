@@ -8,6 +8,7 @@ import { type FakePiSpec, makeFakePiClient } from './fixtures/fakePiClient.js'
 
 const LAUNCH = { command: 'pi', args: ['--mode', 'rpc'], source: 'test' }
 const ABS_CWD = '/tmp/pi-acp-session'
+const MCP_EXTENSION_PATH = '/tmp/mcp-extension.mjs'
 const HELLO: FlattenedPrompt = { message: 'hi', images: [], firstText: 'hi' }
 const MODELS = [{ provider: 'anthropic', id: 'claude-sonnet-5', name: 'Claude Sonnet 5' }]
 const LEVELS = ['low']
@@ -88,6 +89,7 @@ async function connect(createPiClient: CreatePiClient): Promise<{
     launch: LAUNCH,
     rpcTimeoutMs: 1_000,
     notifier: { notify } as unknown as AgentContext,
+    mcpExtensionPath: MCP_EXTENSION_PATH,
     createPiClient,
   })
   return { connection: established.connection, notify }

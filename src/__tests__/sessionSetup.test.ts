@@ -1,8 +1,15 @@
 import * as acp from '@agentclientprotocol/sdk'
-import type { AgentContext } from '@agentclientprotocol/sdk'
+import type { AgentContext, McpServer } from '@agentclientprotocol/sdk'
 import { describe, expect, it, vi } from 'vitest'
 
-import { AGENT_NAME, CONFIG_ID_MODEL, CONFIG_ID_THOUGHT_LEVEL, PI_SESSION_ARG } from '../constants.js'
+import {
+  AGENT_NAME,
+  CONFIG_ID_MODEL,
+  CONFIG_ID_THOUGHT_LEVEL,
+  ENV_MCP_SERVERS,
+  JSONRPC_INVALID_PARAMS,
+  PI_SESSION_ARG,
+} from '../constants.js'
 import { PiAcpServer } from '../server/PiAcpServer.js'
 import type { SessionDirs } from '../session/sessionDirectory.js'
 import { establishSession } from '../session/sessionSetup.js'
@@ -66,13 +73,33 @@ const EXPECTED_COMMANDS = [
 const stubNotifier = { notify: vi.fn(async () => {}) } as unknown as AgentContext
 
 function makeDeps(fake: ReturnType<typeof makeFakePiClient>) {
-  return { launch: LAUNCH, rpcTimeoutMs: 1_000, notifier: stubNotifier, createPiClient: fake.createPiClient }
+  return {
+    launch: LAUNCH,
+    rpcTimeoutMs: 1_000,
+    notifier: stubNotifier,
+    mcpExtensionPath: MCP_EXTENSION_PATH,
+    createPiClient: fake.createPiClient,
+  }
 }
 
 const ABS_CWD = '/tmp/pi-acp-session'
 const SESSION_DIRS: SessionDirs = { mode: 'flat', dir: '/tmp/pi-acp-sessions' }
 const SESSION_FILE = '/tmp/pi-acp-sessions/2026-01-01T00-00-00-000Z_sess-1.jsonl'
 const GATE_PATH = '/tmp/gate.ts'
+const MCP_EXTENSION_PATH = '/tmp/mcp-extension.mjs'
+const STDIO_SERVER: McpServer = {
+  name: 'probe',
+  command: '/usr/bin/probe',
+  args: ['--serve'],
+  env: [{ name: 'TOKEN', value: 's3cret' }],
+}
+const STDIO_SPEC = {
+  kind: 'stdio',
+  name: 'probe',
+  command: '/usr/bin/probe',
+  args: ['--serve'],
+  env: { TOKEN: 's3cret' },
+}
 
 describe('establishSession', () => {
   it('spawns, reads state, and builds config options + every advertised command', async () => {
@@ -102,14 +129,42 @@ describe('establishSession', () => {
     })
   })
 
-  it('rejects mcpServers and additionalDirectories', async () => {
+  it('rejects additionalDirectories', async () => {
     const fake = makeFakePiClient(makeSpec())
-    await expect(
-      establishSession({ cwd: ABS_CWD, mcpServers: [{ name: 'x', command: 'y', args: [], env: [] }] }, makeDeps(fake)),
-    ).rejects.toThrow(/mcpServers/)
     await expect(
       establishSession({ cwd: ABS_CWD, mcpServers: [], additionalDirectories: ['/other'] }, makeDeps(fake)),
     ).rejects.toThrow(/additionalDirectories/)
+  })
+
+  it('loads the MCP extension with a second -e and hands the translated specs over the environment', async () => {
+    const fake = makeFakePiClient(makeSpec())
+    await establishSession(
+      { cwd: ABS_CWD, mcpServers: [STDIO_SERVER] },
+      { ...makeDeps(fake), gateExtensionPath: GATE_PATH },
+    )
+    expect(fake.spawns).toEqual([
+      {
+        cwd: ABS_CWD,
+        args: ['-e', GATE_PATH, '-e', MCP_EXTENSION_PATH],
+        env: { [ENV_MCP_SERVERS]: JSON.stringify([STDIO_SPEC]) },
+      },
+    ])
+  })
+
+  it('passes neither the extension nor the environment when the request carries no servers', async () => {
+    const fake = makeFakePiClient(makeSpec())
+    await establishSession({ cwd: ABS_CWD, mcpServers: [] }, { ...makeDeps(fake), gateExtensionPath: GATE_PATH })
+    expect(fake.spawns).toEqual([{ cwd: ABS_CWD, args: ['-e', GATE_PATH] }])
+    expect(fake.spawns[0]?.env).toBeUndefined()
+  })
+
+  it('rejects the acp transport with invalid params before anything is spawned', async () => {
+    const fake = makeFakePiClient(makeSpec())
+    const servers = [{ type: 'acp', name: 'inproc', serverId: 'x' }] as unknown as McpServer[]
+    await expect(establishSession({ cwd: ABS_CWD, mcpServers: servers }, makeDeps(fake))).rejects.toMatchObject({
+      code: JSONRPC_INVALID_PARAMS,
+    })
+    expect(fake.spawns).toEqual([])
   })
 
   it('stops the subprocess when a post-start fetch fails (no orphan)', async () => {
@@ -195,6 +250,7 @@ describe('session/new over the wire', () => {
       launch: LAUNCH,
       rpcTimeoutMs: 1_000,
       sessionDirs: SESSION_DIRS,
+      mcpExtensionPath: MCP_EXTENSION_PATH,
       createPiClient: fake.createPiClient,
     })
     const app = server.register(acp.agent({ name: AGENT_NAME }))

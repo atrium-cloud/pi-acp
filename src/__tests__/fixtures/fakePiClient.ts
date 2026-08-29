@@ -49,9 +49,9 @@ export interface FakePiSpec {
 export interface FakePiClient {
   createPiClient: CreatePiClient
   calls: Array<Record<string, unknown>>
-  /** One entry per spawn, so a test can assert the `--session` args and that a
-   * reused session spawned nothing new. */
-  spawns: Array<{ cwd: string; args: readonly string[] }>
+  /** One entry per spawn, so a test can assert the `--session` args, the MCP
+   * environment, and that a reused session spawned nothing new. */
+  spawns: Array<{ cwd: string; args: readonly string[]; env?: NodeJS.ProcessEnv | undefined }>
   wasStopped: () => boolean
   /** Feeds an event through the transport's `onEvent` (the session router). */
   emit: (event: JsonAgentSessionEvent) => void
@@ -129,10 +129,10 @@ export function makeFakePiClient(spec: FakePiSpec): FakePiClient {
     },
   }
 
-  const spawns: Array<{ cwd: string; args: readonly string[] }> = []
+  const spawns: Array<{ cwd: string; args: readonly string[]; env?: NodeJS.ProcessEnv | undefined }> = []
   const createPiClient: CreatePiClient = (options) => {
     const args = options.args ?? []
-    spawns.push({ cwd: options.cwd, args })
+    spawns.push({ cwd: options.cwd, args, env: options.env })
     const sessionArgIndex = args.indexOf(PI_SESSION_ARG)
     if (spec.sessionIdFromSessionFile && sessionArgIndex !== -1) {
       state = { ...state, sessionId: readHeaderSessionId(args[sessionArgIndex + 1]) }
