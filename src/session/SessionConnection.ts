@@ -105,6 +105,12 @@ export class SessionConnection {
     return this.exitError
   }
 
+  /** A fork of this session is taken from the store, so the writer needs to know
+   * whether the tail of the file is a turn still being appended. */
+  get hasActiveTurn(): boolean {
+    return this.activeTurn !== null
+  }
+
   /** Sends the command snapshot after `session/new` has returned. It is deferred
    * a macrotask because the SDK client only attaches its session-update queue
    * inside the `session/new` response callback (acp.js SessionUpdateRouter), so an

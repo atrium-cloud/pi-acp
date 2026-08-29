@@ -30,7 +30,7 @@ describe('initialize (over an ACP connection)', () => {
       agentCapabilities: {
         loadSession: true,
         promptCapabilities: { image: true, audio: false, embeddedContext: true },
-        sessionCapabilities: { list: {}, resume: {}, close: {}, delete: {} },
+        sessionCapabilities: { list: {}, resume: {}, fork: {}, close: {}, delete: {} },
       },
     })
   })
