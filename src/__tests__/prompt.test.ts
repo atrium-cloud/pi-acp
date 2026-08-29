@@ -11,7 +11,7 @@ import { type FakePiSpec, makeFakePiClient } from './fixtures/fakePiClient.js'
 
 const LAUNCH = { command: 'pi', args: ['--mode', 'rpc'], source: 'test' }
 const ABS_CWD = '/tmp/pi-acp-session'
-const HELLO: FlattenedPrompt = { message: 'hi', images: [] }
+const HELLO: FlattenedPrompt = { message: 'hi', images: [], firstText: 'hi' }
 type Emit = Parameters<NonNullable<FakePiSpec['onPrompt']>>[0]
 
 function baseSpec(onPrompt?: FakePiSpec['onPrompt']): FakePiSpec {
@@ -59,11 +59,66 @@ describe('SessionConnection.runPrompt', () => {
     })
   })
 
+  it('emits a usage_update from end-of-turn context stats', async () => {
+    const { connection, notify } = await connect(baseSpec(fullTurn))
+    await connection.runPrompt(HELLO, new AbortController().signal)
+    expect(notify).toHaveBeenCalledWith(acp.methods.client.session.update, {
+      sessionId: 'sess-1',
+      update: { sessionUpdate: 'usage_update', used: 1234, size: 200_000, cost: { amount: 0.05, currency: 'USD' } },
+    })
+  })
+
+  it('skips usage when post-compaction context tokens are null', async () => {
+    const spec: FakePiSpec = { ...baseSpec(fullTurn), stats: { cost: 0.1, contextUsage: { tokens: null, contextWindow: 1_000, percent: null } } }
+    const { connection, notify } = await connect(spec)
+    await connection.runPrompt(HELLO, new AbortController().signal)
+    expect(notify).not.toHaveBeenCalledWith(
+      acp.methods.client.session.update,
+      expect.objectContaining({ update: expect.objectContaining({ sessionUpdate: 'usage_update' }) }),
+    )
+  })
+
+  it('titles a nameless session from the first prompt', async () => {
+    const { fake, connection } = await connect(baseSpec(fullTurn))
+    await connection.runPrompt({ message: 'Fix the login bug', images: [], firstText: 'Fix the login bug' }, new AbortController().signal)
+    expect(fake.calls.find((call) => call['type'] === 'set_session_name')).toMatchObject({ name: 'Fix the login bug' })
+  })
+
+  it('titles from the first text block, not a leading resource header', async () => {
+    const { fake, connection } = await connect(baseSpec(fullTurn))
+    await connection.runPrompt(
+      { message: 'file:///repo/notes.md:\nnotes\nSummarize this', images: [], firstText: 'Summarize this' },
+      new AbortController().signal,
+    )
+    expect(fake.calls.find((call) => call['type'] === 'set_session_name')).toMatchObject({ name: 'Summarize this' })
+  })
+
+  it('does not title a resource-only prompt', async () => {
+    const { fake, connection } = await connect(baseSpec(fullTurn))
+    await connection.runPrompt({ message: 'file:///repo/notes.md:\nnotes', images: [], firstText: '' }, new AbortController().signal)
+    expect(fake.calls.some((call) => call['type'] === 'set_session_name')).toBe(false)
+  })
+
+  it('does not title a session that already has a name', async () => {
+    const spec = baseSpec(fullTurn)
+    spec.state.sessionName = 'Existing name'
+    const { fake, connection } = await connect(spec)
+    await connection.runPrompt(HELLO, new AbortController().signal)
+    expect(fake.calls.some((call) => call['type'] === 'set_session_name')).toBe(false)
+  })
+
+  it('does not title from an image-only prompt with an empty message', async () => {
+    const { fake, connection } = await connect(baseSpec(fullTurn))
+    await connection.runPrompt({ message: '', images: [{ type: 'image', data: 'YWJj', mimeType: 'image/png' }], firstText: '' }, new AbortController().signal)
+    expect(fake.calls.some((call) => call['type'] === 'set_session_name')).toBe(false)
+  })
+
   it('refuses a second concurrent turn', async () => {
     const { fake, connection } = await connect(baseSpec((emit) => emit({ type: 'agent_start' } as never)))
     const first = connection.runPrompt(HELLO, new AbortController().signal)
     await Promise.resolve()
     await expect(connection.runPrompt(HELLO, new AbortController().signal)).rejects.toMatchObject({ code: -32_600 })
+    fake.emit({ type: 'message_end', message: { role: 'assistant', stopReason: 'stop' } } as never)
     fake.emit({ type: 'agent_settled' } as never)
     await expect(first).resolves.toBe('end_turn')
   })
@@ -77,6 +132,14 @@ describe('SessionConnection.runPrompt', () => {
     fake.emit({ type: 'agent_settled' } as never)
     await expect(turn).resolves.toBe('cancelled')
     expect(fake.calls.map((call) => call['type'])).toContain('abort')
+  })
+
+  it('resolves cancelled without sending when the signal is already aborted', async () => {
+    const { fake, connection } = await connect(baseSpec(fullTurn))
+    const controller = new AbortController()
+    controller.abort()
+    await expect(connection.runPrompt(HELLO, controller.signal)).resolves.toBe('cancelled')
+    expect(fake.calls.map((call) => call['type'])).not.toContain('prompt')
   })
 
   it('fails the in-flight turn when the subprocess dies', async () => {

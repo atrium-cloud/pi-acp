@@ -100,12 +100,34 @@ describe('establishSession', () => {
     expect(fake.wasStopped()).toBe(true)
   })
 
-  it('routes session-level and ignored events without emitting or throwing', async () => {
+  it('translates a name change to session_info_update and a level change to config_option_update', async () => {
     const fake = makeFakePiClient(makeSpec())
     const established = await establishSession({ cwd: ABS_CWD, mcpServers: [] }, makeDeps(fake))
     const notify = vi.mocked(stubNotifier.notify)
     notify.mockClear()
     established.connection.routeEvent({ type: 'session_info_changed', name: 'renamed' } as never)
+    expect(notify).toHaveBeenCalledWith(acp.methods.client.session.update, {
+      sessionId: 'sess-1',
+      update: { sessionUpdate: 'session_info_update', title: 'renamed' },
+    })
+    notify.mockClear()
+    established.connection.routeEvent({ type: 'thinking_level_changed', level: 'high' } as never)
+    expect(notify).toHaveBeenCalledWith(acp.methods.client.session.update, {
+      sessionId: 'sess-1',
+      update: expect.objectContaining({
+        sessionUpdate: 'config_option_update',
+        configOptions: expect.arrayContaining([
+          expect.objectContaining({ id: CONFIG_ID_THOUGHT_LEVEL, currentValue: 'high' }),
+        ]),
+      }),
+    })
+  })
+
+  it('ignores entry_appended and a turn-scoped event with no active turn', async () => {
+    const fake = makeFakePiClient(makeSpec())
+    const established = await establishSession({ cwd: ABS_CWD, mcpServers: [] }, makeDeps(fake))
+    const notify = vi.mocked(stubNotifier.notify)
+    notify.mockClear()
     established.connection.routeEvent({ type: 'entry_appended' } as never)
     established.connection.routeEvent({ type: 'agent_start' } as never)
     expect(notify).not.toHaveBeenCalled()

@@ -68,6 +68,9 @@ export interface PiRpcClientOptions {
   readonly sigtermGraceMs?: number
   readonly onEvent?: (event: JsonAgentSessionEvent) => void
   readonly onExit?: (error: Error) => void
+  /** Answers a Pi extension dialog (`select`/`confirm`/`input`/`editor`). When
+   * unset the dialog is failed closed (the permission gate reads that as deny). */
+  readonly onExtensionUiRequest?: (request: RpcExtensionUIRequest) => Promise<RpcExtensionUIResponse>
 }
 
 // ── Client ──────────────────────────────────────────────────────────────────
@@ -170,6 +173,7 @@ export class PiRpcClient {
 
   async request<C extends RpcCommand & { id?: undefined }>(
     command: C,
+    options?: { readonly timeoutMs?: number },
   ): Promise<Extract<RpcResponse, { command: C['type']; success: true }>> {
     const child = this.child
     if (!child) throw new PiClientClosedError(`command "${command.type}" was issued before start()`)
@@ -180,14 +184,15 @@ export class PiRpcClient {
       throw new PiClientClosedError(`command "${command.type}" cannot be sent; the child's stdin is closed`)
     }
 
+    const timeoutMs = options?.timeoutMs ?? this.timeoutMs
     const id = `${REQUEST_ID_PREFIX}${++this.nextRequestId}`
     const line = serializeJsonLine({ ...command, id })
 
     const response = await new Promise<RpcResponse>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id)
-        reject(new PiRpcTimeoutError(command.type, this.timeoutMs, this.stderrTail()))
-      }, this.timeoutMs)
+        reject(new PiRpcTimeoutError(command.type, timeoutMs, this.stderrTail()))
+      }, timeoutMs)
       timer.unref()
 
       this.pending.set(id, {
@@ -392,22 +397,43 @@ export class PiRpcClient {
       case 'confirm':
       case 'input':
       case 'editor':
-        // Fail closed. Phase 1 has no permission surface, and Pi never
-        // auto-resolves `editor` (it carries no timeout), so an unanswered
-        // dialog wedges the turn forever.
-        this.writeExtensionUiResponse({ type: 'extension_ui_response', id: request.id, cancelled: true })
+        this.routeExtensionDialog(request)
         return
       case 'notify':
+        console.error(`${LOG_PREFIX} Pi extension notify: ${request.message}`)
+        return
       case 'setStatus':
       case 'setWidget':
       case 'setTitle':
       case 'set_editor_text':
+        // Ambient TUI chrome with no ACP surface; dropped.
         return
     }
     const unhandled: never = request
     // A newer Pi may add UI methods. Throwing would escape the stdout data
     // handler and crash the adapter.
     this.failTransport(new PiProtocolError(`unhandled extension UI method: ${JSON.stringify(unhandled)}`))
+  }
+
+  /** Routes a dialog to the adapter handler, or fails it closed when none is
+   * wired. The handler is async but this runs in the sync stdout handler, so its
+   * rejection is caught here and never escapes; Pi never auto-resolves `editor`
+   * (it carries no timeout), so an unanswered dialog would wedge the turn. */
+  private routeExtensionDialog(request: RpcExtensionUIRequest): void {
+    const handler = this.options.onExtensionUiRequest
+    const failClosed = (): void =>
+      this.writeExtensionUiResponse({ type: 'extension_ui_response', id: request.id, cancelled: true })
+    if (handler === undefined) {
+      failClosed()
+      return
+    }
+    handler(request).then(
+      (response) => this.writeExtensionUiResponse(response),
+      (error: unknown) => {
+        console.error(`${LOG_PREFIX} Pi RPC transport: extension dialog handler failed: ${errorMessage(error)}`)
+        failClosed()
+      },
+    )
   }
 
   private writeExtensionUiResponse(response: RpcExtensionUIResponse): void {

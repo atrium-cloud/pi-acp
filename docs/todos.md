@@ -51,6 +51,7 @@
 - [x] `initialize`
     - Honest capabilities only, each advertised in the change that implements it; pinned by `initialize.test.ts`. Text-only prompt caps here; image/embeddedContext turn on with `session/prompt`.
     - No `authMethods`: Pi resolves credentials from its own `auth.json` and environment, and there is no non-interactive login to expose.
+    - `initialize`: returns pi-acp's own version and capabilities synchronously.
     - Provider auth failures surface as turn errors carrying Pi's message; wired with the turn layer (`session/prompt`).
 - [x] `session/new`
     - Validate an absolute `cwd`, spawn the child, read `get_state` for the session id and file.
@@ -77,39 +78,41 @@
 - [x] `session/cancel`
     - `abort` with a sticky cancel flag, fire and forget (Pi defers the ack past `agent_settled`).
     - `$/cancel_request` on the prompt routes through the same path.
-- [ ] Streaming translation
-    - Stateful per-turn `src/turn/TurnHandler.ts`; a pure `src/turn/mappers.ts` lands with the tool arm.
+- [x] Streaming translation
+    - Stateful per-turn `src/turn/TurnHandler.ts`; a pure `src/turn/mappers.ts` holds the tool/usage/session mappers.
     - `message_update` sub-events distinguish text from thinking by their own type (`text_delta` vs `thinking_delta`), not a `contentIndex → kind` map (done)
         - `text_*` → `agent_message_chunk`
         - `thinking_*` → `agent_thought_chunk`
-        - `contentIndex` is only tracked so a `*_end` re-emits the full content when no delta streamed for that index
+        - `contentIndex` is only tracked so a `*_end` re-emits the full content when no delta streamed for that index; reset on `message_start`.
     - `tool_execution_start/update/end` → `tool_call` / `tool_call_update`
-        - Kinds for `read`, `bash`, `powershell`, `edit`, `write`, `grep`, `find`, `ls`.
-        - `locations` from `path` args; `rawInput` / `rawOutput` carried.
-        - `edit` results rendered as a `diff` content block from `details.patch` (a unified patch; `details.diff` is display-oriented).
-        - `bash` partial results replace the row content; Pi sends accumulated output, not deltas.
-    - Pi's default tool set is `read`, `bash`, `edit`, `write`; `grep` / `find` / `ls` are opt-in and `powershell` is Windows-only. The kind map covers all eight; tests exercise the default four first.
-- [ ] Session-level wire events not in the RPC docs' event table
+        - Kinds for `read`, `bash`, `powershell`, `edit`, `write`, `grep`, `find`, `ls` (closed `ToolKind` union; unknown → `other`).
+        - `locations` from `path` args; `rawInput` / `rawOutput` carried; args cached at start (the end event omits them).
+        - `edit` rendered as one `diff` content block per `edits[]` entry, built from the INPUT `{oldText,newText}` (ACP's `Diff` doesn't decompose `details.patch`).
+        - `bash` partial results replace the row content via `tool_execution_update.partialResult`; `bash_execution_update` is ignored as redundant (UNVERIFIED against live Pi).
+    - Pi's default tool set is `read`, `bash`, `edit`, `write`; `grep` / `find` / `ls` are opt-in and `powershell` is Windows-only. The kind map covers all eight.
+- [x] Session-level wire events not in the RPC docs' event table
     - `session_info_changed { name }` → `session_info_update`
-    - `thinking_level_changed { level }` → `config_option_update`
+    - `thinking_level_changed { level }` → `config_option_update` (full set, rebuilt from the cached current model — no round-trip; the client tolerates the idempotent echo of a client-initiated set)
     - `entry_appended`, `queue_update`: ignored
     - Exhaustive switch over `JsonAgentSessionEvent` with no `default` keeps the list honest.
-- [ ] Usage
-    - `usage_update` from `message_update.usage` during the turn.
-    - `usage_update` from `get_session_stats.contextUsage` at turn end; `contextWindow` is the gauge size.
-    - `null` tokens right after compaction are skipped.
-- [ ] Permissions via a pi-acp-owned Pi extension loaded with `-e`
-    - Extension side
+- [x] Usage
+    - `usage_update` from `get_session_stats.contextUsage` at turn end; `contextWindow` is the gauge size; `null` tokens right after compaction are skipped.
+    - Mid-turn `usage_update` from `message_update.usage` is DEFERRED: the occupancy formula can't be matched to Pi's own accounting without a live sprite run, so only the authoritative end-of-turn path ships (the plan's sanctioned fallback).
+- [x] Permissions via a pi-acp-owned Pi extension loaded with `-e`
+    - Extension side (`src/permissions/gate.ts`, source built from shared constants, materialized once at startup)
         - `tool_call` handler asks through `ctx.ui.select` for every mutating built-in tool: `bash`, `powershell`, `edit`, `write`.
-        - The `select` title is sentinel JSON carrying `toolCallId`, `toolName`, and the input.
-        - `allow_always` is remembered per session per tool name inside the extension.
-    - Adapter side
+        - The `select` title is sentinel JSON carrying `toolCallId` and `toolName` only; the input is never re-sent (a large `write` would otherwise cross the Pi wire twice).
+        - `allow_always` is remembered per session per tool name inside the extension; default-deny on any unrecognized answer (Pi passes the value through unvalidated).
+    - Adapter side (`SessionConnection.handleExtensionUiRequest`)
         - Recognizes the sentinel and maps it to `session/request_permission` with `allow_once`, `allow_always`, `reject_once`.
-        - Answers with `extension_ui_response`.
-        - Always a bounded `timeout`; `undefined`, `cancelled`, timeout, and a closed session all resolve to deny.
+        - Reads the tool input from the turn's cache: Pi emits `tool_execution_start` before it runs the `tool_call` hook (Pi `docs/extensions.md`, and `beforeToolCall` is invoked from `prepareToolCall` after the start event in the agent loop), so the id is always announced by the time the sentinel arrives. An unannounced id (no turn, or a sentinel forged by another loaded extension) is denied without a prompt.
+        - Bounded `PERMISSION_REQUEST_TIMEOUT_MS`; `undefined`, `cancelled`, timeout, and a request error all resolve to deny. A timeout also sends `$/cancel_request` so the client's dialog closes.
+        - A blocked tool is finalized by Pi as an immediate error result, so it still gets a failed `tool_execution_end` carrying the denial reason; the adapter adds no synthetic terminal update.
     - Packaging
-        - Extension source is embedded in the bundle and materialized to a temp file at startup so `bun --compile` binaries work.
+        - Extension source is embedded in the bundle (never naming the dev-only Pi package) and materialized to a temp file at startup so `bun --compile` binaries work.
         - The child is spawned without `--no-extensions` so the user's own extensions (pi-mcp-adapter among them) keep loading alongside the gate.
+    - The sentinel prefix is a trust boundary, not a security boundary: any extension in the same Pi process can emit one, but the worst case is a spurious prompt for an already-announced id.
+    - The live permission round-trip is UNVERIFIED against live Pi.
 - [x] No session modes
     - Pi has no native permission policy to map onto.
     - `modes` is omitted from `session/new`; `session/set_mode` is not handled.
@@ -126,23 +129,21 @@
     - Command metadata comes from `sourceInfo` (`{ path, source, scope, origin }`).
     - Only `prompt` and `skill` sources are advertised.
     - `extension` commands are deferred: nothing signals whether one starts an agent loop, so a `session/prompt` waiting on `agent_settled` could never resolve.
-- [ ] Other extension UI requests
-    - `confirm`, `input`, `editor`, and non-sentinel `select`
-        - Form elicitations when the client advertises `elicitation.form`.
-        - Otherwise cancelled, never auto-answered.
-    - `editor` carries no `timeout` and Pi never auto-resolves it, so the adapter always answers (`cancelled: true` on turn end or session close).
+- [x] Other extension UI requests
+    - `confirm`, `input`, `editor`, and non-sentinel `select` are answered `cancelled: true` immediately (fail closed, never auto-answered, never wedged) — `editor` too, since Pi never auto-resolves it.
+        - Form-elicitation mapping when the client advertises `elicitation.form` is DEFERRED; the compliant fallback (cancelled) ships. The SDK surface exists (`AgentContext.createElicitation`, gated on `ClientCapabilities.elicitation`).
     - `notify` is logged to stderr.
     - `setStatus`, `setWidget`, `setTitle`, `set_editor_text` are dropped.
-- [ ] Session title
-    - After the first prompt of a session with no name, derive a title from the first user message excerpt.
+- [x] Session title
+    - After the first prompt of a nameless session, derive a title from the first user message's first line (bounded), skipped when it trims empty (Pi rejects an empty name).
     - Write it back with `set_session_name` so Pi's own session picker shows the same name.
     - `session_info_changed` then drives `session_info_update`; `session/list` reads the name from the session file.
-- [ ] Turn-lifecycle fixes deferred from the Batch C review
-    - Prompt-ack timeout is too tight: the ack is awaited under `PI_ACP_RPC_TIMEOUT_MS`, but Pi acks only after preflight, which can run a full compaction LLM call on a long session and exceed the bound; the request then rejects while Pi runs the turn unsubscribed. Exempt the `prompt` ack from the generic timeout, or race the ack against `agent_start`. This corrects the §1 line-35 claim that an over-bound preflight only ever means a genuine stall.
-    - Cancel before `agent_start` is a no-op: `session.abort` does nothing while the run is not active, so an early cancel lets the turn run to completion before the sticky flag reports `cancelled`; return `cancelled` at entry when `signal.aborted`, and re-send `abort` on `agent_start` when already cancelled.
-    - `stop()` mid-turn strands `runPrompt`: `notifyExit` returns early while stopping, so `handleExit` never fails the active turn and `settled` never resolves (dangling promise on connection-close teardown). Fail the active turn from `SessionConnection.stop()` before awaiting the client stop.
-    - A `null` last stop reason settles as `end_turn`: a post-`agent_start` Pi-internal failure can reach the client as an empty successful turn. Reject `null` as an internal error (invariant: a failed turn never ends `end_turn`).
-    - Empty prompt content (`[]`) is forwarded as an empty message instead of `invalid_params`; an embedded resource is inlined as `uri:\ntext` with no delimiter.
+- [x] Turn-lifecycle fixes deferred from the Batch C review (all implemented in the D/E pass)
+    - Prompt-ack timeout: the prompt command now awaits under a generous `PROMPT_ACK_TIMEOUT_MS` (a `PiRpcClient.request` per-call override), so a preflight compaction no longer strands the turn.
+    - Cancel before `agent_start`: `runPrompt` returns `cancelled` at entry when `signal.aborted`, and the turn re-issues `abort` on `agent_start` when it was cancelled during preflight.
+    - `stop()` mid-turn: `SessionConnection.stop()` fails the active turn before awaiting the client stop, so `runPrompt` no longer hangs on connection-close teardown.
+    - A `null` last stop reason is rejected as an internal error, never reported as `end_turn`.
+    - Empty prompt content (`[]` or an all-empty message with no images) is now `invalid_params`. The embedded-resource `uri:\ntext` inlining is intentionally retained (the pinned path-header format).
 
 ## 3. Capability-gated session lifecycle
 
@@ -166,7 +167,7 @@
     - Load replays `get_messages` synchronously before responding: user/agent/thought chunks, completed tool calls with `rawInput` / `rawOutput`.
 - [ ] `session/close` and `session/delete`
     - Close abandons in-flight turns (`cancelled`, never hangs) and kills the child.
-        - `SessionConnection.stop()` must fail or sticky-cancel `activeTurn` before killing the child: `notifyExit` suppresses `onExit` while `stopping`, so `handleExit → activeTurn.fail()` never fires during an intentional teardown and `runPrompt` would hang on an unresolved `settled` (the §2 "`stop()` mid-turn strands `runPrompt`" fix is load-bearing here).
+        - `SessionConnection.stop()` already fails `activeTurn` before killing the child (so `runPrompt` never hangs); §3 refines that to resolve `cancelled` rather than throw, since a close is not a turn error.
     - Delete additionally removes the session file.
     - A `closing` flag refuses mid-teardown work.
 - [ ] Concurrent access to one session file (a pi-acp child alongside an open Pi TUI) has no lock upstream; recorded under Known limits once the failure shape is characterized.

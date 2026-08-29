@@ -1,5 +1,5 @@
 import * as acp from '@agentclientprotocol/sdk'
-import type { AgentContext } from '@agentclientprotocol/sdk'
+import type { AgentContext, SessionUpdate } from '@agentclientprotocol/sdk'
 import { describe, expect, it, vi } from 'vitest'
 
 import type { JsonAgentSessionEvent } from '../pi/types.js'
@@ -8,7 +8,7 @@ import { TurnHandler } from '../turn/TurnHandler.js'
 const SESSION_ID = 'sess-1'
 
 function makeTurn(graceMs = 10_000) {
-  const notify = vi.fn(async () => {})
+  const notify = vi.fn(async (_method: string, _params: { sessionId: string; update: SessionUpdate }) => {})
   const notifier = { notify } as unknown as AgentContext
   const turn = new TurnHandler({ notifier, sessionId: SESSION_ID, graceMs })
   return { turn, notify }
@@ -39,6 +39,7 @@ describe('TurnHandler', () => {
     turn.handleEvent(evt({ type: 'agent_start' }))
     turn.handleEvent(messageUpdate({ type: 'thinking_delta', contentIndex: 0, delta: 'pondering' }))
     turn.handleEvent(messageUpdate({ type: 'text_delta', contentIndex: 1, delta: 'answer' }))
+    turn.handleEvent(evt({ type: 'message_end', message: { role: 'assistant', stopReason: 'stop' } }))
     turn.handleEvent(evt({ type: 'agent_settled' }))
 
     await expect(turn.settled).resolves.toBe('end_turn')
@@ -85,11 +86,64 @@ describe('TurnHandler', () => {
     await expect(turn.settled).rejects.toThrow(/pi exited: code 1/)
   })
 
+  it('rejects a turn that settles with no stop reason rather than reporting end_turn', async () => {
+    const { turn } = makeTurn()
+    turn.handleEvent(evt({ type: 'agent_start' }))
+    turn.handleEvent(evt({ type: 'agent_settled' }))
+    await expect(turn.settled).rejects.toMatchObject({ code: -32_603, message: expect.stringMatching(/without a stop reason/) })
+  })
+
+  it('streams a tool call as tool_call then tool_call_update through to completed', async () => {
+    const { turn, notify } = makeTurn()
+    turn.handleEvent(evt({ type: 'agent_start' }))
+    turn.handleEvent(evt({ type: 'tool_execution_start', toolCallId: 'x', toolName: 'read', args: { path: '/f' } }))
+    turn.handleEvent(evt({ type: 'tool_execution_update', toolCallId: 'x', toolName: 'read', args: { path: '/f' }, partialResult: { content: [{ type: 'text', text: 'reading' }] } }))
+    turn.handleEvent(evt({ type: 'tool_execution_end', toolCallId: 'x', toolName: 'read', result: { content: [{ type: 'text', text: 'file body' }] }, isError: false }))
+
+    const updates = notify.mock.calls.map((call) => call[1].update)
+    expect(updates[0]).toMatchObject({ sessionUpdate: 'tool_call', toolCallId: 'x', kind: 'read', status: 'in_progress' })
+    expect(updates[1]).toMatchObject({ sessionUpdate: 'tool_call_update', toolCallId: 'x', content: [{ type: 'content', content: { type: 'text', text: 'reading' } }] })
+    expect(updates[2]).toMatchObject({ sessionUpdate: 'tool_call_update', toolCallId: 'x', status: 'completed' })
+  })
+
+  it('exposes the cached input for a running tool and diffs an edit from it at the end', async () => {
+    const { turn, notify } = makeTurn()
+    turn.handleEvent(evt({ type: 'agent_start' }))
+    const args = { path: '/a', edits: [{ oldText: 'x', newText: 'y' }] }
+    turn.handleEvent(evt({ type: 'tool_execution_start', toolCallId: 'e1', toolName: 'edit', args }))
+    expect(turn.announcedToolCall('e1')).toEqual({ toolName: 'edit', args })
+    expect(turn.announcedToolCall('nope')).toBeUndefined()
+    turn.handleEvent(evt({ type: 'tool_execution_end', toolCallId: 'e1', toolName: 'edit', result: { content: [{ type: 'text', text: 'ok' }] }, isError: false }))
+    expect(turn.announcedToolCall('e1')).toBeUndefined()
+
+    const updates = notify.mock.calls.map((call) => call[1].update)
+    expect(updates[0]).toMatchObject({ sessionUpdate: 'tool_call', toolCallId: 'e1' })
+    expect(updates[1]).toMatchObject({
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 'e1',
+      status: 'completed',
+      content: [{ type: 'diff', path: '/a', oldText: 'x', newText: 'y' }],
+    })
+  })
+
+  it('re-issues the abort when a cancel landed before the turn started', async () => {
+    const requestAbort = vi.fn()
+    const notify = vi.fn(async () => {})
+    const turn = new TurnHandler({ notifier: { notify } as unknown as AgentContext, sessionId: SESSION_ID, requestAbort })
+    turn.cancel()
+    expect(requestAbort).not.toHaveBeenCalled()
+    turn.handleEvent(evt({ type: 'agent_start' }))
+    expect(requestAbort).toHaveBeenCalledTimes(1)
+    turn.handleEvent(evt({ type: 'agent_settled' }))
+    await expect(turn.settled).resolves.toBe('cancelled')
+  })
+
   it('emits the full content on *_end when no delta streamed for that index', async () => {
     const { turn, notify } = makeTurn()
     turn.handleEvent(evt({ type: 'agent_start' }))
     turn.handleEvent(evt({ type: 'message_start', message: { role: 'assistant' } }))
     turn.handleEvent(messageUpdate({ type: 'text_end', contentIndex: 0, content: 'whole answer' }))
+    turn.handleEvent(evt({ type: 'message_end', message: { role: 'assistant', stopReason: 'stop' } }))
     turn.handleEvent(evt({ type: 'agent_settled' }))
 
     await expect(turn.settled).resolves.toBe('end_turn')
@@ -104,6 +158,7 @@ describe('TurnHandler', () => {
     // A new assistant message restarts contentIndex at 0; the fallback must fire again.
     turn.handleEvent(evt({ type: 'message_start', message: { role: 'assistant' } }))
     turn.handleEvent(messageUpdate({ type: 'text_end', contentIndex: 0, content: 'second message' }))
+    turn.handleEvent(evt({ type: 'message_end', message: { role: 'assistant', stopReason: 'stop' } }))
     turn.handleEvent(evt({ type: 'agent_settled' }))
 
     await expect(turn.settled).resolves.toBe('end_turn')

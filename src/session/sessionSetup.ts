@@ -15,6 +15,9 @@ export interface SessionSetupDeps {
   readonly launch: PiLaunch
   readonly rpcTimeoutMs: number
   readonly notifier: AgentContext
+  /** Absolute path to the materialized permission gate, loaded with `-e`. Absent
+   * in tests (the fake client ignores args), so no temp file is written. */
+  readonly gateExtensionPath?: string | undefined
   /** Injectable for tests; defaults to spawning a real Pi RPC subprocess. */
   readonly createPiClient?: CreatePiClient | undefined
 }
@@ -34,9 +37,12 @@ export async function establishSession(
 
   const connection = new SessionConnection({ notifier: deps.notifier, cwd: request.cwd })
   const createPiClient = deps.createPiClient ?? defaultCreatePiClient
+  // The gate loads alongside the user's own extensions (no --no-extensions).
+  const args = deps.gateExtensionPath !== undefined ? ['-e', deps.gateExtensionPath] : []
   const piClient = createPiClient({
     launch: deps.launch,
     cwd: request.cwd,
+    args,
     timeoutMs: deps.rpcTimeoutMs,
     onEvent: (event) => {
       connection.routeEvent(event)
@@ -44,6 +50,7 @@ export async function establishSession(
     onExit: (error) => {
       connection.handleExit(error)
     },
+    onExtensionUiRequest: (uiRequest) => connection.handleExtensionUiRequest(uiRequest),
   })
 
   // start() self-cleans a failure inside itself; a failure in the follow-up

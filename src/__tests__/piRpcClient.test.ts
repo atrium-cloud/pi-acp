@@ -8,7 +8,7 @@ import { PiRpcClient } from '../pi/PiRpcClient.js'
 import type { PiRpcClientOptions } from '../pi/PiRpcClient.js'
 import { PI_RPC_MODE_ARGS } from '../constants.js'
 import { PiExitError, PiProtocolError, PiRpcError, PiRpcTimeoutError, PiSpawnError } from '../pi/errors.js'
-import type { JsonAgentSessionEvent } from '../pi/types.js'
+import type { JsonAgentSessionEvent, RpcExtensionUIRequest, RpcExtensionUIResponse } from '../pi/types.js'
 
 const FAKE_PI = fileURLToPath(new URL('./fixtures/fake-pi.mjs', import.meta.url))
 const REPO_ROOT = fileURLToPath(new URL('../..', import.meta.url))
@@ -31,6 +31,7 @@ interface FixtureClientOptions {
   readonly sigtermGraceMs?: number
   readonly onEvent?: (event: JsonAgentSessionEvent) => void
   readonly onExit?: (error: Error) => void
+  readonly onExtensionUiRequest?: (request: RpcExtensionUIRequest) => Promise<RpcExtensionUIResponse>
 }
 
 const openClients: PiRpcClient[] = []
@@ -47,6 +48,7 @@ function createClient(overrides: FixtureClientOptions = {}): PiRpcClient {
     ...(overrides.env ? { env: overrides.env } : {}),
     ...(overrides.onEvent ? { onEvent: overrides.onEvent } : {}),
     ...(overrides.onExit ? { onExit: overrides.onExit } : {}),
+    ...(overrides.onExtensionUiRequest ? { onExtensionUiRequest: overrides.onExtensionUiRequest } : {}),
   }
   const client = new PiRpcClient(options)
   openClients.push(client)
@@ -282,6 +284,36 @@ describe('PiRpcClient event and extension frames', () => {
     await client.request({ type: 'set_session_name', name: 'notify-request' })
     await delay(QUIET_WINDOW_MS)
     expect(echoes).toHaveLength(1)
+  })
+
+  it('routes a dialog to onExtensionUiRequest and writes its response verbatim', async () => {
+    const client = createClient({
+      onExtensionUiRequest: async (request) => ({ type: 'extension_ui_response', id: request.id, value: 'the answer' }),
+    })
+    await client.start()
+    const answered = waitForEvent(
+      client,
+      (event) => event.type === 'session_info_changed' && event.name?.startsWith('ui-response:') === true,
+    )
+    await client.request({ type: 'set_session_name', name: 'editor-request' })
+    const payload: unknown = JSON.parse(sessionName(await answered).slice('ui-response:'.length))
+    expect(payload).toEqual({ type: 'extension_ui_response', id: 'ui-editor', value: 'the answer' })
+  })
+
+  it('fails a dialog closed when its handler rejects', async () => {
+    const client = createClient({
+      onExtensionUiRequest: async () => {
+        throw new Error('handler blew up')
+      },
+    })
+    await client.start()
+    const answered = waitForEvent(
+      client,
+      (event) => event.type === 'session_info_changed' && event.name?.startsWith('ui-response:') === true,
+    )
+    await client.request({ type: 'set_session_name', name: 'editor-request' })
+    const payload: unknown = JSON.parse(sessionName(await answered).slice('ui-response:'.length))
+    expect(payload).toEqual({ type: 'extension_ui_response', id: 'ui-editor', cancelled: true })
   })
 
   it('fails the transport on an extension UI method it does not know', async () => {

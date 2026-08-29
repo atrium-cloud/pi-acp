@@ -9,7 +9,19 @@ describe('flattenPromptContent', () => {
       { type: 'text', text: 'first' },
       { type: 'text', text: 'second' },
     ]
-    expect(flattenPromptContent(blocks)).toEqual({ message: 'first\nsecond', images: [] })
+    expect(flattenPromptContent(blocks)).toEqual({ message: 'first\nsecond', images: [], firstText: 'first' })
+  })
+
+  it('reports the first text block even when a resource precedes it', () => {
+    const blocks: ContentBlock[] = [
+      { type: 'resource', resource: { uri: 'file:///repo/notes.md', text: 'notes' } },
+      { type: 'text', text: 'Summarize this' },
+    ]
+    expect(flattenPromptContent(blocks)).toEqual({
+      message: 'file:///repo/notes.md:\nnotes\nSummarize this',
+      images: [],
+      firstText: 'Summarize this',
+    })
   })
 
   it('collects image blocks and keeps text as the message', () => {
@@ -20,6 +32,7 @@ describe('flattenPromptContent', () => {
     expect(flattenPromptContent(blocks)).toEqual({
       message: 'look at this',
       images: [{ type: 'image', data: 'YWJj', mimeType: 'image/png' }],
+      firstText: 'look at this',
     })
   })
 
@@ -45,5 +58,18 @@ describe('flattenPromptContent', () => {
       { type: 'resource', resource: { uri: 'file:///a.bin', blob: 'YWJj' } },
     ]
     expect(() => flattenPromptContent(blocks)).toThrow(/binary/)
+  })
+
+  it('rejects an empty prompt with no content', () => {
+    expect(() => flattenPromptContent([])).toThrow(/no content/)
+  })
+
+  it('keeps an image-only prompt even with no text', () => {
+    const blocks: ContentBlock[] = [{ type: 'image', data: 'YWJj', mimeType: 'image/png' }]
+    expect(flattenPromptContent(blocks)).toEqual({
+      message: '',
+      images: [{ type: 'image', data: 'YWJj', mimeType: 'image/png' }],
+      firstText: '',
+    })
   })
 })

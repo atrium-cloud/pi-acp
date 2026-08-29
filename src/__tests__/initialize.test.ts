@@ -21,7 +21,7 @@ function callInitialize(server: PiAcpServer): Promise<acp.InitializeResponse> {
 }
 
 describe('initialize (over an ACP connection)', () => {
-  it('advertises honest minimal capabilities', async () => {
+  it('advertises honest minimal capabilities without probing Pi', async () => {
     const result = await callInitialize(makeServer())
     expect(result).toEqual({
       protocolVersion: PROTOCOL_VERSION,

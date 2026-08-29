@@ -5,6 +5,7 @@ import { Readable, Writable } from 'node:stream'
 import * as acp from '@agentclientprotocol/sdk'
 
 import { AGENT_NAME, AGENT_VERSION, resolveRpcTimeoutMs } from './constants.js'
+import { materializeGate } from './permissions/gate.js'
 import { resolvePiLaunch } from './pi/launch.js'
 import { PiAcpServer } from './server/PiAcpServer.js'
 
@@ -27,6 +28,8 @@ async function main(): Promise<void> {
   const server = new PiAcpServer({
     launch: resolvePiLaunch(process.env),
     rpcTimeoutMs: resolveRpcTimeoutMs(process.env),
+    // Written once at startup; every session loads it with `-e`.
+    gateExtensionPath: materializeGate(),
   })
 
   // The SDK speaks Web streams; first arg is the writable (stdout).
