@@ -42,10 +42,18 @@ const EXPECTED_OPTIONS = [
     id: CONFIG_ID_MODEL,
     name: 'Model',
     category: CONFIG_ID_MODEL,
-    currentValue: 'anthropic/claude-sonnet-5',
+    currentValue: 'claude-sonnet-5',
     options: [
-      { value: 'openrouter/deepseek/deepseek-v4-flash-0731', name: 'DeepSeek V4 Flash' },
-      { value: 'anthropic/claude-sonnet-5', name: 'Claude Sonnet 5' },
+      {
+        group: 'openrouter',
+        name: 'openrouter',
+        options: [{ value: 'deepseek/deepseek-v4-flash-0731', name: 'DeepSeek V4 Flash' }],
+      },
+      {
+        group: 'anthropic',
+        name: 'anthropic',
+        options: [{ value: 'claude-sonnet-5', name: 'Claude Sonnet 5' }],
+      },
     ],
   },
   {

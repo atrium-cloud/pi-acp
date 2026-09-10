@@ -1,4 +1,4 @@
-import type { SessionConfigOption } from '@agentclientprotocol/sdk'
+import type { SessionConfigOption, SessionConfigSelectGroup } from '@agentclientprotocol/sdk'
 
 import {
   CONFIG_ID_MODEL,
@@ -22,24 +22,63 @@ export interface ConfigOptionsInput {
   readonly currentLevel: string
 }
 
-export function encodeModelValue(model: { readonly provider: string; readonly id: string }): string {
-  return `${model.provider}${MODEL_VALUE_SEPARATOR}${model.id}`
+/** Values over the whole list in one pass, so a string already handed to one
+ * model is never handed to another. Deterministic for a given list order, and
+ * every caller (build and resolve) computes over the same list. */
+function computeModelValues(models: readonly ModelChoice[]): Map<ModelChoice, string> {
+  const idCounts = new Map<string, number>()
+  for (const model of models) idCounts.set(model.id, (idCounts.get(model.id) ?? 0) + 1)
+  const taken = new Set<string>()
+  const values = new Map<ModelChoice, string>()
+  for (const model of models) {
+    let value =
+      idCounts.get(model.id) === 1 ? model.id : `${model.provider}${MODEL_VALUE_SEPARATOR}${model.id}`
+    // Pathological guard: another model's value already claimed this string
+    // (e.g. provider "deepseek" with id "x" vs a bare id "deepseek/x").
+    while (taken.has(value)) value = `${model.provider}${MODEL_VALUE_SEPARATOR}${value}`
+    taken.add(value)
+    values.set(model, value)
+  }
+  return values
+}
+
+export function encodeModelValue(
+  model: { readonly provider: string; readonly id: string },
+  models: readonly ModelChoice[],
+): string {
+  for (const [candidate, value] of computeModelValues(models)) {
+    if (candidate.provider === model.provider && candidate.id === model.id) return value
+  }
+  // Not in the list: nothing to disambiguate against, so the bare id it is.
+  return model.id
 }
 
 /** The FULL config-option set (ACP config updates carry the whole set, never a
  * delta). A `select` needs a required `currentValue`, so an option is omitted
- * rather than synthesizing one: no current model, or no thinking levels. */
+ * rather than synthesizing one: no current model, or no thinking levels.
+ * Models are grouped by provider so the provider appears once as a header
+ * rather than repeated in every value. */
 export function buildConfigOptions(input: ConfigOptionsInput): SessionConfigOption[] {
   const options: SessionConfigOption[] = []
 
   if (input.currentModel !== undefined && input.models.length > 0) {
+    const values = computeModelValues(input.models)
+    const groups: SessionConfigSelectGroup[] = []
+    for (const model of input.models) {
+      let group = groups.find((candidate) => candidate.group === model.provider)
+      if (group === undefined) {
+        group = { group: model.provider, name: model.provider, options: [] }
+        groups.push(group)
+      }
+      group.options.push({ value: values.get(model) ?? model.id, name: model.name })
+    }
     options.push({
       type: 'select',
       id: CONFIG_ID_MODEL,
       name: CONFIG_NAME_MODEL,
       category: CONFIG_ID_MODEL,
-      currentValue: encodeModelValue(input.currentModel),
-      options: input.models.map((model) => ({ value: encodeModelValue(model), name: model.name })),
+      currentValue: encodeModelValue(input.currentModel, input.models),
+      options: groups,
     })
   }
 
@@ -63,6 +102,7 @@ export function resolveModelSelection(
   value: string,
   models: readonly ModelChoice[],
 ): { provider: string; modelId: string } | undefined {
-  const model = models.find((candidate) => encodeModelValue(candidate) === value)
+  const values = computeModelValues(models)
+  const model = models.find((candidate) => values.get(candidate) === value)
   return model === undefined ? undefined : { provider: model.provider, modelId: model.id }
 }
