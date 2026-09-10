@@ -61,8 +61,10 @@ export const STDERR_TAIL_MAX_BYTES = 16_384
 // ── Session config options ────────────────────────────────────────────────────
 //
 // The `id` doubles as the ACP config category ("model", "thought_level"). A model
-// value is `<provider>/<id>`; the id itself can contain slashes, so a value is
-// resolved back to a model by matching the whole string, never by splitting it.
+// value is the bare model id, prefixed with `<provider>/` only when more than one
+// provider offers that id — Pi's own disambiguation rule. The id itself can
+// contain slashes, so a value is resolved back to a model by matching the whole
+// string, never by splitting it.
 
 export const CONFIG_ID_MODEL = 'model'
 export const CONFIG_ID_THOUGHT_LEVEL = 'thought_level'

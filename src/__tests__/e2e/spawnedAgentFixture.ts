@@ -42,7 +42,7 @@ import {
   PROTOCOL_VERSION,
   SIGTERM_GRACE_MS,
 } from '../../constants.js'
-import { E2E_MODEL_VALUE_ID } from './e2eGate.js'
+import { pinnedModelValue } from './e2eGate.js'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -324,7 +324,7 @@ export async function openPinnedSession(
   await agent.agent.request(acp.methods.agent.session.setConfigOption, {
     sessionId: created.sessionId,
     configId: CONFIG_ID_MODEL,
-    value: E2E_MODEL_VALUE_ID,
+    value: pinnedModelValue(created.configOptions),
   })
   return created.sessionId
 }

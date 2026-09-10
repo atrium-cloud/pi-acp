@@ -9,7 +9,7 @@ import { type FakePiSpec, makeFakePiClient } from './fixtures/fakePiClient.js'
 const LAUNCH = { command: 'pi', args: ['--mode', 'rpc'], source: 'test' }
 const ABS_CWD = '/tmp/pi-acp-session'
 const MCP_EXTENSION_PATH = '/tmp/mcp-extension.mjs'
-const DEEPSEEK_VALUE = 'openrouter/deepseek/deepseek-v4-flash-0731'
+const DEEPSEEK_VALUE = 'deepseek/deepseek-v4-flash-0731'
 const stubNotifier = { notify: vi.fn(async () => {}) } as unknown as AgentContext
 
 function makeSpec(): FakePiSpec {

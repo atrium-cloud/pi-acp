@@ -21,7 +21,7 @@ import {
   JSONRPC_INVALID_PARAMS,
   PERMISSION_OPTION_ALLOW_ONCE,
 } from '../../constants.js'
-import { describeE2E, E2E_MODEL_VALUE_ID, E2E_SETUP_TIMEOUT_MS, E2E_TURN_TIMEOUT_MS } from './e2eGate.js'
+import { describeE2E, E2E_SETUP_TIMEOUT_MS, E2E_TURN_TIMEOUT_MS, pinnedModelValue } from './e2eGate.js'
 import type { SpawnedAgent } from './spawnedAgentFixture.js'
 import { createSpawnedAgent, openPinnedSession } from './spawnedAgentFixture.js'
 
@@ -133,7 +133,7 @@ describeE2E('pi live session lifecycle', () => {
       const pinned = await agent.agent.request(acp.methods.agent.session.setConfigOption, {
         sessionId: created.sessionId,
         configId: CONFIG_ID_MODEL,
-        value: E2E_MODEL_VALUE_ID,
+        value: pinnedModelValue(created.configOptions),
       })
       const level = otherThoughtLevel(pinned.configOptions)
 

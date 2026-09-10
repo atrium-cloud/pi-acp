@@ -12,9 +12,10 @@
  * loud signal that this machine's Pi is not authorized for the pinned provider.
  */
 
+import type { SessionConfigOption } from '@agentclientprotocol/sdk'
 import { describe } from 'vitest'
 
-import { MODEL_VALUE_SEPARATOR } from '../../constants.js'
+import { CONFIG_ID_MODEL } from '../../constants.js'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -23,12 +24,29 @@ export const RUN_E2E_VALUE = 'true'
 const RUN_E2E_TRUTHY: readonly string[] = [RUN_E2E_VALUE, '1']
 
 /** The live model this tier pins (.rules), selected through the adapter's own
- * model config option rather than by writing Pi config behind its back. A Pi
- * model value is `<provider>/<id>` and the id itself carries a slash, so the
- * value is composed here and never split back apart. */
+ * model config option rather than by writing Pi config behind its back. A model
+ * value is the bare id unless another provider offers the same id, so the exact
+ * string depends on the host's model list and must be read back from the
+ * adapter's own option set. */
 export const E2E_PROVIDER_SLUG = 'openrouter'
 export const E2E_MODEL_ID = 'deepseek/deepseek-v4-flash-0731'
-export const E2E_MODEL_VALUE_ID = `${E2E_PROVIDER_SLUG}${MODEL_VALUE_SEPARATOR}${E2E_MODEL_ID}`
+
+/** Finds the pinned model's value in a returned config-option set: the bare id,
+ * or the provider-prefixed form inside the pinned provider's group when the id
+ * is shared. Throws when the host's Pi does not offer the pinned model. */
+export function pinnedModelValue(configOptions: readonly SessionConfigOption[] | null | undefined): string {
+  const select = configOptions?.find((option) => option.id === CONFIG_ID_MODEL)
+  if (select?.type !== 'select') throw new Error('model config option missing from session response')
+  for (const entry of select.options) {
+    // A bare id proves the pinned provider only inside its own group: another
+    // provider offering the same id uniquely would carry the same bare value.
+    if (!('options' in entry) || entry.group !== E2E_PROVIDER_SLUG) continue
+    for (const option of entry.options) {
+      if (option.value === E2E_MODEL_ID || option.value.endsWith(`/${E2E_MODEL_ID}`)) return option.value
+    }
+  }
+  throw new Error(`pinned model ${E2E_PROVIDER_SLUG}/${E2E_MODEL_ID} not offered by the host's Pi`)
+}
 
 /** One live turn: a provider round-trip on an already warm subprocess. */
 export const E2E_TURN_TIMEOUT_MS = 180_000
