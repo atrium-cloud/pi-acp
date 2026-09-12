@@ -8,8 +8,8 @@
 - TypeScript SDK: `@agentclientprotocol/sdk` 1.4.0
     - Generated types: `node_modules/@agentclientprotocol/sdk/dist/schema/types.gen.d.ts`
     - Authoritative method list: `dist/acp.d.ts` `methods`
-    - `session/fork` (experimental): head-only fork, no breakpoint marker (docs/todos.md section 4)
-    - `SessionConfigOptionCategory` includes `thought_level` (docs/todos.md section 2)
+    - `session/fork` (experimental): head-only fork, no breakpoint marker (docs/todos.md, the Fork entry under Delivered)
+    - `SessionConfigOptionCategory` includes `thought_level` (docs/todos.md, the Config options entry under Delivered)
     - Draft ACP v2 under `@agentclientprotocol/sdk/experimental/v2`: not used
 
 ## Pi Agent
@@ -45,7 +45,7 @@
     - Versioning and negotiation: https://modelcontextprotocol.io/specification/versioning
 - TypeScript SDK v2 (implements 2026-07-28): https://github.com/modelcontextprotocol/typescript-sdk, docs https://ts.sdk.modelcontextprotocol.io/v2/
     - The 2026-07-28 support guide: https://ts.sdk.modelcontextprotocol.io/v2/migration/support-2026-07-28.html
-- Packages: `@modelcontextprotocol/client` 2.0.0 (pulls `@modelcontextprotocol/core`), bundled into the adapter's own Pi extension (`src/mcp/extension-entry.ts`, docs/todos.md section 4); `@modelcontextprotocol/server` 2.0.0 is a dev dependency for the in-process probe server in tests
+- Packages: `@modelcontextprotocol/client` 2.0.0 (pulls `@modelcontextprotocol/core`), bundled into the adapter's own Pi extension (`src/mcp/extension-entry.ts`, docs/todos.md, the Built-in MCP entry under Delivered); `@modelcontextprotocol/server` 2.0.0 is a dev dependency for the in-process probe server in tests
     - Client transports: `StdioClientTransport` (`@modelcontextprotocol/client/stdio`), `StreamableHTTPClientTransport`, `SSEClientTransport`
     - `Client` defaults to the legacy `initialize` handshake; the adapter passes `versionNegotiation: { mode: 'auto' }` so a `server/discover` probe selects 2026-07-28 where the server offers it and falls back to the handshake otherwise
 
