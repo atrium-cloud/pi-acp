@@ -12,8 +12,9 @@ type ToolResultMessage = Extract<ReplayMessage, { role: 'toolResult' }>
 /** Replays a stored transcript as the `session/update`s a live turn would have
  * sent. History keeps messages, not events, so only what a message preserves is
  * reproducible: no deltas (each block is one whole chunk) and no mid-run tool
- * progress. */
-export function replayUpdates(messages: readonly ReplayMessage[]): SessionUpdate[] {
+ * progress. A replayed shell call is the same terminal entry the live turn sent,
+ * rooted at the session cwd. */
+export function replayUpdates(messages: readonly ReplayMessage[], cwd: string): SessionUpdate[] {
   const resultIds = new Set<string>()
   for (const message of messages) {
     if (message.role === 'toolResult') resultIds.add(message.toolCallId)
@@ -45,7 +46,7 @@ export function replayUpdates(messages: readonly ReplayMessage[]): SessionUpdate
               // A call whose result the history doesn't hold never finished, and ACP
               // has no terminal state for that, so the call is left out entirely.
               if (resultIds.has(block.id)) {
-                updates.push(toolCallStarted({ toolCallId: block.id, toolName: block.name, args: block.arguments }))
+                updates.push(toolCallStarted({ toolCallId: block.id, toolName: block.name, args: block.arguments }, cwd))
               }
               break
             default:

@@ -137,7 +137,7 @@ export class SessionConnection {
     if (this.exitError) throw this.exitError
     const client = this.requireClient()
     const history = await client.request({ type: 'get_messages' })
-    for (const update of replayUpdates(history.data.messages)) {
+    for (const update of replayUpdates(history.data.messages, this.cwd)) {
       await this.notifier.notify(acp.methods.client.session.update, { sessionId: this.sessionId, update })
     }
   }
@@ -291,6 +291,7 @@ export class SessionConnection {
     const turn = new TurnHandler({
       notifier: this.notifier,
       sessionId: this.sessionId,
+      cwd: this.cwd,
       requestAbort: () => this.requestAbort(),
     })
     this.activeTurn = turn

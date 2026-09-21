@@ -4,7 +4,7 @@ import type { AgentContext, SessionUpdate, StopReason } from '@agentclientprotoc
 import { AGENT_NAME, AGENT_START_GRACE_MS, EXTENSION_COMMAND_QUIET_MS, JSONRPC_INTERNAL_ERROR } from '../constants.js'
 import type { JsonAgentSessionEvent } from '../pi/types.js'
 import { asMessage, toRequestError } from '../server/errors.js'
-import { toolCallEnded, toolCallProgress, toolCallStarted } from './mappers.js'
+import { isShellTool, shellProgress, toolCallEnded, toolCallProgress, toolCallStarted } from './mappers.js'
 
 export interface AnnouncedToolCall {
   readonly toolName: string
@@ -35,6 +35,9 @@ type MessageUpdate = Extract<JsonAgentSessionEvent, { type: 'message_update' }>[
 export interface TurnHandlerOptions {
   readonly notifier: AgentContext
   readonly sessionId: string
+  /** The session cwd, where Pi runs every shell command; announced on a shell
+   * tool's terminal entry. */
+  readonly cwd: string
   readonly graceMs?: number
   /** The same bound for a prompt that invoked an advertised extension command. */
   readonly quietMs?: number
@@ -55,6 +58,7 @@ export class TurnHandler implements TurnEventSink {
 
   private readonly notifier: AgentContext
   private readonly sessionId: string
+  private readonly cwd: string
   private readonly graceMs: number
   private readonly quietMs: number
   private readonly requestAbort: (() => void) | undefined
@@ -72,10 +76,14 @@ export class TurnHandler implements TurnEventSink {
   /** Announced tool calls → the input cached at `tool_execution_start`, since the
    * end event carries no args and an edit diff is built from the input. */
   private readonly announcedToolCalls = new Map<string, AnnouncedToolCall>()
+  /** Running shell calls → the output snapshot streamed so far, since a shell
+   * partial is cumulative and only its new tail goes out as a delta. */
+  private readonly shellOutput = new Map<string, string>()
 
   constructor(options: TurnHandlerOptions) {
     this.notifier = options.notifier
     this.sessionId = options.sessionId
+    this.cwd = options.cwd
     this.graceMs = options.graceMs ?? AGENT_START_GRACE_MS
     this.quietMs = options.quietMs ?? EXTENSION_COMMAND_QUIET_MS
     this.requestAbort = options.requestAbort
@@ -148,10 +156,13 @@ export class TurnHandler implements TurnEventSink {
         return
       case 'tool_execution_start':
         this.announcedToolCalls.set(event.toolCallId, { toolName: event.toolName, args: event.args })
-        this.emitUpdate(toolCallStarted({ toolCallId: event.toolCallId, toolName: event.toolName, args: event.args }))
+        if (isShellTool(event.toolName)) this.shellOutput.set(event.toolCallId, '')
+        this.emitUpdate(toolCallStarted({ toolCallId: event.toolCallId, toolName: event.toolName, args: event.args }, this.cwd))
         return
       case 'tool_execution_update': {
-        const update = toolCallProgress(event.toolCallId, event.partialResult)
+        const update = isShellTool(event.toolName)
+          ? this.shellProgressUpdate(event.toolCallId, event.partialResult)
+          : toolCallProgress(event.toolCallId, event.partialResult)
         if (update !== undefined) this.emitUpdate(update)
         return
       }
@@ -169,6 +180,7 @@ export class TurnHandler implements TurnEventSink {
           }),
         )
         this.announcedToolCalls.delete(event.toolCallId)
+        this.shellOutput.delete(event.toolCallId)
         return
       }
       case 'message_end':
@@ -228,6 +240,12 @@ export class TurnHandler implements TurnEventSink {
       default:
         return
     }
+  }
+
+  private shellProgressUpdate(toolCallId: string, partialResult: unknown): SessionUpdate | undefined {
+    const progress = shellProgress(toolCallId, partialResult, this.shellOutput.get(toolCallId) ?? '')
+    this.shellOutput.set(toolCallId, progress.text)
+    return progress.update
   }
 
   private emitChunk(sessionUpdate: 'agent_message_chunk' | 'agent_thought_chunk', text: string): void {
