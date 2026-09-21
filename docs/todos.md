@@ -121,7 +121,7 @@ Pi upstream ships an ACP agent on current schemas with session resume, thought-l
         - Kinds for `read`, `bash`, `powershell`, `edit`, `write`, `grep`, `find`, `ls` (closed `ToolKind` union; unknown → `other`).
         - `locations` from `path` args; `rawInput` / `rawOutput` carried; args cached at start (the end event omits them).
         - `edit` rendered as one `diff` content block per `edits[]` entry, built from the INPUT `{oldText,newText}` (ACP's `Diff` doesn't decompose `details.patch`).
-        - `bash` partial results replace the row content via `tool_execution_update.partialResult`; `bash_execution_update` is ignored as redundant (UNVERIFIED against live Pi).
+        - `bash` / `powershell` render as terminal entries (Zed `_meta` convention; contract in docs/refs.md): a `terminal` content item on the `tool_call`, partial snapshots stream as `terminal_output_delta` (a full `terminal_output` replace once the snapshot stops extending), and the end update carries the output snapshot plus `terminal_exit` with the parsed exit code — no text content. Other tools' partial results replace the row content via `tool_execution_update.partialResult`; `bash_execution_update` is ignored as redundant (UNVERIFIED against live Pi).
     - Pi's default tool set is `read`, `bash`, `edit`, `write`; `grep` / `find` / `ls` are opt-in and `powershell` is Windows-only. The kind map covers all eight.
 - [x] Session-level wire events not in the RPC docs' event table
     - `session_info_changed { name }` → `session_info_update`

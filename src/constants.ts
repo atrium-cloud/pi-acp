@@ -109,6 +109,24 @@ export const TOOL_KIND_MAP: Readonly<Record<string, ToolKind>> = {
 }
 export const TOOL_NAME_EDIT = 'edit'
 
+// ── Shell tool → terminal entry ──────────────────────────────────────────────
+//
+// Pi's shell tools render as ACP terminal entries: the `tool_call` carries a
+// `terminal` content item and the output/exit ride the Zed `_meta` side channel
+// (`terminal_info` / `terminal_output_delta` / `terminal_output` / `terminal_exit`),
+// keyed by a terminal id equal to the tool call id. Emitted unconditionally.
+// Pi's shell tool gives no exit code of its own: a failure appends the status
+// line below to the output text, which is parsed for the code and dropped from
+// the terminal data; any other failure (denied, aborted, timed out) reports 1.
+// Pi substitutes a placeholder for empty output on the model-facing text; the
+// terminal gets the empty data instead.
+
+export const SHELL_TOOL_NAMES: readonly string[] = ['bash', 'powershell']
+export const SHELL_EXIT_STATUS_PATTERN = /\n\nCommand exited with code (\d+)$/
+export const SHELL_EMPTY_OUTPUT_PLACEHOLDER = '(no output)'
+export const SHELL_FAILURE_EXIT_CODE = 1
+export const SHELL_SUCCESS_EXIT_CODE = 0
+
 // ── Usage ─────────────────────────────────────────────────────────────────────
 //
 // `usage_update` is synthesized at turn end from `get_session_stats.contextUsage`

@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest'
 
 import type { ReplayMessage } from '../session/replay.js'
-import { replayUpdates } from '../session/replay.js'
+import { replayUpdates as replayUpdatesIn } from '../session/replay.js'
 import { toolCallEnded } from '../turn/mappers.js'
+
+const CWD = '/repo'
+const replayUpdates = (messages: readonly ReplayMessage[]) => replayUpdatesIn(messages, CWD)
 
 const msg = (message: Record<string, unknown>): ReplayMessage => message as unknown as ReplayMessage
 
@@ -86,6 +89,35 @@ describe('replayUpdates', () => {
     expect(updates[1]).toEqual(
       toolCallEnded({ toolCallId: 't2', toolName: 'edit', result, isError: false, args }),
     )
+  })
+
+  it('replays a shell call as the same terminal entry the live turn sends', () => {
+    const updates = replayUpdates([
+      assistant([{ type: 'toolCall', id: 'sh', name: 'bash', arguments: { command: 'ls' } }]),
+      toolResult({ toolCallId: 'sh', toolName: 'bash', content: [{ type: 'text', text: 'a.ts\n' }] }),
+    ])
+    expect(updates).toEqual([
+      {
+        sessionUpdate: 'tool_call',
+        toolCallId: 'sh',
+        title: 'ls',
+        kind: 'execute',
+        status: 'in_progress',
+        rawInput: { command: 'ls' },
+        content: [{ type: 'terminal', terminalId: 'sh' }],
+        _meta: { terminal_info: { terminal_id: 'sh', cwd: CWD } },
+      },
+      {
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 'sh',
+        status: 'completed',
+        rawOutput: { content: [{ type: 'text', text: 'a.ts\n' }] },
+        _meta: {
+          terminal_output: { terminal_id: 'sh', data: 'a.ts\n' },
+          terminal_exit: { terminal_id: 'sh', exit_code: 0, signal: null },
+        },
+      },
+    ])
   })
 
   it('carries usage and addedToolNames into the replayed raw output', () => {

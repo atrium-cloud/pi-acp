@@ -12,6 +12,15 @@
     - `SessionConfigOptionCategory` includes `thought_level` (docs/todos.md, the Config options entry under Delivered)
     - Draft ACP v2 under `@agentclientprotocol/sdk/experimental/v2`: not used
 
+## Terminal entries (shell tool rendering)
+
+Shell tools (`bash`, `powershell`) render as terminal entries via the Zed `_meta` convention claude-agent-acp uses, not the `terminal/*` client methods (those have the client own execution; Pi already runs the command in-session). Emitted unconditionally: a client that ignores `_meta` gets no shell output, so the web UI must implement the keys below. Mappers in `src/turn/mappers.ts`, constants in `src/constants.ts`.
+
+- `tool_call`: titled by the verbatim command; carries `content: [{ type: 'terminal', terminalId: <toolCallId> }]` and `_meta.terminal_info { terminal_id, cwd }` (the session cwd, where Pi runs every command). Terminal id == tool call id.
+- While running, per `tool_execution_update`: `_meta.terminal_output_delta { terminal_id, data }` — append; the new tail of Pi's cumulative snapshot, ANSI intact. Once the snapshot stops extending the previous one (Pi's accumulator drops scrolled-off lines), `_meta.terminal_output` is sent instead — replace.
+- At the end: `_meta.terminal_output` (full snapshot, replace) and `_meta.terminal_exit { terminal_id, exit_code, signal }` (`signal` always null). Pi's appended `Command exited with code N` line is parsed into `exit_code` and removed from `data`; the `(no output)` placeholder becomes empty `data`; a failure without the line (denied, aborted, timed out) reports exit 1.
+- Shell progress/end updates carry no `content` blocks (`rawInput`/`rawOutput` still carried). A client that skips deltas still converges on the closing `terminal_output` replace.
+
 ## Pi Agent
 
 - Repo: https://github.com/earendil-works/pi

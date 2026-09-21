@@ -6,11 +6,12 @@ import type { JsonAgentSessionEvent } from '../pi/types.js'
 import { TurnHandler } from '../turn/TurnHandler.js'
 
 const SESSION_ID = 'sess-1'
+const CWD = '/repo'
 
 function makeTurn(graceMs = 10_000) {
   const notify = vi.fn(async (_method: string, _params: { sessionId: string; update: SessionUpdate }) => {})
   const notifier = { notify } as unknown as AgentContext
-  const turn = new TurnHandler({ notifier, sessionId: SESSION_ID, graceMs, quietMs: graceMs })
+  const turn = new TurnHandler({ notifier, sessionId: SESSION_ID, cwd: CWD, graceMs, quietMs: graceMs })
   return { turn, notify }
 }
 
@@ -133,6 +134,44 @@ describe('TurnHandler', () => {
     expect(updates[2]).toMatchObject({ sessionUpdate: 'tool_call_update', toolCallId: 'x', status: 'completed' })
   })
 
+  it('streams a shell call as a terminal entry: info on start, deltas while running, output and exit at the end', async () => {
+    const { turn, notify } = makeTurn()
+    turn.handleEvent(evt({ type: 'agent_start' }))
+    turn.handleEvent(evt({ type: 'tool_execution_start', toolCallId: 'b', toolName: 'bash', args: { command: 'make' } }))
+    // Pi's first partial is the empty accumulator, then cumulative snapshots.
+    turn.handleEvent(evt({ type: 'tool_execution_update', toolCallId: 'b', toolName: 'bash', args: { command: 'make' }, partialResult: { content: [] } }))
+    turn.handleEvent(evt({ type: 'tool_execution_update', toolCallId: 'b', toolName: 'bash', args: { command: 'make' }, partialResult: { content: [{ type: 'text', text: 'one\n' }] } }))
+    turn.handleEvent(evt({ type: 'tool_execution_update', toolCallId: 'b', toolName: 'bash', args: { command: 'make' }, partialResult: { content: [{ type: 'text', text: 'one\ntwo\n' }] } }))
+    turn.handleEvent(evt({ type: 'tool_execution_end', toolCallId: 'b', toolName: 'bash', result: { content: [{ type: 'text', text: 'one\ntwo\n\n\nCommand exited with code 2' }] }, isError: true }))
+
+    const updates = notify.mock.calls.map((call) => call[1].update)
+    expect(updates).toEqual([
+      {
+        sessionUpdate: 'tool_call',
+        toolCallId: 'b',
+        title: 'make',
+        kind: 'execute',
+        status: 'in_progress',
+        rawInput: { command: 'make' },
+        content: [{ type: 'terminal', terminalId: 'b' }],
+        _meta: { terminal_info: { terminal_id: 'b', cwd: CWD } },
+      },
+      { sessionUpdate: 'tool_call_update', toolCallId: 'b', _meta: { terminal_output_delta: { terminal_id: 'b', data: 'one\n' } } },
+      { sessionUpdate: 'tool_call_update', toolCallId: 'b', _meta: { terminal_output_delta: { terminal_id: 'b', data: 'two\n' } } },
+      {
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 'b',
+        status: 'failed',
+        rawOutput: { content: [{ type: 'text', text: 'one\ntwo\n\n\nCommand exited with code 2' }] },
+        _meta: {
+          terminal_output: { terminal_id: 'b', data: 'one\ntwo\n' },
+          terminal_exit: { terminal_id: 'b', exit_code: 2, signal: null },
+        },
+      },
+    ])
+    for (const update of updates.slice(1)) expect(update).not.toHaveProperty('content')
+  })
+
   it('exposes the cached input for a running tool and diffs an edit from it at the end', async () => {
     const { turn, notify } = makeTurn()
     turn.handleEvent(evt({ type: 'agent_start' }))
@@ -156,7 +195,7 @@ describe('TurnHandler', () => {
   it('re-issues the abort when a cancel landed before the turn started', async () => {
     const requestAbort = vi.fn()
     const notify = vi.fn(async () => {})
-    const turn = new TurnHandler({ notifier: { notify } as unknown as AgentContext, sessionId: SESSION_ID, requestAbort })
+    const turn = new TurnHandler({ notifier: { notify } as unknown as AgentContext, sessionId: SESSION_ID, cwd: CWD, requestAbort })
     turn.cancel()
     expect(requestAbort).not.toHaveBeenCalled()
     turn.handleEvent(evt({ type: 'agent_start' }))
