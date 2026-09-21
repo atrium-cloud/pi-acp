@@ -7,19 +7,27 @@ import {
   DEFAULT_PI_AGENT_DIR_SEGMENTS,
   ENV_PI_AGENT_DIR,
   ENV_PI_SESSION_DIR,
+  MESSAGE_MAP_KEY_MESSAGES,
+  MESSAGE_MAP_KEY_VERSION,
+  MESSAGE_MAP_VERSION,
   PI_SESSIONS_DIR_NAME,
   PI_SETTINGS_FILE_NAME,
 } from '../constants.js'
 import type { SessionDirs, SessionFileEntry } from '../session/sessionDirectory.js'
 import {
+  branchEntriesBefore,
   findSessionFile,
+  isUserMessageEntry,
   listSessions,
+  messageMapPathFor,
+  readMessageMap,
   readSessionEntries,
   readSessionInfo,
   resolveSessionDirs,
   sessionDirForCwd,
   settledEntries,
   writeForkFile,
+  writeMessageMap,
 } from '../session/sessionDirectory.js'
 
 /** The fork writer mints an id and reads the clock, so both are pinned where the
@@ -74,6 +82,11 @@ function message(role: string, content: unknown, timestamps: { message?: number;
     timestamp: timestamps.entry ?? HEADER_TIME,
     message: { role, content, ...(timestamps.message === undefined ? {} : { timestamp: timestamps.message }) },
   }
+}
+
+/** A tree node with a real id and parent, which the `message` helper lacks. */
+function node(id: string, parentId: string | null, role: string, content: unknown): SessionFileEntry {
+  return { type: 'message', id, parentId, timestamp: HEADER_TIME, message: { role, content } }
 }
 
 /** Raw strings are written verbatim so malformed lines can be exercised. */
@@ -479,5 +492,136 @@ describe('findSessionFile', () => {
 
     // A cwd narrows the scan to one directory, so the same id is unambiguous.
     expect(await findSessionFile({ dirs: perCwd(root), id: 'dup', cwd: first })).toBe(firstPath)
+  })
+})
+
+describe('messageMapPathFor', () => {
+  it('swaps the session extension for the sidecar suffix', () => {
+    expect(messageMapPathFor(join(root, `${FILE_TIMESTAMP}_abc.jsonl`))).toBe(join(root, `${FILE_TIMESTAMP}_abc.acp.json`))
+  })
+
+  it('throws for a path that is not a session file', () => {
+    expect(() => messageMapPathFor(join(root, 'abc.json'))).toThrow(/does not end in \.jsonl/)
+  })
+})
+
+describe('readMessageMap and writeMessageMap', () => {
+  let sidecarPath: string
+
+  beforeEach(() => {
+    sidecarPath = join(root, 'nested', `${FILE_TIMESTAMP}_abc.acp.json`)
+  })
+
+  it('round trips a map, creating the parent directory and writing the versioned shape', () => {
+    const messages = { 'msg-1': 'u1', 'msg-2': 'u4' }
+    writeMessageMap(sidecarPath, messages)
+
+    expect(readMessageMap(sidecarPath)).toEqual(messages)
+    expect(JSON.parse(readFileSync(sidecarPath, 'utf8'))).toEqual({
+      [MESSAGE_MAP_KEY_VERSION]: MESSAGE_MAP_VERSION,
+      [MESSAGE_MAP_KEY_MESSAGES]: messages,
+    })
+  })
+
+  it('rewrites the whole file rather than merging', () => {
+    writeMessageMap(sidecarPath, { 'msg-1': 'u1' })
+    writeMessageMap(sidecarPath, { 'msg-2': 'u4' })
+
+    expect(readMessageMap(sidecarPath)).toEqual({ 'msg-2': 'u4' })
+  })
+
+  it('round trips an empty map', () => {
+    writeMessageMap(sidecarPath, {})
+    expect(readMessageMap(sidecarPath)).toEqual({})
+  })
+
+  it('returns null when the sidecar does not exist', () => {
+    expect(readMessageMap(sidecarPath)).toBeNull()
+  })
+
+  it('throws on a malformed file, a version mismatch, or a non-string entry id', () => {
+    mkdirSync(join(root, 'nested'), { recursive: true })
+    const write = (body: string): void => writeFileSync(sidecarPath, body)
+
+    write('{ not json')
+    expect(() => readMessageMap(sidecarPath)).toThrow(/not valid JSON/)
+
+    write('[]')
+    expect(() => readMessageMap(sidecarPath)).toThrow(/not a JSON object/)
+
+    write(JSON.stringify({ [MESSAGE_MAP_KEY_VERSION]: 2, [MESSAGE_MAP_KEY_MESSAGES]: {} }))
+    expect(() => readMessageMap(sidecarPath)).toThrow(/expected 1/)
+
+    write(JSON.stringify({ [MESSAGE_MAP_KEY_MESSAGES]: {} }))
+    expect(() => readMessageMap(sidecarPath)).toThrow(/expected 1/)
+
+    write(JSON.stringify({ [MESSAGE_MAP_KEY_VERSION]: MESSAGE_MAP_VERSION }))
+    expect(() => readMessageMap(sidecarPath)).toThrow(/no messages object/)
+
+    write(JSON.stringify({ [MESSAGE_MAP_KEY_VERSION]: MESSAGE_MAP_VERSION, [MESSAGE_MAP_KEY_MESSAGES]: ['u1'] }))
+    expect(() => readMessageMap(sidecarPath)).toThrow(/no messages object/)
+
+    write(JSON.stringify({ [MESSAGE_MAP_KEY_VERSION]: MESSAGE_MAP_VERSION, [MESSAGE_MAP_KEY_MESSAGES]: { 'msg-1': 7 } }))
+    expect(() => readMessageMap(sidecarPath)).toThrow(/maps "msg-1" to a non-string entry id/)
+  })
+})
+
+describe('isUserMessageEntry', () => {
+  it('holds only for a user message entry', () => {
+    expect(isUserMessageEntry(node('u1', null, 'user', 'hi'))).toBe(true)
+    expect(isUserMessageEntry(node('a1', 'u1', 'assistant', 'there'))).toBe(false)
+    expect(isUserMessageEntry(node('r1', 'a1', 'toolResult', 'output'))).toBe(false)
+    expect(isUserMessageEntry({ type: 'session_info', id: 'info', parentId: null, name: 'named' })).toBe(false)
+    // A role with no content is not a message Pi would replay.
+    expect(isUserMessageEntry({ type: 'message', id: 'u2', parentId: null, message: { role: 'user' } })).toBe(false)
+  })
+})
+
+describe('branchEntriesBefore', () => {
+  it('returns the ancestors of a prompt on a linear session, ending on the assistant before it', () => {
+    const entries = [
+      header('linear', PARENT_CWD) as SessionFileEntry,
+      node('u1', null, 'user', 'first'),
+      node('a1', 'u1', 'assistant', 'answer one'),
+      node('u2', 'a1', 'user', 'second'),
+      node('a2', 'u2', 'assistant', 'answer two'),
+      node('u3', 'a2', 'user', 'third'),
+    ]
+
+    const cut = branchEntriesBefore(entries, 'u3')
+    expect(cut.map((entry) => entry.id)).toEqual(['u1', 'a1', 'u2', 'a2'])
+    expect(cut.at(-1)).toEqual(node('a2', 'u2', 'assistant', 'answer two'))
+  })
+
+  it('follows the parent chain past a sibling branch the file order would include', () => {
+    // A Pi-side fork left u2/a2 abandoned between the named prompt's ancestors.
+    const entries = [
+      header('branched', PARENT_CWD) as SessionFileEntry,
+      node('u1', null, 'user', 'first'),
+      node('a1', 'u1', 'assistant', 'answer one'),
+      node('u2', 'a1', 'user', 'abandoned'),
+      node('a2', 'u2', 'assistant', 'abandoned answer'),
+      node('u3', 'a1', 'user', 'retry'),
+      node('a3', 'u3', 'assistant', 'answer three'),
+      node('u4', 'a3', 'user', 'fourth'),
+    ]
+
+    expect(branchEntriesBefore(entries, 'u4').map((entry) => entry.id)).toEqual(['u1', 'a1', 'u3', 'a3'])
+  })
+
+  it('returns nothing for the root prompt', () => {
+    const entries = [header('root', PARENT_CWD) as SessionFileEntry, node('u1', null, 'user', 'first')]
+    expect(branchEntriesBefore(entries, 'u1')).toEqual([])
+  })
+
+  it('throws for an id the file does not hold, and for a broken parent chain', () => {
+    const entries = [
+      header('broken', PARENT_CWD) as SessionFileEntry,
+      node('u1', null, 'user', 'first'),
+      node('u2', 'gone', 'user', 'orphan'),
+    ]
+
+    expect(() => branchEntriesBefore(entries, 'absent')).toThrow(/"absent" is not in the session file/)
+    expect(() => branchEntriesBefore(entries, 'u2')).toThrow(/names parent "gone"/)
   })
 })

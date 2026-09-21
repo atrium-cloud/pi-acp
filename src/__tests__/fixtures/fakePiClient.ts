@@ -12,6 +12,8 @@ export interface FakeState {
   thinkingLevel: string
   model?: { provider: string; id: string; name: string } | undefined
   sessionName?: string
+  /** Pi's own file for the session; a session without one records no breakpoints. */
+  sessionFile?: string
 }
 
 /** The `SessionStats` subset the adapter reads for end-of-turn usage. */
@@ -31,6 +33,9 @@ export interface FakePiSpec {
   stats?: FakeStats
   /** The `get_messages` history a `session/load` replays. */
   messages?: readonly unknown[]
+  /** The `get_entries` session tree; a function is called per request, so a test
+   * can grow the tree between turns. */
+  entries?: readonly unknown[] | (() => readonly unknown[])
   /** A command type that should reject, to exercise error paths. */
   failOn?: string
   /** A command type that should reject only on its first call, then succeed. */
@@ -97,6 +102,12 @@ export function makeFakePiClient(spec: FakePiSpec): FakePiClient {
         return { type: 'response', command: 'get_commands', success: true, data: { commands: spec.commands } }
       case 'get_messages':
         return { type: 'response', command: 'get_messages', success: true, data: { messages: spec.messages ?? [] } }
+      case 'get_entries': {
+        const entries = typeof spec.entries === 'function' ? spec.entries() : (spec.entries ?? [])
+        const last = entries.at(-1) as { id?: unknown } | undefined
+        const leafId = typeof last?.id === 'string' ? last.id : null
+        return { type: 'response', command: 'get_entries', success: true, data: { entries, leafId } }
+      }
       case 'set_model': {
         const model = spec.models.find((m) => m.provider === command['provider'] && m.id === command['modelId'])
         state = { ...state, model: model ?? state.model }
@@ -135,7 +146,10 @@ export function makeFakePiClient(spec: FakePiSpec): FakePiClient {
     spawns.push({ cwd: options.cwd, args, env: options.env })
     const sessionArgIndex = args.indexOf(PI_SESSION_ARG)
     if (spec.sessionIdFromSessionFile && sessionArgIndex !== -1) {
-      state = { ...state, sessionId: readHeaderSessionId(args[sessionArgIndex + 1]) }
+      const sessionFile = args[sessionArgIndex + 1]
+      const sessionId = readHeaderSessionId(sessionFile)
+      // Pi reports the file it opened, so the session finds its own sidecar.
+      state = { ...state, sessionId, ...(sessionFile === undefined ? {} : { sessionFile }) }
     }
     onEvent = options.onEvent
     onExit = options.onExit

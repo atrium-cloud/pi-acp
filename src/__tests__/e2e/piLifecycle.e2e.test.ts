@@ -7,7 +7,8 @@
  * protocol responses. Skipped unless RUN_PI_E2E=true (see e2eGate.ts).
  */
 
-import { mkdtempSync, realpathSync, rmSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
+import { mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -19,7 +20,11 @@ import {
   CONFIG_ID_MODEL,
   CONFIG_ID_THOUGHT_LEVEL,
   JSONRPC_INVALID_PARAMS,
+  META_KEY_BREAKPOINT_NAMESPACE,
+  META_KEY_MESSAGE_ID,
   PERMISSION_OPTION_ALLOW_ONCE,
+  SESSION_ENTRY_TYPE_HEADER,
+  SESSION_FILE_EXTENSION,
 } from '../../constants.js'
 import { describeE2E, E2E_SETUP_TIMEOUT_MS, E2E_TURN_TIMEOUT_MS, pinnedModelValue } from './e2eGate.js'
 import type { SpawnedAgent } from './spawnedAgentFixture.js'
@@ -48,9 +53,26 @@ const JSONRPC_RESOURCE_NOT_FOUND = -32_002
 const SCRATCH_PREFIX = 'pi-acp-e2e-cwd-'
 const NO_SESSION_ID = 'pi-e2e-no-such-session'
 
+/** Three breakpoint-fork turns, one marker each. None is a substring of another,
+ * so a replayed transcript either carries a turn or it does not. */
+const CUT_MARKER_FIRST = 'pi-e2e-cut-alpha'
+const CUT_MARKER_SECOND = 'pi-e2e-cut-bravo'
+const CUT_MARKER_THIRD = 'pi-e2e-cut-charlie'
+const CUT_PROMPT_FIRST = `Reply with exactly ${CUT_MARKER_FIRST} and nothing else.`
+const CUT_PROMPT_SECOND = `Reply with exactly ${CUT_MARKER_SECOND} and nothing else.`
+const CUT_PROMPT_THIRD = `Reply with exactly ${CUT_MARKER_THIRD} and nothing else.`
+
+/** `<timestamp>_<id>.jsonl`, the flat store's file name for one session. */
+const SESSION_ID_SEPARATOR = '_'
+/** Pi's own transcript shape, re-derived here on purpose: this tier asserts what
+ * landed on disk rather than trusting the adapter's reader. */
+const ENTRY_TYPE_MESSAGE = 'message'
+const ROLE_USER = 'user'
+
 /** A case that runs several turns on one already-booted adapter. */
 const TWO_TURN_TIMEOUT_MS = 2 * E2E_TURN_TIMEOUT_MS
 const THREE_TURN_TIMEOUT_MS = 3 * E2E_TURN_TIMEOUT_MS
+const FOUR_TURN_TIMEOUT_MS = 4 * E2E_TURN_TIMEOUT_MS
 
 describeE2E('pi live session lifecycle', () => {
   // Nullable so a failed boot leaves the teardown with something to check: the
@@ -87,10 +109,15 @@ describeE2E('pi live session lifecycle', () => {
     return otherWorkspace
   }
 
-  async function promptOn(sessionId: string, text: string): Promise<PromptResponse> {
+  /** `messageId` is the client-minted breakpoint id, sent exactly as a client
+   * sends it; omitted, the prompt carries no `_meta` at all. */
+  async function promptOn(sessionId: string, text: string, messageId?: string): Promise<PromptResponse> {
     return await live().agent.request(acp.methods.agent.session.prompt, {
       sessionId,
       prompt: [{ type: 'text', text }],
+      ...(messageId === undefined
+        ? {}
+        : { _meta: { [META_KEY_BREAKPOINT_NAMESPACE]: { [META_KEY_MESSAGE_ID]: messageId } } }),
     })
   }
 
@@ -300,6 +327,79 @@ describeE2E('pi live session lifecycle', () => {
   )
 
   it(
+    'forks a parent at an earlier prompt named by a breakpoint message id',
+    async () => {
+      const agent = live()
+      const parentId = await openPinnedSession(agent)
+
+      // Each prompt carries its own minted id, and the response's echo is what
+      // tells the client that id is forkable at all.
+      const firstMessageId = randomUUID()
+      const first = await promptOn(parentId, CUT_PROMPT_FIRST, firstMessageId)
+      expect(first.stopReason).toBe('end_turn')
+      expect(echoedMessageId(first._meta)).toBe(firstMessageId)
+
+      const secondMessageId = randomUUID()
+      const second = await promptOn(parentId, CUT_PROMPT_SECOND, secondMessageId)
+      expect(second.stopReason).toBe('end_turn')
+      expect(echoedMessageId(second._meta)).toBe(secondMessageId)
+
+      const forked = await agent.agent.request(acp.methods.agent.session.fork, {
+        sessionId: parentId,
+        cwd: agent.workspace,
+        _meta: { [META_KEY_BREAKPOINT_NAMESPACE]: { [META_KEY_MESSAGE_ID]: secondMessageId } },
+      })
+      expect(forked.sessionId).not.toBe(parentId)
+      expect(forked.configOptions).toBeDefined()
+
+      // The cut is exclusive, so the fork's file ends on the entry before the
+      // second prompt; that entry is what Pi adopts as the fork's leaf.
+      const parentPath = sessionFilePath(agent.sessionDir, parentId)
+      const cutLeafId = entryId(entryBeforeSecondUserMessage(parentPath), parentPath)
+      const forkPath = sessionFilePath(agent.sessionDir, forked.sessionId)
+      const cutEntries = storedEntries(forkPath)
+      expect(entryId(cutEntries.at(-1), forkPath)).toBe(cutLeafId)
+
+      await agent.agent.request(acp.methods.agent.session.load, {
+        sessionId: forked.sessionId,
+        cwd: agent.workspace,
+        mcpServers: [],
+      })
+      const replayed = userMessageText(agent, forked.sessionId)
+      expect(replayed).toContain(CUT_MARKER_FIRST)
+      expect(replayed).not.toContain(CUT_MARKER_SECOND)
+
+      // Both sessions stay live, and the parent keeps the turn the fork dropped.
+      expect((await promptOn(forked.sessionId, CUT_PROMPT_THIRD)).stopReason).toBe('end_turn')
+      expect((await promptOn(parentId, CUT_PROMPT_FIRST)).stopReason).toBe('end_turn')
+
+      // The fork's own first entry grafts onto the cut leaf rather than onto the
+      // parent's later history, which is what makes this a branch and not a copy.
+      const appended = storedEntries(forkPath)[cutEntries.length]
+      expect(appended?.parentId).toBe(cutLeafId)
+    },
+    FOUR_TURN_TIMEOUT_MS,
+  )
+
+  it(
+    'rejects a breakpoint fork naming a message id the adapter never recorded',
+    async () => {
+      const agent = live()
+      const parentId = await openPinnedSession(agent)
+      expect((await promptOn(parentId, ECHO_PROMPT, randomUUID())).stopReason).toBe('end_turn')
+
+      await expect(
+        agent.agent.request(acp.methods.agent.session.fork, {
+          sessionId: parentId,
+          cwd: agent.workspace,
+          _meta: { [META_KEY_BREAKPOINT_NAMESPACE]: { [META_KEY_MESSAGE_ID]: randomUUID() } },
+        }),
+      ).rejects.toMatchObject({ code: JSONRPC_INVALID_PARAMS })
+    },
+    E2E_TURN_TIMEOUT_MS,
+  )
+
+  it(
     'cancels a turn through the prompt request cancellation signal',
     async () => {
       const agent = live()
@@ -330,4 +430,62 @@ function userMessageText(agent: SpawnedAgent, sessionId: string): string {
     .filter((update) => update.sessionUpdate === 'user_message_chunk')
     .map((update) => (update.content.type === 'text' ? update.content.text : ''))
     .join('\n')
+}
+
+/** The breakpoint id a prompt response echoed back, or undefined when the
+ * adapter recorded nothing for that prompt. */
+function echoedMessageId(meta: PromptResponse['_meta']): string | undefined {
+  const stack = meta?.[META_KEY_BREAKPOINT_NAMESPACE]
+  if (typeof stack !== 'object' || stack === null) return undefined
+  const messageId = (stack as { readonly [key: string]: unknown })[META_KEY_MESSAGE_ID]
+  return typeof messageId === 'string' ? messageId : undefined
+}
+
+/** One line of a session file, read as the transcript rather than as a type. */
+interface StoredEntry {
+  readonly type?: unknown
+  readonly id?: unknown
+  readonly parentId?: unknown
+  readonly message?: unknown
+}
+
+/** The stored file for one session in the flat e2e store. */
+function sessionFilePath(sessionDir: string, sessionId: string): string {
+  const suffix = `${SESSION_ID_SEPARATOR}${sessionId}${SESSION_FILE_EXTENSION}`
+  const name = readdirSync(sessionDir).find((candidate) => candidate.endsWith(suffix))
+  if (name === undefined) throw new Error(`e2e: no session file for ${sessionId} under ${sessionDir}`)
+  return join(sessionDir, name)
+}
+
+/** A session file's tree entries in file order, header dropped. */
+function storedEntries(path: string): StoredEntry[] {
+  return readFileSync(path, 'utf8')
+    .split('\n')
+    .filter((line) => line.trim().length > 0)
+    .map((line) => JSON.parse(line) as StoredEntry)
+    .filter((entry) => entry.type !== SESSION_ENTRY_TYPE_HEADER)
+}
+
+/** An entry's Pi id, named loudly: an undefined id would otherwise compare equal
+ * to another missing one and pass. */
+function entryId(entry: StoredEntry | undefined, path: string): string {
+  if (typeof entry?.id !== 'string') throw new Error(`e2e: ${path} holds an entry with no id`)
+  return entry.id
+}
+
+/** The entry a fork at the second prompt cuts on: Pi appends the user entry as a
+ * turn starts, so the entry before it in file order closes the previous turn. */
+function entryBeforeSecondUserMessage(path: string): StoredEntry | undefined {
+  const entries = storedEntries(path)
+  const userIndexes = entries.flatMap((entry, index) => (isUserMessageEntry(entry) ? [index] : []))
+  const secondIndex = userIndexes[1]
+  if (secondIndex === undefined) throw new Error(`e2e: ${path} holds fewer than two user messages`)
+  return entries[secondIndex - 1]
+}
+
+function isUserMessageEntry(entry: StoredEntry): boolean {
+  if (entry.type !== ENTRY_TYPE_MESSAGE) return false
+  const message = entry.message
+  if (typeof message !== 'object' || message === null) return false
+  return (message as { readonly role?: unknown }).role === ROLE_USER
 }

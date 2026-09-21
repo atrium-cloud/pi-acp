@@ -1,3 +1,5 @@
+import { existsSync } from 'node:fs'
+
 import * as acp from '@agentclientprotocol/sdk'
 import type { AgentContext, AvailableCommand, SessionConfigOption, SessionUpdate, StopReason } from '@agentclientprotocol/sdk'
 
@@ -23,6 +25,7 @@ import { configOptionUpdate, sessionInfoUpdate, toolKind, toolTitle, usageUpdate
 import type { FlattenedPrompt } from '../turn/promptContent.js'
 import { type AnnouncedToolCall, type TurnEventSink, TurnHandler } from '../turn/TurnHandler.js'
 import { replayUpdates } from './replay.js'
+import { isUserMessageEntry, messageMapPathFor, readMessageMap, type SessionFileEntry, writeMessageMap } from './sessionDirectory.js'
 import { deriveTitle } from './title.js'
 
 // The exact `set_thinking_level` payload type, without importing the Pi package's
@@ -45,6 +48,14 @@ interface ConfigState {
   readonly currentModel: { readonly provider: string; readonly id: string } | undefined
   readonly currentLevel: string
   readonly options: SessionConfigOption[]
+}
+
+/** The result of one `session/prompt`. `acknowledgedMessageId` is the client's own
+ * breakpoint message id, echoed back only once it is recorded against a Pi entry
+ * id, so a client that sees no echo knows the prompt cannot be forked from. */
+export interface PromptOutcome {
+  readonly stopReason: StopReason
+  readonly acknowledgedMessageId: string | undefined
 }
 
 export interface SessionConnectionInit {
@@ -83,6 +94,12 @@ export class SessionConnection {
    * to a normal turn (`agent_start` clears the timer), and one registered later
    * behaves as every prompt did before it was advertised. */
   private extensionCommandNames: ReadonlySet<string> = new Set()
+  /** Pi's own file for this session, undefined when Pi persists nothing; without
+   * it there is nowhere to put the sidecar, so nothing is ever recorded. */
+  private sessionFile: string | undefined
+  /** The breakpoint map, read from the sidecar at most once per connection (a
+   * resumed or forked session inherits one) and rewritten whole after that. */
+  private messageMap: Readonly<Record<string, string>> | null = null
 
   constructor(init: { notifier: AgentContext; cwd: string }) {
     this.notifier = init.notifier
@@ -94,6 +111,7 @@ export class SessionConnection {
     this.sessionId = init.sessionId
     this.config = this.buildConfig(init.state, init.models, init.levels)
     this.needsTitle = (init.state.sessionName ?? '').trim() === ''
+    this.sessionFile = init.state.sessionFile
     this.extensionCommandNames = new Set(init.extensionCommandNames)
   }
 
@@ -278,7 +296,7 @@ export class SessionConnection {
    * ahead of the `await request` continuation — subscribing after would miss it.
    * Both cancel paths (`session/cancel` and the prompt's own `$/cancel_request`
    * abort signal) converge on `cancel()`. */
-  async runPrompt(prompt: FlattenedPrompt, signal: AbortSignal): Promise<StopReason> {
+  async runPrompt(prompt: FlattenedPrompt, signal: AbortSignal, messageId?: string): Promise<PromptOutcome> {
     if (this.closing) throw closingError()
     if (this.exitError) throw this.exitError
     const client = this.requireClient()
@@ -286,7 +304,7 @@ export class SessionConnection {
       throw new acp.RequestError(JSONRPC_INVALID_REQUEST, 'a turn is already in progress for this session')
     }
     // Already cancelled before anything was sent: no turn runs, nothing to abort.
-    if (signal.aborted) return 'cancelled'
+    if (signal.aborted) return { stopReason: 'cancelled', acknowledgedMessageId: undefined }
 
     const turn = new TurnHandler({
       notifier: this.notifier,
@@ -315,10 +333,12 @@ export class SessionConnection {
       // Nothing left to name or meter on a session whose subprocess is stopping,
       // nor on a prompt an extension command handled without running a turn:
       // its text is the command line, not a title, and no tokens were spent.
-      if (this.closing || !turn.startedTurn) return reason
+      if (this.closing || !turn.startedTurn) return { stopReason: reason, acknowledgedMessageId: undefined }
       await this.maybeSetTitle(client, prompt.firstText)
       await this.emitEndOfTurnUsage(client)
-      return reason
+      const acknowledgedMessageId =
+        messageId === undefined ? undefined : await this.recordMessageId(client, messageId)
+      return { stopReason: reason, acknowledgedMessageId }
     } finally {
       signal.removeEventListener('abort', onAbort)
       this.activeTurn = null
@@ -347,6 +367,38 @@ export class SessionConnection {
       this.emit(usageUpdate(usage.tokens, usage.contextWindow, stats.data.cost))
     } catch (error) {
       console.error(`[${AGENT_NAME}] [${this.sessionId}] failed to report end-of-turn usage: ${asMessage(error)}`)
+    }
+  }
+
+  /** Binds the client's breakpoint message id to the Pi entry id of the prompt
+   * this turn just ran, so a later fork can cut the tree there. Pi appends the
+   * user entry as the turn starts, so by `agent_settled` the turn's prompt is the
+   * last user message entry in file order. Returns the id only once the sidecar
+   * holds it: an unrecorded prompt must not be echoed as forkable, so every
+   * failure here degrades to no echo rather than failing the turn. */
+  private async recordMessageId(client: PiClientLike, messageId: string): Promise<string | undefined> {
+    const sessionFile = this.sessionFile
+    if (sessionFile === undefined) return undefined
+    const sidecarPath = messageMapPathFor(sessionFile)
+    try {
+      // Pi creates the file on the first assistant message, so a first turn that
+      // ended before one holds nothing a fork could cut, and a sidecar beside a
+      // file that may never appear would be an orphan in the store.
+      if (!existsSync(sessionFile)) throw new Error('Pi has not written the session file yet')
+      const entries = await client.request({ type: 'get_entries' })
+      const entryId = lastUserEntryId(entries.data.entries)
+      if (entryId === undefined) throw new Error('the session tree holds no user message entry')
+      const loaded = this.messageMap ?? readMessageMap(sidecarPath) ?? {}
+      this.messageMap = loaded
+      const messages = { ...loaded, [messageId]: entryId }
+      writeMessageMap(sidecarPath, messages)
+      this.messageMap = messages
+      return messageId
+    } catch (error) {
+      console.error(
+        `[${AGENT_NAME}] [${this.sessionId}] failed to record breakpoint message id "${messageId}": ${asMessage(error)}`,
+      )
+      return undefined
     }
   }
 
@@ -482,6 +534,14 @@ export class SessionConnection {
     if (this.config === null) throw new Error('session connection used before attach()')
     return this.config
   }
+}
+
+function lastUserEntryId(entries: readonly SessionFileEntry[]): string | undefined {
+  for (let index = entries.length - 1; index >= 0; index--) {
+    const entry = entries[index]
+    if (entry !== undefined && isUserMessageEntry(entry) && typeof entry.id === 'string') return entry.id
+  }
+  return undefined
 }
 
 function invalidParams(message: string): acp.RequestError {

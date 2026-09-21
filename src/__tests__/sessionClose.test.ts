@@ -107,7 +107,7 @@ describe('SessionConnection.close', () => {
     await Promise.resolve()
     await connection.close()
 
-    await expect(turn).resolves.toBe('cancelled')
+    await expect(turn).resolves.toMatchObject({ stopReason: 'cancelled' })
     expect(timeline.indexOf('abort')).toBeGreaterThan(-1)
     expect(timeline.indexOf('abort')).toBeLessThan(timeline.indexOf('stop'))
     // A cancelled turn on a stopping subprocess has nothing left to name or meter.
@@ -120,7 +120,7 @@ describe('SessionConnection.close', () => {
     const turn = connection.runPrompt(HELLO, new AbortController().signal)
     await Promise.resolve()
     await connection.close()
-    await expect(turn).resolves.toBe('cancelled')
+    await expect(turn).resolves.toMatchObject({ stopReason: 'cancelled' })
   })
 
   it('stops without aborting when no turn is running', async () => {

@@ -1,9 +1,23 @@
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
 import * as acp from '@agentclientprotocol/sdk'
-import type { AgentContext } from '@agentclientprotocol/sdk'
+import type { AgentContext, StopReason } from '@agentclientprotocol/sdk'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { AGENT_NAME, AGENT_START_GRACE_MS, EXTENSION_COMMAND_QUIET_MS } from '../constants.js'
+import {
+  AGENT_NAME,
+  AGENT_START_GRACE_MS,
+  EXTENSION_COMMAND_QUIET_MS,
+  MESSAGE_MAP_KEY_MESSAGES,
+  MESSAGE_MAP_KEY_VERSION,
+  MESSAGE_MAP_VERSION,
+  META_KEY_BREAKPOINT_NAMESPACE,
+  META_KEY_MESSAGE_ID,
+} from '../constants.js'
 import { PiAcpServer } from '../server/PiAcpServer.js'
+import { messageMapPathFor } from '../session/sessionDirectory.js'
 import { establishSession } from '../session/sessionSetup.js'
 import type { SessionConnection } from '../session/SessionConnection.js'
 import { type FlattenedPrompt, flattenPromptContent } from '../turn/promptContent.js'
@@ -53,8 +67,8 @@ const fullTurn = (emit: Emit): void => {
 describe('SessionConnection.runPrompt', () => {
   it('registers the turn before sending, so a synchronous agent_start is not missed', async () => {
     const { connection, notify } = await connect(baseSpec(fullTurn))
-    const stopReason = await connection.runPrompt(HELLO, new AbortController().signal)
-    expect(stopReason).toBe('end_turn')
+    const outcome = await connection.runPrompt(HELLO, new AbortController().signal)
+    expect(outcome.stopReason).toBe('end_turn')
     expect(notify).toHaveBeenCalledWith(acp.methods.client.session.update, {
       sessionId: 'sess-1',
       update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Hello' } },
@@ -122,7 +136,7 @@ describe('SessionConnection.runPrompt', () => {
     await expect(connection.runPrompt(HELLO, new AbortController().signal)).rejects.toMatchObject({ code: -32_600 })
     fake.emit({ type: 'message_end', message: { role: 'assistant', stopReason: 'stop' } } as never)
     fake.emit({ type: 'agent_settled' } as never)
-    await expect(first).resolves.toBe('end_turn')
+    await expect(first).resolves.toMatchObject({ stopReason: 'end_turn' })
   })
 
   it('resolves cancelled when the prompt signal aborts', async () => {
@@ -132,7 +146,7 @@ describe('SessionConnection.runPrompt', () => {
     await Promise.resolve()
     controller.abort()
     fake.emit({ type: 'agent_settled' } as never)
-    await expect(turn).resolves.toBe('cancelled')
+    await expect(turn).resolves.toMatchObject({ stopReason: 'cancelled' })
     expect(fake.calls.map((call) => call['type'])).toContain('abort')
   })
 
@@ -140,7 +154,7 @@ describe('SessionConnection.runPrompt', () => {
     const { fake, connection } = await connect(baseSpec(fullTurn))
     const controller = new AbortController()
     controller.abort()
-    await expect(connection.runPrompt(HELLO, controller.signal)).resolves.toBe('cancelled')
+    await expect(connection.runPrompt(HELLO, controller.signal)).resolves.toMatchObject({ stopReason: 'cancelled' })
     expect(fake.calls.map((call) => call['type'])).not.toContain('prompt')
   })
 
@@ -164,6 +178,129 @@ describe('SessionConnection.runPrompt', () => {
     const { connection } = await connect(baseSpec())
     connection.handleExit(new Error('pi exited: code 1'))
     await expect(connection.runPrompt(HELLO, new AbortController().signal)).rejects.toThrow(/pi exited: code 1/)
+  })
+})
+
+// ── Breakpoint message ids ────────────────────────────────────────────────────
+
+const TEMP_PREFIX = 'pi-acp-prompt-'
+const SESSION_FILE_NAME = '2026-01-01T00-00-00-000Z_sess-1.jsonl'
+const MESSAGE_ID = 'msg-1'
+const SECOND_MESSAGE_ID = 'msg-2'
+const userEntry = (id: string, content: string): unknown => ({
+  type: 'message',
+  id,
+  parentId: null,
+  message: { role: 'user', content },
+})
+const assistantEntry = (id: string): unknown => ({
+  type: 'message',
+  id,
+  parentId: null,
+  message: { role: 'assistant', content: 'ok' },
+})
+
+describe('breakpoint message id recording', () => {
+  let store: string
+  let sessionFile: string
+
+  beforeEach(() => {
+    store = mkdtempSync(join(tmpdir(), TEMP_PREFIX))
+    sessionFile = join(store, SESSION_FILE_NAME)
+    // Pi has flushed the session by the time a turn settles with assistant output.
+    writeFileSync(sessionFile, '')
+  })
+
+  afterEach(() => {
+    rmSync(store, { recursive: true, force: true })
+  })
+
+  function specWithEntries(entries: FakePiSpec['entries'], overrides: Partial<FakePiSpec> = {}): FakePiSpec {
+    const spec = baseSpec(fullTurn)
+    spec.state.sessionFile = sessionFile
+    return { ...spec, ...(entries === undefined ? {} : { entries }), ...overrides }
+  }
+
+  function readSidecar(): unknown {
+    return JSON.parse(readFileSync(messageMapPathFor(sessionFile), 'utf8'))
+  }
+
+  it('records the last user entry of the turn and echoes the message id', async () => {
+    const { connection } = await connect(
+      specWithEntries([userEntry('u1', 'earlier'), assistantEntry('a1'), userEntry('u2', 'hi')]),
+    )
+
+    const outcome = await connection.runPrompt(HELLO, new AbortController().signal, MESSAGE_ID)
+
+    expect(outcome).toEqual({ stopReason: 'end_turn', acknowledgedMessageId: MESSAGE_ID })
+    expect(readSidecar()).toEqual({
+      [MESSAGE_MAP_KEY_VERSION]: MESSAGE_MAP_VERSION,
+      [MESSAGE_MAP_KEY_MESSAGES]: { [MESSAGE_ID]: 'u2' },
+    })
+  })
+
+  it('extends the map on a later prompt without re-reading the sidecar', async () => {
+    let entries: unknown[] = [userEntry('u1', 'hi')]
+    const { connection } = await connect(specWithEntries(() => entries))
+
+    await connection.runPrompt(HELLO, new AbortController().signal, MESSAGE_ID)
+    entries = [...entries, assistantEntry('a1'), userEntry('u2', 'again')]
+    const second = await connection.runPrompt(HELLO, new AbortController().signal, SECOND_MESSAGE_ID)
+
+    expect(second.acknowledgedMessageId).toBe(SECOND_MESSAGE_ID)
+    expect(readSidecar()).toEqual({
+      [MESSAGE_MAP_KEY_VERSION]: MESSAGE_MAP_VERSION,
+      [MESSAGE_MAP_KEY_MESSAGES]: { [MESSAGE_ID]: 'u1', [SECOND_MESSAGE_ID]: 'u2' },
+    })
+  })
+
+  it('reads no entries and writes no sidecar for a prompt with no message id', async () => {
+    const { fake, connection } = await connect(specWithEntries([userEntry('u1', 'hi')]))
+
+    const outcome = await connection.runPrompt(HELLO, new AbortController().signal)
+
+    expect(outcome.acknowledgedMessageId).toBeUndefined()
+    expect(fake.calls.map((call) => call['type'])).not.toContain('get_entries')
+    expect(existsSync(messageMapPathFor(sessionFile))).toBe(false)
+  })
+
+  it('records nothing for a session Pi persists no file for', async () => {
+    const spec = baseSpec(fullTurn)
+    const { fake, connection } = await connect({ ...spec, entries: [userEntry('u1', 'hi')] })
+
+    const outcome = await connection.runPrompt(HELLO, new AbortController().signal, MESSAGE_ID)
+
+    expect(outcome).toEqual({ stopReason: 'end_turn', acknowledgedMessageId: undefined })
+    expect(fake.calls.map((call) => call['type'])).not.toContain('get_entries')
+  })
+
+  it('records nothing before Pi has written the session file', async () => {
+    rmSync(sessionFile)
+    const { fake, connection } = await connect(specWithEntries([userEntry('u1', 'hi')]))
+
+    const outcome = await connection.runPrompt(HELLO, new AbortController().signal, MESSAGE_ID)
+
+    expect(outcome).toEqual({ stopReason: 'end_turn', acknowledgedMessageId: undefined })
+    expect(fake.calls.map((call) => call['type'])).not.toContain('get_entries')
+    expect(existsSync(messageMapPathFor(sessionFile))).toBe(false)
+  })
+
+  it('returns the stop reason without an echo when get_entries fails', async () => {
+    const { connection } = await connect(specWithEntries([userEntry('u1', 'hi')], { failOn: 'get_entries' }))
+
+    const outcome = await connection.runPrompt(HELLO, new AbortController().signal, MESSAGE_ID)
+
+    expect(outcome).toEqual({ stopReason: 'end_turn', acknowledgedMessageId: undefined })
+    expect(existsSync(messageMapPathFor(sessionFile))).toBe(false)
+  })
+
+  it('returns no echo when the session tree holds no user entry', async () => {
+    const { connection } = await connect(specWithEntries([assistantEntry('a1')]))
+
+    const outcome = await connection.runPrompt(HELLO, new AbortController().signal, MESSAGE_ID)
+
+    expect(outcome.acknowledgedMessageId).toBeUndefined()
+    expect(existsSync(messageMapPathFor(sessionFile))).toBe(false)
   })
 })
 
@@ -195,11 +332,15 @@ describe('extension command prompts', () => {
   })
 
   /** Prompts a Pi that acks and then stays silent, and waits out both windows. */
-  async function runQuiet(prompt: FlattenedPrompt) {
+  async function runQuiet(prompt: FlattenedPrompt, messageId?: string) {
     const { fake, connection } = await connect({ ...baseSpec(), commands: EXT_COMMANDS })
-    const settled = connection.runPrompt(prompt, new AbortController().signal).then(
-      (reason) => ({ reason, error: undefined as unknown }),
-      (error: unknown) => ({ reason: undefined, error }),
+    const settled = connection.runPrompt(prompt, new AbortController().signal, messageId).then(
+      (outcome) => ({
+        reason: outcome.stopReason as StopReason | undefined,
+        acknowledgedMessageId: outcome.acknowledgedMessageId,
+        error: undefined as unknown,
+      }),
+      (error: unknown) => ({ reason: undefined, acknowledgedMessageId: undefined, error }),
     )
     // Zero first, so the ack resolves and arms the timer before the clock moves.
     await vi.advanceTimersByTimeAsync(0)
@@ -231,6 +372,13 @@ describe('extension command prompts', () => {
     const types = fake.calls.map((call) => call['type'])
     expect(types).not.toContain('set_session_name')
     expect(types).not.toContain('get_session_stats')
+  })
+
+  it('records no breakpoint for a command prompt that ran no turn', async () => {
+    const { reason, acknowledgedMessageId, fake } = await runQuiet(textPrompt('/extcmd'), MESSAGE_ID)
+    expect(reason).toBe('end_turn')
+    expect(acknowledgedMessageId).toBeUndefined()
+    expect(fake.calls.map((call) => call['type'])).not.toContain('get_entries')
   })
 })
 
@@ -266,5 +414,38 @@ describe('session/prompt over the wire', () => {
       sessionId: 'sess-1',
       update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Hello' } },
     })
+  })
+
+  it('echoes the breakpoint message id back through the SDK', async () => {
+    const store = mkdtempSync(join(tmpdir(), TEMP_PREFIX))
+    const spec = baseSpec(fullTurn)
+    spec.state.sessionFile = join(store, SESSION_FILE_NAME)
+    writeFileSync(spec.state.sessionFile, '')
+    const fake = makeFakePiClient({ ...spec, entries: [userEntry('u1', 'hi')] })
+    const server = new PiAcpServer({
+      launch: LAUNCH,
+      rpcTimeoutMs: 1_000,
+      sessionDirs: { mode: 'flat', dir: store },
+      mcpExtensionPath: MCP_EXTENSION_PATH,
+      createPiClient: fake.createPiClient,
+    })
+    const app = server.register(acp.agent({ name: AGENT_NAME }))
+
+    try {
+      const result = await acp.client({ name: 'test-client' }).connectWith(app, async (context) => {
+        await context.request(acp.methods.agent.initialize, { protocolVersion: 1, clientCapabilities: {} })
+        const created = await context.request(acp.methods.agent.session.new, { cwd: ABS_CWD, mcpServers: [] })
+        return context.request(acp.methods.agent.session.prompt, {
+          sessionId: created.sessionId,
+          prompt: [{ type: 'text', text: 'hi' }],
+          _meta: { [META_KEY_BREAKPOINT_NAMESPACE]: { [META_KEY_MESSAGE_ID]: MESSAGE_ID } },
+        })
+      })
+
+      expect(result.stopReason).toBe('end_turn')
+      expect(result._meta).toEqual({ [META_KEY_BREAKPOINT_NAMESPACE]: { [META_KEY_MESSAGE_ID]: MESSAGE_ID } })
+    } finally {
+      rmSync(store, { recursive: true, force: true })
+    }
   })
 })

@@ -8,7 +8,7 @@
 - TypeScript SDK: `@agentclientprotocol/sdk` 1.4.0
     - Generated types: `node_modules/@agentclientprotocol/sdk/dist/schema/types.gen.d.ts`
     - Authoritative method list: `dist/acp.d.ts` `methods`
-    - `session/fork` (experimental): head-only fork, no breakpoint marker (docs/todos.md, the Fork entry under Delivered)
+    - `session/fork` (experimental): head-only by default, or cut at an earlier prompt named by `_meta.acpStack.messageId`, a `_meta` extension (docs/todos.md, the Fork entry under Delivered)
     - `SessionConfigOptionCategory` includes `thought_level` (docs/todos.md, the Config options entry under Delivered)
     - Draft ACP v2 under `@agentclientprotocol/sdk/experimental/v2`: not used
 

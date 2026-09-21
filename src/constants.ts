@@ -195,6 +195,21 @@ export const SESSION_LIST_CURSOR_PATTERN = /^\d+$/
 /** Pi's own `MAX_CONCURRENT_SESSION_INFO_LOADS`. */
 export const SESSION_INFO_LOAD_CONCURRENCY = 10
 
+// ── Breakpoint fork (`_meta` extension) ───────────────────────────────────────
+//
+// ACP has no message identity, so a client that wants to fork from an earlier
+// prompt has to name it. The client mints the id under its own `_meta`
+// namespace, the adapter echoes it back on the prompt it recorded, and a sidecar
+// next to the session file remembers which Pi entry each id landed on.
+
+export const META_KEY_BREAKPOINT_NAMESPACE = 'acpStack'
+export const META_KEY_MESSAGE_ID = 'messageId'
+/** Sidecar next to `<stem>.jsonl`: `<stem>.acp.json`. `.json`, so no session scanner picks it up. */
+export const MESSAGE_MAP_SUFFIX = '.acp.json'
+export const MESSAGE_MAP_VERSION = 1
+export const MESSAGE_MAP_KEY_VERSION = 'version'
+export const MESSAGE_MAP_KEY_MESSAGES = 'messages'
+
 // ── ACP / JSON-RPC ────────────────────────────────────────────────────────────
 //
 // The SDK's RequestError statics bury the message as literal "Internal error",

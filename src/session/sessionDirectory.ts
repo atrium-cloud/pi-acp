@@ -1,13 +1,17 @@
 import { createReadStream, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { readdir, stat } from 'node:fs/promises'
 import { homedir as osHomedir } from 'node:os'
-import { basename, isAbsolute, join, resolve } from 'node:path'
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import { createInterface } from 'node:readline'
 
 import {
   DEFAULT_PI_AGENT_DIR_SEGMENTS,
   ENV_PI_AGENT_DIR,
   ENV_PI_SESSION_DIR,
+  MESSAGE_MAP_KEY_MESSAGES,
+  MESSAGE_MAP_KEY_VERSION,
+  MESSAGE_MAP_SUFFIX,
+  MESSAGE_MAP_VERSION,
   PI_SESSIONS_DIR_NAME,
   PI_SETTINGS_FILE_NAME,
   SESSION_DIR_WRAP,
@@ -85,6 +89,7 @@ export interface FindSessionFileOptions {
 export interface SessionFileEntry {
   readonly type?: unknown
   readonly id?: unknown
+  readonly parentId?: unknown
   readonly cwd?: unknown
   readonly timestamp?: unknown
   readonly name?: unknown
@@ -426,15 +431,109 @@ export function settledEntries(
   if (!parentHasActiveTurn) return entries
   for (let index = entries.length - 1; index >= 0; index--) {
     const entry = entries[index]
-    if (entry !== undefined && isUserMessage(entry)) return entries.slice(0, index)
+    if (entry !== undefined && isUserMessageEntry(entry)) return entries.slice(0, index)
   }
   return entries
 }
 
-function isUserMessage(entry: SessionFileEntry): boolean {
+/** True for `{ type: 'message', message: { role: 'user', content } }`. */
+export function isUserMessageEntry(entry: SessionFileEntry): boolean {
   if (entry.type !== SESSION_ENTRY_TYPE_MESSAGE) return false
   const message = entry.message
   return isMessageWithContent(message) && message.role === ROLE_USER
+}
+
+// ── Breakpoint fork ───────────────────────────────────────────────────────────
+//
+// ACP names no message, so a client that wants to fork from an earlier prompt
+// passes an id it minted itself. The sidecar remembers which Pi entry each id
+// landed on, and the cut follows Pi's entry tree rather than file order: a
+// session that has already been forked on the Pi side holds sibling branches
+// whose entries sit between an ancestor and the named prompt.
+
+/** `<stem>.acp.json` for `<stem>.jsonl`. Throws if `sessionPath` lacks the .jsonl suffix. */
+export function messageMapPathFor(sessionPath: string): string {
+  if (!sessionPath.endsWith(SESSION_FILE_EXTENSION)) {
+    throw new Error(`Session path "${sessionPath}" does not end in ${SESSION_FILE_EXTENSION}`)
+  }
+  return `${sessionPath.slice(0, -SESSION_FILE_EXTENSION.length)}${MESSAGE_MAP_SUFFIX}`
+}
+
+/** ACP message id -> Pi entry id. `null` when the sidecar does not exist. A
+ * malformed file or a version other than MESSAGE_MAP_VERSION throws (fail fast). */
+export function readMessageMap(sidecarPath: string): Readonly<Record<string, string>> | null {
+  if (!existsSync(sidecarPath)) return null
+
+  const text = stripBom(readFileSync(sidecarPath, FILE_ENCODING))
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(text)
+  } catch (error) {
+    throw new Error(`Message map "${sidecarPath}" is not valid JSON: ${(error as Error).message}`)
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new Error(`Message map "${sidecarPath}" is not a JSON object`)
+  }
+
+  const record = parsed as Record<string, unknown>
+  const version = record[MESSAGE_MAP_KEY_VERSION]
+  if (version !== MESSAGE_MAP_VERSION) {
+    throw new Error(
+      `Message map "${sidecarPath}" has ${MESSAGE_MAP_KEY_VERSION} ${String(version)}, expected ${MESSAGE_MAP_VERSION}`,
+    )
+  }
+
+  const messages = record[MESSAGE_MAP_KEY_MESSAGES]
+  if (typeof messages !== 'object' || messages === null || Array.isArray(messages)) {
+    throw new Error(`Message map "${sidecarPath}" has no ${MESSAGE_MAP_KEY_MESSAGES} object`)
+  }
+  for (const [messageId, entryId] of Object.entries(messages)) {
+    if (typeof entryId !== 'string') {
+      throw new Error(`Message map "${sidecarPath}" maps "${messageId}" to a non-string entry id`)
+    }
+  }
+  return messages as Record<string, string>
+}
+
+/** Rewrites the whole sidecar in one sync write. Creates the parent dir if needed. */
+export function writeMessageMap(sidecarPath: string, messages: Readonly<Record<string, string>>): void {
+  mkdirSync(dirname(sidecarPath), { recursive: true })
+  const body = JSON.stringify({ [MESSAGE_MAP_KEY_VERSION]: MESSAGE_MAP_VERSION, [MESSAGE_MAP_KEY_MESSAGES]: messages })
+  writeFileSync(sidecarPath, `${body}${ENTRY_LINE_SEPARATOR}`, { encoding: FILE_ENCODING })
+}
+
+/** The cut for a breakpoint fork: the ancestors of `entryId` (its parent up to
+ * the root) as the non-header entries in file order filtered to that set. The
+ * last element is the named entry's parent, which Pi adopts as the leaf. Empty
+ * when `entryId` is the root. Throws when `entryId` is not in `entries` or the
+ * parent chain names an id the file does not hold (a programming error: the
+ * caller checks presence and the user-message shape first). */
+export function branchEntriesBefore(
+  entries: readonly SessionFileEntry[],
+  entryId: string,
+): readonly SessionFileEntry[] {
+  const nodes = entries.filter((entry) => entry.type !== SESSION_ENTRY_TYPE_HEADER)
+  const byId = new Map<string, SessionFileEntry>()
+  for (const entry of nodes) {
+    if (typeof entry.id === 'string') byId.set(entry.id, entry)
+  }
+
+  const named = byId.get(entryId)
+  if (named === undefined) throw new Error(`Session entry "${entryId}" is not in the session file`)
+
+  const ancestors = new Set<string>()
+  let parentId = named.parentId
+  while (typeof parentId === 'string') {
+    if (ancestors.has(parentId)) throw new Error(`Session entry "${entryId}" has a cyclic parent chain at "${parentId}"`)
+    const parent = byId.get(parentId)
+    if (parent === undefined) {
+      throw new Error(`Session entry "${entryId}" names parent "${parentId}", which is not in the session file`)
+    }
+    ancestors.add(parentId)
+    parentId = parent.parentId
+  }
+
+  return nodes.filter((entry) => typeof entry.id === 'string' && ancestors.has(entry.id))
 }
 
 function serializeEntry(entry: unknown): string {

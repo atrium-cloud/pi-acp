@@ -10,13 +10,21 @@ import {
   AGENT_NAME,
   JSONRPC_INTERNAL_ERROR,
   JSONRPC_INVALID_PARAMS,
+  META_KEY_BREAKPOINT_NAMESPACE,
+  META_KEY_MESSAGE_ID,
   PI_SESSION_ARG,
   PROTOCOL_VERSION,
   SESSION_LIST_PAGE_SIZE,
   SESSION_TITLE_MAX_CHARS,
 } from '../constants.js'
 import { PiAcpServer } from '../server/PiAcpServer.js'
-import { type SessionDirs, sessionDirForCwd } from '../session/sessionDirectory.js'
+import {
+  messageMapPathFor,
+  readMessageMap,
+  type SessionDirs,
+  sessionDirForCwd,
+  writeMessageMap,
+} from '../session/sessionDirectory.js'
 import { type FakePiSpec, makeFakePiClient } from './fixtures/fakePiClient.js'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -66,6 +74,11 @@ function message(role: string, content: unknown, timestamp?: number): unknown {
     timestamp: HEADER_TIME,
     message: { role, content, ...(timestamp === undefined ? {} : { timestamp }) },
   }
+}
+
+/** A message entry with a real place in the tree, for the breakpoint cut. */
+function treeMessage(id: string, parentId: string | null, role: string, content: string): unknown {
+  return { type: 'message', id, parentId, timestamp: HEADER_TIME, message: { role, content } }
 }
 
 function writeSession(cwd: string, id: string, entries: readonly unknown[] = []): string {
@@ -493,6 +506,148 @@ describe('session/fork', () => {
     expect(fake.wasStopped()).toBe(true)
     expect(existsSync(forkSpawn(fake, 0).path)).toBe(false)
   })
+
+  // ── Breakpoint forks ────────────────────────────────────────────────────────
+
+  const FIRST_MESSAGE_ID = 'm1'
+  const SECOND_MESSAGE_ID = 'm2'
+  const FIRST_PROMPT = treeMessage('u1', null, 'user', 'first')
+  const FIRST_ANSWER = treeMessage('a1', 'u1', 'assistant', 'answer one')
+  const SECOND_PROMPT = treeMessage('u2', 'a1', 'user', 'second')
+  const SECOND_ANSWER = treeMessage('a2', 'u2', 'assistant', 'answer two')
+  const PARENT_TREE = [FIRST_PROMPT, FIRST_ANSWER, SECOND_PROMPT, SECOND_ANSWER]
+
+  /** A parent whose two prompts are both recorded in its sidecar. */
+  function writeRecordedParent(): string {
+    const parentPath = writeSession(CWD, SESSION_ID, PARENT_TREE)
+    writeMessageMap(messageMapPathFor(parentPath), { [FIRST_MESSAGE_ID]: 'u1', [SECOND_MESSAGE_ID]: 'u2' })
+    return parentPath
+  }
+
+  function forkAt(server: PiAcpServer, client: AgentContext, sessionId: string, messageId: string) {
+    return server.forkSession({
+      params: {
+        sessionId,
+        cwd: CWD,
+        _meta: { [META_KEY_BREAKPOINT_NAMESPACE]: { [META_KEY_MESSAGE_ID]: messageId } },
+      },
+      client,
+    })
+  }
+
+  it('carries the recorded breakpoints into a head-only fork', async () => {
+    writeRecordedParent()
+    const { fake, server, client } = makeServer(makeSpec({ sessionIdFromSessionFile: true }))
+
+    const response = await server.forkSession({ params: { sessionId: SESSION_ID, cwd: CWD }, client })
+
+    // No cut, so every recorded breakpoint survives into the fork's sidecar.
+    expect(readMessageMap(messageMapPathFor(forkSpawn(fake, 0).path))).toEqual({
+      [FIRST_MESSAGE_ID]: 'u1',
+      [SECOND_MESSAGE_ID]: 'u2',
+    })
+    await expect(server.closeSession({ params: { sessionId: response.sessionId } })).resolves.toEqual({})
+  })
+
+  it('drops breakpoints whose entries a head-only fork of a live parent leaves out', async () => {
+    const { fake, server, client } = makeServer(makeSpec({ sessionIdFromSessionFile: true }))
+    await startSession(server, client)
+    const parentPath = writeSession(CWD, SESSION_ID, [
+      treeMessage('u1', null, 'user', 'settled'),
+      treeMessage('a1', 'u1', 'assistant', 'answered'),
+      treeMessage('u2', 'a1', 'user', 'in flight'),
+    ])
+    writeMessageMap(messageMapPathFor(parentPath), { [FIRST_MESSAGE_ID]: 'u1', [SECOND_MESSAGE_ID]: 'u2' })
+
+    const turn = server.prompt({
+      params: { sessionId: SESSION_ID, prompt: HELLO_PROMPT },
+      signal: new AbortController().signal,
+    })
+    await Promise.resolve()
+    const response = await server.forkSession({ params: { sessionId: SESSION_ID, cwd: CWD }, client })
+
+    // The in-flight prompt stays out of the fork, so its breakpoint does too.
+    expect(readMessageMap(messageMapPathFor(forkSpawn(fake, 1).path))).toEqual({ [FIRST_MESSAGE_ID]: 'u1' })
+
+    await expect(server.closeSession({ params: { sessionId: SESSION_ID } })).resolves.toEqual({})
+    await expect(turn).resolves.toEqual({ stopReason: 'cancelled' })
+    await expect(server.closeSession({ params: { sessionId: response.sessionId } })).resolves.toEqual({})
+  })
+
+  it('cuts the parent at the named prompt and carries the surviving map into the fork', async () => {
+    writeRecordedParent()
+    const { fake, server, client } = makeServer(makeSpec({ sessionIdFromSessionFile: true }))
+
+    const response = await forkAt(server, client, SESSION_ID, SECOND_MESSAGE_ID)
+
+    const forkPath = forkSpawn(fake, 0).path
+    // The ancestors of the named prompt, that prompt excluded.
+    expect(readEntries(forkPath).slice(1)).toEqual([FIRST_PROMPT, FIRST_ANSWER])
+    expect(readMessageMap(messageMapPathFor(forkPath))).toEqual({ [FIRST_MESSAGE_ID]: 'u1' })
+    await expect(server.closeSession({ params: { sessionId: response.sessionId } })).resolves.toEqual({})
+  })
+
+  it('forks that fork at the earlier breakpoint, leaving a header-only file', async () => {
+    writeRecordedParent()
+    const { fake, server, client } = makeServer(makeSpec({ sessionIdFromSessionFile: true }))
+
+    const first = await forkAt(server, client, SESSION_ID, SECOND_MESSAGE_ID)
+    const second = await forkAt(server, client, first.sessionId, FIRST_MESSAGE_ID)
+
+    const secondPath = forkSpawn(fake, 1).path
+    // The first prompt is the root, so its ancestor path is empty.
+    expect(readEntries(secondPath)).toHaveLength(1)
+    expect(existsSync(messageMapPathFor(secondPath))).toBe(false)
+    await expect(server.closeSession({ params: { sessionId: first.sessionId } })).resolves.toEqual({})
+    await expect(server.closeSession({ params: { sessionId: second.sessionId } })).resolves.toEqual({})
+  })
+
+  it('rejects a message id no sidecar records, without spawning', async () => {
+    writeSession(CWD, SESSION_ID, PARENT_TREE)
+    const { fake, server, client } = makeServer(makeSpec({ sessionIdFromSessionFile: true }))
+
+    await expect(forkAt(server, client, SESSION_ID, SECOND_MESSAGE_ID)).rejects.toMatchObject({
+      code: JSONRPC_INVALID_PARAMS,
+      message: expect.stringContaining(SECOND_MESSAGE_ID),
+    })
+    expect(fake.spawns).toEqual([])
+  })
+
+  it('rejects a message id the sidecar does not hold, without spawning', async () => {
+    const parentPath = writeSession(CWD, SESSION_ID, PARENT_TREE)
+    writeMessageMap(messageMapPathFor(parentPath), { [FIRST_MESSAGE_ID]: 'u1' })
+    const { fake, server, client } = makeServer(makeSpec({ sessionIdFromSessionFile: true }))
+
+    await expect(forkAt(server, client, SESSION_ID, SECOND_MESSAGE_ID)).rejects.toMatchObject({
+      code: JSONRPC_INVALID_PARAMS,
+      message: expect.stringContaining('not recorded'),
+    })
+    expect(fake.spawns).toEqual([])
+  })
+
+  it('rejects a message id mapped to an entry that is not a user message', async () => {
+    const parentPath = writeSession(CWD, SESSION_ID, PARENT_TREE)
+    writeMessageMap(messageMapPathFor(parentPath), { [SECOND_MESSAGE_ID]: 'a1' })
+    const { fake, server, client } = makeServer(makeSpec({ sessionIdFromSessionFile: true }))
+
+    await expect(forkAt(server, client, SESSION_ID, SECOND_MESSAGE_ID)).rejects.toMatchObject({
+      code: JSONRPC_INVALID_PARAMS,
+      message: expect.stringContaining('a1'),
+    })
+    expect(fake.spawns).toEqual([])
+  })
+
+  it('removes the fork file and its sidecar when Pi opens the fork under another id', async () => {
+    writeRecordedParent()
+    const { fake, server, client } = makeServer()
+
+    await expect(forkAt(server, client, SESSION_ID, SECOND_MESSAGE_ID)).rejects.toMatchObject({
+      code: JSONRPC_INTERNAL_ERROR,
+    })
+    const forkPath = forkSpawn(fake, 0).path
+    expect(existsSync(forkPath)).toBe(false)
+    expect(existsSync(messageMapPathFor(forkPath))).toBe(false)
+  })
 })
 
 // ── session/close ─────────────────────────────────────────────────────────────
@@ -535,6 +690,15 @@ describe('session/delete', () => {
 
     await expect(server.deleteSession({ params: { sessionId: SESSION_ID } })).resolves.toEqual({})
     expect(existsSync(path)).toBe(false)
+  })
+
+  it('removes the breakpoint sidecar alongside the file', async () => {
+    const path = writeSession(CWD, SESSION_ID, [message('user', 'hi', 1_000)])
+    writeMessageMap(messageMapPathFor(path), { m1: 'u1' })
+    const { server } = makeServer()
+
+    await expect(server.deleteSession({ params: { sessionId: SESSION_ID } })).resolves.toEqual({})
+    expect(existsSync(messageMapPathFor(path))).toBe(false)
   })
 
   it('closes a live session before unlinking', async () => {
