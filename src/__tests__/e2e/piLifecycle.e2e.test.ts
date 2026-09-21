@@ -39,11 +39,11 @@ const ECHO_PROMPT = `Reply with exactly ${ECHO_MARKER} and nothing else.`
 /** Answerable only from the resumed transcript, which is the point. */
 const RECALL_PROMPT = 'What marker did I ask you to reply with? Reply with just that marker.'
 
-/** Long enough that a cancel or a close lands mid-turn rather than after it. */
-const LONG_PROMPT = 'Count from 1 to 300, one number per line, with no other text.'
-
-/** The in-flight turn a fork must exclude; the marker appears in the prompt
- * text, so the fork's replayed user messages either carry it or they do not. */
+/** A turn that stays open inside Pi for as long as a cancel needs to land. A
+ * long streamed reply would not do: the provider can deliver it in one burst
+ * with the settle right behind it, which is when a cancel sent on the first
+ * chunk loses. The marker is for the fork case: it appears in the prompt text,
+ * so the fork's replayed user messages either carry it or they do not. */
 const SLEEP_MARKER = 'pi-e2e-sleeping'
 const SLEEP_PROMPT = `Use your bash tool to run \`sleep 30 && echo ${SLEEP_MARKER}\` and tell me the output.`
 
@@ -213,7 +213,7 @@ describeE2E('pi live session lifecycle', () => {
   )
 
   it(
-    'rejects closing an unknown session, and resolves a streaming turn as cancelled on close',
+    'rejects closing an unknown session, and resolves a mid tool turn as cancelled on close',
     async () => {
       const agent = live()
       await expect(
@@ -221,11 +221,12 @@ describeE2E('pi live session lifecycle', () => {
       ).rejects.toMatchObject({ code: JSONRPC_INVALID_PARAMS })
 
       const sessionId = await openPinnedSession(agent)
-      const pending = promptOn(sessionId, LONG_PROMPT)
+      agent.answerPermissions(() => ({ outcome: { outcome: 'selected', optionId: PERMISSION_OPTION_ALLOW_ONCE } }))
+      const pending = promptOn(sessionId, SLEEP_PROMPT)
       // Attached up front: an early provider error would otherwise reject with
       // no handler and surface as an unhandled rejection.
       const cancelled = expect(pending).resolves.toMatchObject({ stopReason: 'cancelled' })
-      await agent.waitForText(sessionId, (text) => text.length > 0, E2E_TURN_TIMEOUT_MS)
+      await agent.waitForUpdate(sessionId, (update) => update.sessionUpdate === 'tool_call', E2E_TURN_TIMEOUT_MS)
 
       await agent.agent.request(acp.methods.agent.session.close, { sessionId })
       await cancelled
@@ -404,14 +405,15 @@ describeE2E('pi live session lifecycle', () => {
     async () => {
       const agent = live()
       const sessionId = await openPinnedSession(agent)
+      agent.answerPermissions(() => ({ outcome: { outcome: 'selected', optionId: PERMISSION_OPTION_ALLOW_ONCE } }))
       const cancellation = new AbortController()
       const pending = agent.agent.request(
         acp.methods.agent.session.prompt,
-        { sessionId, prompt: [{ type: 'text', text: LONG_PROMPT }] },
+        { sessionId, prompt: [{ type: 'text', text: SLEEP_PROMPT }] },
         { cancellationSignal: cancellation.signal },
       )
       const cancelled = expect(pending).resolves.toMatchObject({ stopReason: 'cancelled' })
-      await agent.waitForText(sessionId, (text) => text.length > 0, E2E_TURN_TIMEOUT_MS)
+      await agent.waitForUpdate(sessionId, (update) => update.sessionUpdate === 'tool_call', E2E_TURN_TIMEOUT_MS)
 
       // `$/cancel_request` on the prompt, not `session/cancel`; both converge on
       // the same abort path in the adapter.

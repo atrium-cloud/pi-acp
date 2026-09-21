@@ -18,7 +18,7 @@ import {
   PERMISSION_OPTION_REJECT_ONCE,
 } from '../../constants.js'
 import { describeE2E, E2E_BOOT_AND_TURN_TIMEOUT_MS, E2E_SETUP_TIMEOUT_MS, E2E_TURN_TIMEOUT_MS } from './e2eGate.js'
-import type { SpawnedAgent } from './spawnedAgentFixture.js'
+import type { PermissionAnswer, SpawnedAgent } from './spawnedAgentFixture.js'
 import { createScratchPaths, createSpawnedAgent, openPinnedSession } from './spawnedAgentFixture.js'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -28,8 +28,12 @@ import { createScratchPaths, createSpawnedAgent, openPinnedSession } from './spa
 const ECHO_MARKER = 'pi-e2e-ok'
 const ECHO_PROMPT = `Reply with exactly ${ECHO_MARKER} and nothing else.`
 
-/** Long enough that the cancel lands mid-turn rather than after it. */
-const LONG_PROMPT = 'Count from 1 to 300, one number per line, with no other text.'
+/** A turn that stays open inside Pi for as long as the cancel needs to land. A
+ * long streamed reply would not do: the provider can deliver it in one burst
+ * with the settle right behind it, which is when a cancel sent on the first
+ * chunk loses. */
+const SLEEP_PROMPT = 'Use your bash tool to run `sleep 30` and tell me when it finishes.'
+const ALLOW_ONCE: PermissionAnswer = () => ({ outcome: { outcome: 'selected', optionId: PERMISSION_OPTION_ALLOW_ONCE } })
 
 /** Drives the gate: `bash` is one of the mutating built-ins it intercepts. */
 const TOOL_MARKER = 'pi-e2e-tool'
@@ -91,20 +95,20 @@ describeE2E('pi live turns', () => {
   it(
     'reports a cancelled turn as cancelled, not as a clean end_turn',
     async () => {
-      fixture = await createSpawnedAgent()
+      fixture = await createSpawnedAgent({ onPermission: ALLOW_ONCE })
       const agent = fixture
       const sessionId = await openPinnedSession(agent)
 
       const pending = agent.agent.request(acp.methods.agent.session.prompt, {
         sessionId,
-        prompt: [{ type: 'text', text: LONG_PROMPT }],
+        prompt: [{ type: 'text', text: SLEEP_PROMPT }],
       })
       // Attached up front: an early provider error would otherwise reject with no
       // handler and surface as an unhandled rejection rather than a test failure.
       const cancelled = expect(pending).resolves.toMatchObject({ stopReason: 'cancelled' })
-      // Cancel only once the turn is actually streaming; a cancel before the
+      // Cancel only once the turn is actually running a tool; a cancel before the
       // prompt ack would test the pre-start path instead.
-      await agent.waitForText(sessionId, (text) => text.length > 0, E2E_TURN_TIMEOUT_MS)
+      await agent.waitForUpdate(sessionId, (update) => update.sessionUpdate === 'tool_call', E2E_TURN_TIMEOUT_MS)
       await agent.agent.notify(acp.methods.agent.session.cancel, { sessionId })
 
       await cancelled
