@@ -11,9 +11,9 @@ The release is a single executable, `pi-acp`; put it on PATH or point your ACP c
 
 ## ACP support
 
-The adapter supports rich prompts, streamed message and tool updates, permissions, model and thinking-level configuration, slash commands, MCP servers (stdio, streamable HTTP, SSE), session list/resume/load/close/delete, and forks from the last settled turn.
+The adapter supports rich prompts, streamed message and tool updates, permissions, model and thinking-level configuration, slash commands, MCP servers (stdio, streamable HTTP, SSE), session list/resume/load/close/delete, and forks either from the last settled turn or from an earlier prompt the client names.
 
-Audio prompts, session modes, breakpoint forks, and Pi interactions that need its own terminal UI are not exposed. See [docs/caveats.md](docs/caveats.md) for the gaps that stay open by design and [docs/todos.md](docs/todos.md) for the roadmap.
+Audio prompts, session modes, and Pi interactions that need its own terminal UI are not exposed. See [docs/caveats.md](docs/caveats.md) for the gaps that stay open by design and [docs/todos.md](docs/todos.md) for the roadmap.
 
 This project will be deprecated when Pi ships a complete and current ACP implementation as part of its package. Until then, this project tracks the latest stable ACP v1 schema and the latest Pi release.
 

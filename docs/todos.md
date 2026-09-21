@@ -40,7 +40,6 @@
 - No steering: ACP v1 has no steering method; Pi's `steer` / `follow_up` stay typed but unused until an ACP surface exists.
 - Adapter shutdown is driven by stdin EOF / connection close; ACP v1 defines no `exit` notification, so a client that expects process death before closing stdin gets it only when it closes the pipe.
 - The stdio transport has passed end-to-end against the ACP SDK client driving `dist/index.js` (the live e2e tier under Delivered); no editor client has been exercised yet.
-- Breakpoint fork: Pi's `fork` command takes an `entryId` from `get_fork_messages`, so it is feasible once ACP v1 carries a breakpoint marker; not offered until then.
 - An extension command whose handler calls `ctx.newSession`, `ctx.switchSession`, `ctx.fork`, or `ctx.navigateTree` replaces the session inside the Pi subprocess, so the adapter's `sessionId` silently stops matching the session Pi is now running. Nothing on the wire reports it, and a command's metadata says nothing about what its handler does, so there is nothing to filter on.
 - An interactive extension command runs with every one of its dialogs auto-cancelled: the adapter answers every non-sentinel `ctx.ui` request `cancelled: true`, so such a command completes as if the user dismissed each prompt.
 - Two Pi processes on one session file (a pi-acp session alongside a Pi TUI or `pi -p --session` run) take no lock, and the adapter adds none. Observed on Pi 0.84.3:
@@ -206,7 +205,24 @@ Pi upstream ships an ACP agent on current schemas with session resume, thought-l
     - A parent Pi never flushed has no file and is `resource_not_found`, the same reading `session/resume` and `session/delete` take.
     - The fork is returned live and promptable (`{ sessionId, configOptions }`, commands announced after the response, as on `session/new`); history is not replayed, since replay is `session/load`'s contract.
     - `sessionCapabilities.fork` is advertised even though the ACP SDK marks the method experimental.
-    - A fork point stays out (see Known limits); the fork always starts from the parent's last file entry.
+    - Without a breakpoint the fork starts from the parent's last file entry.
+    - Breakpoint fork: a client can name an earlier prompt to cut at, through a `_meta` extension.
+        - `initialize` advertises it as `sessionCapabilities.fork._meta.acpStack.messageId`, an empty object, the shape a client probes for.
+        - `session/prompt` may carry `_meta.acpStack.messageId`, a client-minted id for that prompt.
+        - The response echoes that id back under the same keys once the prompt's Pi entry is recorded; no echo means the prompt cannot be forked from.
+        - `session/fork` carrying the same `_meta` cuts at the named prompt; without it the fork is head-only as before.
+        - The id map is a `<stem>.acp.json` sidecar beside `<stem>.jsonl`: `{ "version": 1, "messages": { "<message id>": "<Pi entry id>" } }`.
+        - The `.json` suffix keeps it out of both Pi's session scanner and the adapter's, which match on `.jsonl` only.
+        - It is rewritten after each acknowledged prompt, and a resumed or forked session extends the map it inherited rather than replacing it.
+        - `session/delete` unlinks the sidecar with the session file; a missing sidecar is not an error.
+        - A fork's own sidecar keeps only the ids whose entries survived the cut, and is written only when at least one did.
+        - The cut is the ancestor path of the named user entry, exclusive: the fork's last entry is that entry's parent, which Pi adopts as the leaf.
+        - Abandoned branches and labels off that path are dropped, unlike the head-only copy, which takes the whole tree.
+        - Naming the session's first prompt forks to a header-only session.
+        - A failed map write costs that prompt its echo only; the turn still resolves with its own stop reason, and one stderr line names the failure.
+        - A message id that was never recorded is `invalid_params`, and so is one mapped to an entry that is not a user message.
+        - A prompt cancelled after its turn started still records and echoes its message id (the user entry is already in Pi's tree, so the fork point stands); a prompt aborted before anything was sent records nothing.
+        - The sidecar is rewritten whole under a single adapter process; two adapter processes sharing one session store can clobber each other's maps, which is not supported.
 - [x] Built-in MCP
     - Pi has no native MCP, so the adapter brings its own: a second pi-acp-owned Pi extension with `@modelcontextprotocol/client` 2.0 bundled self-contained by `scripts/generate-mcp-extension.mjs`, materialized to a temp file at startup and loaded with a second `-e` by a session whose request carries servers.
     - The translated server list is handed over in `PI_ACP_MCP_SERVERS`, which the extension parses and deletes in its factory body before any tool or MCP subprocess can inherit it; the residue is the Pi process environment for its lifetime.
@@ -241,4 +257,4 @@ Pi upstream ships an ACP agent on current schemas with session resume, thought-l
 - [x] Pre-commit hook (`.githooks/pre-commit`, installed via `core.hooksPath` by the `prepare` script): typecheck, unit tests, build, `--version` smoke.
 - [x] Upstream drift: `bun update @earendil-works/pi-coding-agent`, then typecheck, unit tests, and the live tier on the sprite.
     - 0.84.3 → 0.84.4 on 2026-08-29, all three green; docs/refs.md carries the pin.
-- [x] docs/caveats.md holds the gaps that stay open by design (fork point, MCP tool-list changes and startup status, the extension-command quiet window, unforwarded extension notifications, session-replacing commands), each with the reason.
+- [x] docs/caveats.md holds the gaps that stay open by design (MCP tool-list changes and startup status, the extension-command quiet window, unforwarded extension notifications, project trust, session-replacing commands), each with the reason.

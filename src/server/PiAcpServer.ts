@@ -1,4 +1,4 @@
-import { unlink } from 'node:fs/promises'
+import { rm, unlink } from 'node:fs/promises'
 import { isAbsolute, resolve } from 'node:path'
 
 import * as acp from '@agentclientprotocol/sdk'
@@ -35,20 +35,28 @@ import {
   AGENT_VERSION,
   JSONRPC_INTERNAL_ERROR,
   JSONRPC_INVALID_PARAMS,
+  META_KEY_BREAKPOINT_NAMESPACE,
+  META_KEY_MESSAGE_ID,
   PROTOCOL_VERSION,
   SESSION_LIST_CURSOR_PATTERN,
   SESSION_LIST_PAGE_SIZE,
 } from '../constants.js'
 import type { PiLaunch } from '../pi/errors.js'
 import {
+  branchEntriesBefore,
   findSessionFile,
+  isUserMessageEntry,
   listSessions as listStoredSessions,
+  messageMapPathFor,
+  readMessageMap,
   readSessionEntries,
   readSessionInfo,
   type SessionDirs,
+  type SessionFileEntry,
   type SessionFileInfo,
   settledEntries,
   writeForkFile,
+  writeMessageMap,
 } from '../session/sessionDirectory.js'
 import type { CreatePiClient, SessionConnection } from '../session/SessionConnection.js'
 import {
@@ -133,7 +141,15 @@ export class PiAcpServer {
         // Both remote transports are served by the built-in MCP extension; the
         // experimental `acp` transport has no client to proxy to and is refused.
         mcpCapabilities: { http: true, sse: true },
-        sessionCapabilities: { list: {}, resume: {}, fork: {}, close: {}, delete: {} },
+        sessionCapabilities: {
+          list: {},
+          resume: {},
+          // The breakpoint extension: a client may name a recorded
+          // prompt in `session/fork` and the fork is cut just before it.
+          fork: { _meta: { [META_KEY_BREAKPOINT_NAMESPACE]: { [META_KEY_MESSAGE_ID]: {} } } },
+          close: {},
+          delete: {},
+        },
       },
     }
   }
@@ -203,12 +219,28 @@ export class PiAcpServer {
     // not exist — the same reading `session/resume` and `session/delete` take.
     if (parentPath === null) throw acp.RequestError.resourceNotFound(request.sessionId)
 
+    const breakpointMessageId = readMessageIdMeta(request._meta)
     const parent = this.sessions.get(request.sessionId)
-    const entries = settledEntries(await readSessionEntries(parentPath), parent?.connection.hasActiveTurn ?? false)
+    const parentEntries = await readSessionEntries(parentPath)
+    // Read once: the same map decides the cut and seeds the fork's own sidecar.
+    // Read even without a breakpoint, or a head-only fork of a recorded parent
+    // would lose the breakpoints the client already holds echoes for.
+    const parentMap = readMessageMap(messageMapPathFor(parentPath))
+    const entries =
+      breakpointMessageId === undefined
+        ? settledEntries(parentEntries, parent?.connection.hasActiveTurn ?? false)
+        : breakpointCut({
+            entries: parentEntries,
+            map: parentMap,
+            messageId: breakpointMessageId,
+            sessionId: request.sessionId,
+          })
     const fork = writeForkFile({ dirs: this.options.sessionDirs, parentPath, entries, cwd: request.cwd })
 
     let established: EstablishedSession
     try {
+      // Inside the try so a failed sidecar write also removes the fork file.
+      if (parentMap !== null) writeSurvivingMessageMap(fork.path, parentMap, entries)
       established = await establishSession(request, this.setupDeps(context.client), {
         kind: 'open',
         sessionFile: fork.path,
@@ -218,6 +250,7 @@ export class PiAcpServer {
       // The client never receives the id, so a file left behind would be a
       // listable, resumable session nobody asked for.
       await unlink(fork.path)
+      await rm(messageMapPathFor(fork.path), { force: true })
       throw error
     }
     const session = await this.registerSession(established)
@@ -249,6 +282,7 @@ export class PiAcpServer {
       await session.connection.close()
     }
     await unlink(sessionFile)
+    await rm(messageMapPathFor(sessionFile), { force: true })
     return {}
   }
 
@@ -272,8 +306,14 @@ export class PiAcpServer {
     const session = this.sessions.get(context.params.sessionId)
     if (session === undefined) throw invalidParams(`unknown session "${context.params.sessionId}"`)
     const prompt = flattenPromptContent(context.params.prompt)
-    const stopReason = await session.connection.runPrompt(prompt, context.signal)
-    return { stopReason }
+    const messageId = readMessageIdMeta(context.params._meta)
+    const outcome = await session.connection.runPrompt(prompt, context.signal, messageId)
+    const acknowledged = outcome.acknowledgedMessageId
+    if (acknowledged === undefined) return { stopReason: outcome.stopReason }
+    return {
+      stopReason: outcome.stopReason,
+      _meta: { [META_KEY_BREAKPOINT_NAMESPACE]: { [META_KEY_MESSAGE_ID]: acknowledged } },
+    }
   }
 
   cancel(params: CancelNotification): void {
@@ -369,6 +409,57 @@ export class PiAcpServer {
       throw toRequestError(error)
     }
   }
+}
+
+/** The breakpoint message id carried in an ACP `_meta`, or undefined for every
+ * other shape: `_meta` and its namespace object are free-form, so a non-object at
+ * either level, or a non-string id, reads as no breakpoint rather than an error. */
+function readMessageIdMeta(meta: unknown): string | undefined {
+  if (typeof meta !== 'object' || meta === null) return undefined
+  const stack = (meta as Record<string, unknown>)[META_KEY_BREAKPOINT_NAMESPACE]
+  if (typeof stack !== 'object' || stack === null) return undefined
+  const messageId = (stack as Record<string, unknown>)[META_KEY_MESSAGE_ID]
+  return typeof messageId === 'string' ? messageId : undefined
+}
+
+/** The parent entries a breakpoint fork keeps: the ancestor path of the named
+ * user entry, that entry excluded. Unlike the head-only copy this drops entries
+ * off the kept path, so an abandoned Pi-side branch does not travel. */
+function breakpointCut(options: {
+  readonly entries: readonly SessionFileEntry[]
+  readonly map: Readonly<Record<string, string>> | null
+  readonly messageId: string
+  readonly sessionId: string
+}): readonly SessionFileEntry[] {
+  const entryId = options.map?.[options.messageId]
+  if (entryId === undefined) {
+    throw invalidParams(
+      `breakpoint message id "${options.messageId}" is not recorded for session "${options.sessionId}"`,
+    )
+  }
+  const named = options.entries.find((entry) => entry.id === entryId)
+  if (named === undefined || !isUserMessageEntry(named)) {
+    throw invalidParams(
+      `breakpoint message id "${options.messageId}" maps to entry "${entryId}", which is not a user message in session "${options.sessionId}"`,
+    )
+  }
+  return branchEntriesBefore(options.entries, entryId)
+}
+
+/** Carries the parent's breakpoints that survive the cut into the fork's own
+ * sidecar, so the fork can itself be forked at an earlier prompt. */
+function writeSurvivingMessageMap(
+  forkPath: string,
+  parentMap: Readonly<Record<string, string>>,
+  entries: readonly SessionFileEntry[],
+): void {
+  const keptIds = new Set(entries.map((entry) => entry.id))
+  const surviving: Record<string, string> = {}
+  for (const [messageId, entryId] of Object.entries(parentMap)) {
+    if (keptIds.has(entryId)) surviving[messageId] = entryId
+  }
+  if (Object.keys(surviving).length === 0) return
+  writeMessageMap(messageMapPathFor(forkPath), surviving)
 }
 
 function toSessionInfo(info: SessionFileInfo): SessionInfo {

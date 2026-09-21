@@ -2,10 +2,6 @@
 
 Known gaps that are not on the roadmap, each with the reason it stays open. Verified against Pi 0.84.3 and ACP SDK 1.4.0 on 2026-08-29.
 
-## Fork point
-
-`session/fork` always forks from the parent's last settled turn; a client cannot pick an earlier message. Pi is not the limit: it exposes `get_fork_messages` and `fork { entryId }`, and the adapter writes the fork file itself, so cutting at any entry is straightforward. ACP v1 carries no fork-point marker; this waits on ACP v2 stabilizing.
-
 ## MCP tool list changes
 
 `tools/list_changed` notifications from an MCP server are ignored for the life of a session. Pi can add or replace a tool after startup (`registerTool` refreshes the registry immediately), but it has no `unregisterTool`; a removed tool can only be deactivated with `setActiveTools`, its definition stays registered. ACP v1 also has no surface to tell the client the tool set changed. A new session picks up the server's current list.

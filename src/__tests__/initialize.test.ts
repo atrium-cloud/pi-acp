@@ -1,7 +1,15 @@
 import * as acp from '@agentclientprotocol/sdk'
 import { describe, expect, it } from 'vitest'
 
-import { AGENT_NAME, AGENT_TITLE, AGENT_VERSION, JSONRPC_INVALID_PARAMS, PROTOCOL_VERSION } from '../constants.js'
+import {
+  AGENT_NAME,
+  AGENT_TITLE,
+  AGENT_VERSION,
+  JSONRPC_INVALID_PARAMS,
+  META_KEY_BREAKPOINT_NAMESPACE,
+  META_KEY_MESSAGE_ID,
+  PROTOCOL_VERSION,
+} from '../constants.js'
 import { PiAcpServer } from '../server/PiAcpServer.js'
 
 function makeServer(): PiAcpServer {
@@ -32,9 +40,21 @@ describe('initialize (over an ACP connection)', () => {
         loadSession: true,
         promptCapabilities: { image: true, audio: false, embeddedContext: true },
         mcpCapabilities: { http: true, sse: true },
-        sessionCapabilities: { list: {}, resume: {}, fork: {}, close: {}, delete: {} },
+        sessionCapabilities: {
+          list: {},
+          resume: {},
+          fork: { _meta: { [META_KEY_BREAKPOINT_NAMESPACE]: { [META_KEY_MESSAGE_ID]: {} } } },
+          close: {},
+          delete: {},
+        },
       },
     })
+  })
+
+  it('advertises the breakpoint fork marker as a JSON object', async () => {
+    const result = await callInitialize(makeServer())
+    const fork = result.agentCapabilities?.sessionCapabilities?.fork
+    expect(fork?._meta).toMatchObject({ [META_KEY_BREAKPOINT_NAMESPACE]: { [META_KEY_MESSAGE_ID]: {} } })
   })
 })
 
