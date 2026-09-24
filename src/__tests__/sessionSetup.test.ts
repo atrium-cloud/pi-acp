@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 import {
   AGENT_NAME,
+  BUILTIN_COMMANDS,
   CONFIG_ID_MODEL,
   CONFIG_ID_THOUGHT_LEVEL,
   ENV_MCP_SERVERS,
@@ -71,6 +72,7 @@ const EXPECTED_OPTIONS = [
 ]
 
 const EXPECTED_COMMANDS = [
+  ...BUILTIN_COMMANDS,
   { name: 'review', description: 'Review code' },
   { name: 'skill:summarize', description: '' },
   { name: 'extcmd', description: 'ext' },
@@ -120,8 +122,29 @@ describe('establishSession', () => {
     expect(established.configOptions).toEqual(EXPECTED_OPTIONS)
     // Extension commands are advertised too; a missing description becomes empty.
     expect(established.availableCommands).toEqual(EXPECTED_COMMANDS)
-    // Pi's snapshot carries no argument hint, so no command gets an `input`.
-    expect(established.availableCommands.some((command) => 'input' in command)).toBe(false)
+    // Pi's snapshot carries no argument hint, so none of its commands gets an `input`.
+    const piCommands = established.availableCommands.slice(BUILTIN_COMMANDS.length)
+    expect(piCommands.some((command) => 'input' in command)).toBe(false)
+  })
+
+  it('drops a Pi command a built-in shadows, from any source, but keeps its disambiguated form', async () => {
+    const fake = makeFakePiClient({
+      ...makeSpec(),
+      commands: [
+        { name: 'name', description: 'template', source: 'prompt' },
+        { name: 'session', description: 'ext', source: 'extension' },
+        { name: 'compact:1', description: 'first', source: 'extension' },
+        { name: 'compact:2', source: 'extension' },
+      ],
+    })
+    const established = await establishSession({ cwd: ABS_CWD, mcpServers: [] }, makeDeps(fake))
+    expect(established.availableCommands).toEqual([
+      ...BUILTIN_COMMANDS,
+      { name: 'compact:1', description: 'first' },
+      { name: 'compact:2', description: '' },
+    ])
+    // `/session args` is no built-in, so it still reaches the extension through Pi.
+    expect(established.extensionCommandNames).toEqual(['session', 'compact:1', 'compact:2'])
   })
 
   it('threads the extension invocation names through verbatim', async () => {

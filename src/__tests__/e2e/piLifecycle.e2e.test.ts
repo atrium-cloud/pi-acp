@@ -17,6 +17,11 @@ import type { PromptResponse, SessionConfigOption } from '@agentclientprotocol/s
 import { afterAll, afterEach, beforeAll, expect, it } from 'vitest'
 
 import {
+  BUILTIN_TEXT_PARAGRAPH_BREAK,
+  builtinTextCompactionFailed,
+  builtinTextName,
+  builtinTextNameNormalized,
+  builtinTextNameSet,
   CONFIG_ID_MODEL,
   CONFIG_ID_THOUGHT_LEVEL,
   JSONRPC_INVALID_PARAMS,
@@ -26,6 +31,7 @@ import {
   SESSION_ENTRY_TYPE_HEADER,
   SESSION_FILE_EXTENSION,
 } from '../../constants.js'
+import { deriveTitle } from '../../session/title.js'
 import { describeE2E, E2E_SETUP_TIMEOUT_MS, E2E_TURN_TIMEOUT_MS, pinnedModelValue } from './e2eGate.js'
 import type { SpawnedAgent } from './spawnedAgentFixture.js'
 import { createSpawnedAgent, openPinnedSession } from './spawnedAgentFixture.js'
@@ -61,6 +67,13 @@ const CUT_MARKER_THIRD = 'pi-e2e-cut-charlie'
 const CUT_PROMPT_FIRST = `Reply with exactly ${CUT_MARKER_FIRST} and nothing else.`
 const CUT_PROMPT_SECOND = `Reply with exactly ${CUT_MARKER_SECOND} and nothing else.`
 const CUT_PROMPT_THIRD = `Reply with exactly ${CUT_MARKER_THIRD} and nothing else.`
+
+/** A name for `/name` to set; the line break is Pi's to normalize to a space. */
+const RENAME_ARGUMENT = 'pi-e2e-renamed\nsession'
+const RENAMED = 'pi-e2e-renamed session'
+/** Pi refuses a manual compaction while the whole session fits in its
+ * `keepRecentTokens` window (20000 by default), which one short turn does. */
+const NOTHING_TO_COMPACT = 'Nothing to compact'
 
 /** `<timestamp>_<id>.jsonl`, the flat store's file name for one session. */
 const SESSION_ID_SEPARATOR = '_'
@@ -396,6 +409,70 @@ describeE2E('pi live session lifecycle', () => {
           _meta: { [META_KEY_BREAKPOINT_NAMESPACE]: { [META_KEY_MESSAGE_ID]: randomUUID() } },
         }),
       ).rejects.toMatchObject({ code: JSONRPC_INVALID_PARAMS })
+    },
+    E2E_TURN_TIMEOUT_MS,
+  )
+
+  it(
+    'reports and sets the session name with /name after a real turn',
+    async () => {
+      const agent = live()
+      const sessionId = await openPinnedSession(agent)
+      expect((await promptOn(sessionId, ECHO_PROMPT)).stopReason).toBe('end_turn')
+
+      // The first prompt titled the session, so a bare /name reads that back.
+      let textBefore = agent.agentText(sessionId).length
+      expect((await promptOn(sessionId, '/name')).stopReason).toBe('end_turn')
+      expect(agent.agentText(sessionId).slice(textBefore)).toBe(builtinTextName(deriveTitle(ECHO_PROMPT)))
+
+      textBefore = agent.agentText(sessionId).length
+      expect((await promptOn(sessionId, `/name ${RENAME_ARGUMENT}`)).stopReason).toBe('end_turn')
+      expect(agent.agentText(sessionId).slice(textBefore)).toBe(
+        `${builtinTextNameNormalized(RENAME_ARGUMENT, RENAMED)}${BUILTIN_TEXT_PARAGRAPH_BREAK}${builtinTextNameSet(RENAMED)}`,
+      )
+      await agent.waitForUpdate(
+        sessionId,
+        (update) => update.sessionUpdate === 'session_info_update' && update.title === RENAMED,
+        E2E_TURN_TIMEOUT_MS,
+      )
+      const listed = await agent.agent.request(acp.methods.agent.session.list, { cwd: agent.workspace })
+      expect(listed.sessions.find((session) => session.sessionId === sessionId)?.title).toBe(RENAMED)
+    },
+    E2E_TURN_TIMEOUT_MS,
+  )
+
+  it(
+    'reports the session with /session after a real turn, without running one',
+    async () => {
+      const agent = live()
+      const sessionId = await openPinnedSession(agent)
+      expect((await promptOn(sessionId, ECHO_PROMPT)).stopReason).toBe('end_turn')
+
+      const textBefore = agent.agentText(sessionId).length
+      const response = await promptOn(sessionId, '/session', randomUUID())
+
+      expect(response.stopReason).toBe('end_turn')
+      // No user entry was appended, so there is nothing to fork from.
+      expect(echoedMessageId(response._meta)).toBeUndefined()
+      const info = agent.agentText(sessionId).slice(textBefore)
+      expect(info).toContain(`File: ${sessionFilePath(agent.sessionDir, sessionId)}`)
+      expect(info).toContain(`ID: ${sessionId}`)
+      expect(info).toContain('User: 1')
+    },
+    E2E_TURN_TIMEOUT_MS,
+  )
+
+  it(
+    'reports Pi refusing /compact on a one-turn session as text, and the session carries on',
+    async () => {
+      const agent = live()
+      const sessionId = await openPinnedSession(agent)
+      expect((await promptOn(sessionId, ECHO_PROMPT)).stopReason).toBe('end_turn')
+
+      const textBefore = agent.agentText(sessionId).length
+      expect((await promptOn(sessionId, '/compact')).stopReason).toBe('end_turn')
+      expect(agent.agentText(sessionId).slice(textBefore)).toContain(builtinTextCompactionFailed(NOTHING_TO_COMPACT))
+      expect((await promptOn(sessionId, '/session')).stopReason).toBe('end_turn')
     },
     E2E_TURN_TIMEOUT_MS,
   )

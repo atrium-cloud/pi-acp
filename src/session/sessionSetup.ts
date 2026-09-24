@@ -4,6 +4,7 @@ import * as acp from '@agentclientprotocol/sdk'
 import type { AgentContext, AvailableCommand, McpServer } from '@agentclientprotocol/sdk'
 
 import {
+  BUILTIN_COMMANDS,
   COMMAND_SOURCE_EXTENSION,
   ENV_MCP_SERVERS,
   JSONRPC_INTERNAL_ERROR,
@@ -151,9 +152,17 @@ interface PiCommand {
   readonly source: string
 }
 
-// No `input`: Pi's command snapshot carries no argument hint to map onto it.
+// No `input`: Pi's command snapshot carries no argument hint to map onto it. A
+// command named like a built-in is dropped: the built-in runs in its place on
+// submit, so advertising both would offer one name twice.
 function mapCommands(commands: readonly PiCommand[]): AvailableCommand[] {
-  return commands.map((command) => ({ name: command.name, description: command.description ?? '' }))
+  const builtinNames = new Set(BUILTIN_COMMANDS.map((command) => command.name))
+  return [
+    ...BUILTIN_COMMANDS,
+    ...commands
+      .filter((command) => !builtinNames.has(command.name))
+      .map((command) => ({ name: command.name, description: command.description ?? '' })),
+  ]
 }
 
 // An extension command is the only kind that can be handled without a turn, so
