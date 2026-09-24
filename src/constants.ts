@@ -1,5 +1,5 @@
 import { PROTOCOL_VERSION as ACP_PROTOCOL_VERSION } from '@agentclientprotocol/sdk'
-import type { ToolKind } from '@agentclientprotocol/sdk'
+import type { AvailableCommand, ToolKind } from '@agentclientprotocol/sdk'
 
 // Static JSON import (not createRequire): the release artifact is the bundle
 // alone, with no package.json beside it, so a runtime `require('../package.json')`
@@ -88,6 +88,64 @@ export const PROMPT_BLOCK_SEPARATOR = '\n'
 export const COMMAND_PREFIX = '/'
 export const COMMAND_ARG_SEPARATOR = ' '
 export const COMMAND_SOURCE_EXTENSION = 'extension'
+
+// Pi's TUI built-ins that have an RPC equivalent. `get_commands` never reports
+// them, since only the TUI's own submit handler dispatches them, so the adapter
+// advertises and runs them itself. Descriptions are Pi's own; Pi has no argument
+// hint for any of them, so `input` is left out, as for Pi's own commands.
+export const BUILTIN_COMMAND_NAME = 'name'
+export const BUILTIN_COMMAND_SESSION = 'session'
+export const BUILTIN_COMMAND_COMPACT = 'compact'
+export const BUILTIN_COMMANDS: readonly AvailableCommand[] = [
+  { name: BUILTIN_COMMAND_NAME, description: 'Set session display name' },
+  { name: BUILTIN_COMMAND_SESSION, description: 'Show session info and stats' },
+  { name: BUILTIN_COMMAND_COMPACT, description: 'Manually compact the session context' },
+]
+
+// Unbounded: Pi's RPC `prompt` does not wait out a compaction, so freeing the
+// session before Pi answers would let the next prompt race it. Pi exiting still
+// ends the wait.
+export const COMPACT_TIMEOUT_MS: number | null = null
+
+// Built-in output, worded as Pi's TUI words it. Clients render agent text as
+// markdown, so session info lines end in a hard break and paragraphs are
+// separated by a blank line.
+// In a code span so a markdown renderer does not swallow `<name>` as a tag.
+export const BUILTIN_TEXT_NAME_USAGE = 'Usage: `/name <name>`'
+export const builtinTextName = (name: string): string => `Session name: ${name}`
+export const builtinTextNameSet = (name: string): string => `Session name set: ${name}`
+export const builtinTextNameNormalized = (typed: string, stored: string | undefined): string =>
+  `Session name was normalized from ${JSON.stringify(typed)} to ${JSON.stringify(stored)}`
+export const builtinTextCompacted = (tokensBefore: string): string => `Compacted from ${tokensBefore} tokens`
+export const builtinTextCompactionFailed = (reason: string): string => `Compaction failed: ${reason}`
+// Pi's reason when an extension vetoes the compaction; the TUI shows it bare.
+export const PI_COMPACTION_CANCELLED = 'Compaction cancelled'
+export const BUILTIN_TEXT_LINE_BREAK = '  \n'
+export const BUILTIN_TEXT_PARAGRAPH_BREAK = '\n\n'
+export const SESSION_INFO_INDENT = '  '
+export const SESSION_INFO_IN_MEMORY = 'In-memory'
+export const SESSION_INFO_HIT_RATE_DIGITS = 1
+export const SESSION_INFO_COST_DIGITS = 3
+export const SESSION_INFO_LABELS = {
+  title: 'Session Info',
+  name: 'Name:',
+  file: 'File:',
+  id: 'ID:',
+  messages: 'Messages',
+  total: 'Total:',
+  user: 'User:',
+  assistant: 'Assistant:',
+  tools: 'Tools:',
+  calls: 'calls',
+  results: 'results',
+  tokens: 'Tokens',
+  input: 'Input:',
+  cached: 'Cached:',
+  uncached: 'Uncached:',
+  writtenToCache: 'written to cache',
+  output: 'Output:',
+  cost: 'Cost',
+} as const
 
 // ── Tool calls ────────────────────────────────────────────────────────────────
 //

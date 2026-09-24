@@ -16,21 +16,46 @@ export interface FakeState {
   sessionFile?: string
 }
 
-/** The `SessionStats` subset the adapter reads for end-of-turn usage. */
+/** `SessionStats` minus the file and id, which the fake reads from its state as
+ * Pi does. */
 export interface FakeStats {
+  userMessages: number
+  assistantMessages: number
+  toolCalls: number
+  toolResults: number
+  totalMessages: number
+  tokens: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number }
   cost: number
   contextUsage?: { tokens: number | null; contextWindow: number; percent: number | null }
 }
 
-const DEFAULT_STATS: FakeStats = { cost: 0.05, contextUsage: { tokens: 1234, contextWindow: 200_000, percent: 1 } }
+export const DEFAULT_STATS: FakeStats = {
+  userMessages: 1,
+  assistantMessages: 1,
+  toolCalls: 0,
+  toolResults: 0,
+  totalMessages: 2,
+  tokens: { input: 100, output: 20, cacheRead: 0, cacheWrite: 0, total: 120 },
+  cost: 0.05,
+  contextUsage: { tokens: 1234, contextWindow: 200_000, percent: 1 },
+}
+
+/** The `CompactionResult` subset the adapter reads. */
+export interface FakeCompaction {
+  summary: string
+  firstKeptEntryId: string
+  tokensBefore: number
+}
+
+export const DEFAULT_COMPACTION: FakeCompaction = { summary: 'summary', firstKeptEntryId: 'entry-1', tokensBefore: 12_345 }
 
 export interface FakePiSpec {
   state: FakeState
   models: { provider: string; id: string; name: string }[]
   levels: string[]
   commands: { name: string; description?: string; source: string }[]
-  /** End-of-turn `get_session_stats` payload; defaults to DEFAULT_STATS. */
-  stats?: FakeStats
+  /** `get_session_stats` fields laid over DEFAULT_STATS. */
+  stats?: Partial<FakeStats>
   /** The `get_messages` history a `session/load` replays. */
   messages?: readonly unknown[]
   /** The `get_entries` session tree; a function is called per request, so a test
@@ -49,6 +74,10 @@ export interface FakePiSpec {
    * way Pi adopts the id of the session it opened. Off by default, so a spawn
    * keeps reporting `state.sessionId` and an id mismatch stays exercisable. */
   sessionIdFromSessionFile?: boolean
+  /** Answers `compact` (DEFAULT_COMPACTION when unset). A test holds the
+   * compaction open by returning a promise it settles itself; `abort` never
+   * settles it, since Pi's `abort` does not stop a manual compaction. */
+  onCompact?: (customInstructions: string | undefined) => Promise<FakeCompaction>
 }
 
 export interface FakePiClient {
@@ -116,11 +145,23 @@ export function makeFakePiClient(spec: FakePiSpec): FakePiClient {
       case 'set_thinking_level':
         state = { ...state, thinkingLevel: command['level'] as string }
         return { type: 'response', command: 'set_thinking_level', success: true }
-      case 'set_session_name':
-        state = { ...state, sessionName: command['name'] as string }
+      case 'set_session_name': {
+        // Pi's own rules: the RPC handler trims and refuses an empty name, and
+        // the session store turns line breaks into spaces.
+        const name = (command['name'] as string).trim()
+        if (name === '') throw new Error('fake pi: Session name cannot be empty')
+        state = { ...state, sessionName: name.replace(/[\r\n]+/g, ' ').trim() }
         return { type: 'response', command: 'set_session_name', success: true }
-      case 'get_session_stats':
-        return { type: 'response', command: 'get_session_stats', success: true, data: spec.stats ?? DEFAULT_STATS }
+      }
+      case 'get_session_stats': {
+        const data = { sessionFile: state.sessionFile, sessionId: state.sessionId, ...DEFAULT_STATS, ...spec.stats }
+        return { type: 'response', command: 'get_session_stats', success: true, data }
+      }
+      case 'compact': {
+        const customInstructions = command['customInstructions'] as string | undefined
+        const data = await (spec.onCompact?.(customInstructions) ?? DEFAULT_COMPACTION)
+        return { type: 'response', command: 'compact', success: true, data }
+      }
       case 'prompt':
         if (spec.preflightFails) throw new Error('fake pi: prompt preflight failed')
         spec.onPrompt?.(emit)

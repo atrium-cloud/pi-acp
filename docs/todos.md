@@ -161,6 +161,21 @@ Pi upstream ships an ACP agent on current schemas with session resume, thought-l
     - Command metadata comes from `sourceInfo` (`{ path, source, scope, origin }`).
     - All three sources are advertised (`prompt`, `skill`, `extension`); no `input` hint is emitted, since the snapshot carries no argument hint to map onto it.
     - Nothing in the RPC stream says whether an `extension` command starts an agent loop, so the bounded `agent_start` window decides: a quiet window resolves `end_turn` when the prompt invoked an advertised extension command, and stays a protocol error for every other prompt.
+    - Pi's TUI built-ins `/name`, `/session` and `/compact` run over their RPC equivalents; `get_commands` never reports them.
+        - Advertised ahead of Pi's commands, with Pi's own descriptions and no `input`, like Pi's commands.
+        - A Pi command of the same name is not advertised; the built-in shadows it on submit, as in the TUI.
+        - Recognized with the TUI's own parse of the trimmed prompt text.
+        - A running built-in holds the session like a turn, so a second prompt is refused.
+        - A fork taken while one runs keeps the whole file: a built-in leaves no partial turn, and a compaction entry lands whole.
+        - Output is one `agent_message_chunk`.
+        - No title is derived and no breakpoint id is echoed, since Pi appends no user entry for a built-in.
+        - `/name <name>` sets the name and reports the one Pi stored; a bare `/name` shows the current name.
+        - When Pi normalizes the name, the TUI's normalization note comes first.
+        - `/session` mirrors the TUI report, minus cache warming, the per-model breakdown and cache re-billing.
+        - `/compact [instructions]` reports the tokens it compacted from.
+        - A Pi refusal (e.g. nothing outside the `keepRecentTokens` window) is agent text worded as the TUI words it, ending `end_turn`; nothing was written.
+        - `/compact` has no timeout: Pi's `prompt` does not wait out a compaction, so freeing the session early would let the next prompt race it.
+        - Pi 0.84.4's `abort` does not stop a manual compaction, so a cancelled `/compact` answers `cancelled` once Pi finishes it; 0.87.1's does.
 - [x] Other extension UI requests
     - `confirm`, `input`, `editor`, and non-sentinel `select` are answered `cancelled: true` immediately (fail closed, never auto-answered, never wedged) — `editor` too, since Pi never auto-resolves it.
         - Form-elicitation mapping when the client advertises `elicitation.form` is DEFERRED; the compliant fallback (cancelled) ships. The SDK surface exists (`AgentContext.createElicitation`, gated on `ClientCapabilities.elicitation`).
@@ -250,7 +265,7 @@ Pi upstream ships an ACP agent on current schemas with session resume, thought-l
 - [x] E2E harness (`src/__tests__/e2e/`): the built `dist/index.js` driven as a real ACP client against a real Pi.
     - Uses the host's own Pi credentials; only the session store is redirected to scratch (`PI_CODING_AGENT_SESSION_DIR`).
     - `RUN_PI_E2E=true` (`bun run test:e2e`); model `openrouter/deepseek/deepseek-v4-flash-0731`.
-    - 20 cases across turns, config, lifecycle, fork, permissions, prompt content, MCP stdio, extension commands. 20/20 on the sprite against Pi 0.84.4 (2026-09-22).
+    - 23 cases across turns, config, lifecycle, fork, permissions, prompt content, MCP stdio, extension commands, built-in commands. 23/23 on the sprite against Pi 0.84.4 (2026-09-24).
     - The three cancel cases hold the turn open with a `sleep 30` bash call and cancel on the `tool_call` update: a long streamed reply can arrive from the provider as one burst with the settle right behind it, which is how they failed on 2026-09-21.
 - [x] Distribution: one `pi-acp.zip` (the `pi-acp` executable, a hashbang bundle, plus LICENSE and NOTICE) on GitHub Releases, no npm. Needs Node 22.19+ on PATH and `PI_ACP_PI_BIN`.
 - [x] CI (`.github/workflows/ci.yml`): typecheck, unit tests, build, `--version` smoke, `bun run package`.

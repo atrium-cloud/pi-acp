@@ -2,6 +2,7 @@ import * as acp from '@agentclientprotocol/sdk'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import {
+  BUILTIN_COMMANDS,
   PERMISSION_DENIED_REASON,
   PERMISSION_OPTION_ALLOW_ALWAYS,
   PERMISSION_OPTION_ALLOW_ONCE,
@@ -98,7 +99,7 @@ function notification(update: unknown): { kind: string; method: string; params: 
 
 const COMMANDS_ANNOUNCEMENT = notification({
   sessionUpdate: 'available_commands_update',
-  availableCommands: [{ name: 'review', description: 'Review code' }],
+  availableCommands: [...BUILTIN_COMMANDS, { name: 'review', description: 'Review code' }],
 })
 
 const USAGE_NOTIFICATION = notification({ sessionUpdate: 'usage_update', ...EXPECTED_USAGE })

@@ -171,9 +171,10 @@ export class PiRpcClient {
     return response.data
   }
 
+  /** `timeoutMs: null` waits for Pi's answer, its exit, or `stop()`, with no timer. */
   async request<C extends RpcCommand & { id?: undefined }>(
     command: C,
-    options?: { readonly timeoutMs?: number },
+    options?: { readonly timeoutMs?: number | null },
   ): Promise<Extract<RpcResponse, { command: C['type']; success: true }>> {
     const child = this.child
     if (!child) throw new PiClientClosedError(`command "${command.type}" was issued before start()`)
@@ -184,16 +185,19 @@ export class PiRpcClient {
       throw new PiClientClosedError(`command "${command.type}" cannot be sent; the child's stdin is closed`)
     }
 
-    const timeoutMs = options?.timeoutMs ?? this.timeoutMs
+    const timeoutMs = options?.timeoutMs === undefined ? this.timeoutMs : options.timeoutMs
     const id = `${REQUEST_ID_PREFIX}${++this.nextRequestId}`
     const line = serializeJsonLine({ ...command, id })
 
     const response = await new Promise<RpcResponse>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pending.delete(id)
-        reject(new PiRpcTimeoutError(command.type, timeoutMs, this.stderrTail()))
-      }, timeoutMs)
-      timer.unref()
+      const timer =
+        timeoutMs === null
+          ? undefined
+          : setTimeout(() => {
+              this.pending.delete(id)
+              reject(new PiRpcTimeoutError(command.type, timeoutMs, this.stderrTail()))
+            }, timeoutMs)
+      timer?.unref()
 
       this.pending.set(id, {
         resolve: (value) => {

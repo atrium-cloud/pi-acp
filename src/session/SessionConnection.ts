@@ -5,8 +5,19 @@ import type { AgentContext, AvailableCommand, SessionConfigOption, SessionUpdate
 
 import {
   AGENT_NAME,
+  BUILTIN_COMMAND_COMPACT,
+  BUILTIN_COMMAND_NAME,
+  BUILTIN_COMMAND_SESSION,
+  BUILTIN_TEXT_NAME_USAGE,
+  BUILTIN_TEXT_PARAGRAPH_BREAK,
+  builtinTextCompacted,
+  builtinTextCompactionFailed,
+  builtinTextName,
+  builtinTextNameNormalized,
+  builtinTextNameSet,
   COMMAND_ARG_SEPARATOR,
   COMMAND_PREFIX,
+  COMPACT_TIMEOUT_MS,
   CONFIG_ID_MODEL,
   CONFIG_ID_THOUGHT_LEVEL,
   JSONRPC_INVALID_PARAMS,
@@ -14,9 +25,11 @@ import {
   PERMISSION_OPTION_ALLOW_ALWAYS,
   PERMISSION_OPTION_ALLOW_ONCE,
   PERMISSION_REQUEST_TIMEOUT_MS,
+  PI_COMPACTION_CANCELLED,
   PROMPT_ACK_TIMEOUT_MS,
 } from '../constants.js'
 import { buildPermissionOptions, decodeSentinelTitle } from '../permissions/gate.js'
+import { PiRpcError } from '../pi/errors.js'
 import type { PiRpcClient, PiRpcClientOptions } from '../pi/PiRpcClient.js'
 import type { JsonAgentSessionEvent, RpcCommand, RpcExtensionUIRequest, RpcExtensionUIResponse, RpcSessionState } from '../pi/types.js'
 import { asMessage } from '../server/errors.js'
@@ -24,6 +37,7 @@ import { buildConfigOptions, type ModelChoice, resolveModelSelection } from '../
 import { configOptionUpdate, sessionInfoUpdate, toolKind, toolTitle, usageUpdate } from '../turn/mappers.js'
 import type { FlattenedPrompt } from '../turn/promptContent.js'
 import { type AnnouncedToolCall, type TurnEventSink, TurnHandler } from '../turn/TurnHandler.js'
+import { type BuiltinCommand, BuiltinCommandRun, formatSessionInfo, parseBuiltinCommand } from './builtinCommands.js'
 import { replayUpdates } from './replay.js'
 import { isUserMessageEntry, messageMapPathFor, readMessageMap, type SessionFileEntry, writeMessageMap } from './sessionDirectory.js'
 import { deriveTitle } from './title.js'
@@ -124,9 +138,10 @@ export class SessionConnection {
   }
 
   /** A fork of this session is taken from the store, so the writer needs to know
-   * whether the tail of the file is a turn still being appended. */
+   * whether the tail of the file is a turn still being appended. A built-in never
+   * leaves one: its writes (a name or compaction entry) each land whole. */
   get hasActiveTurn(): boolean {
-    return this.activeTurn !== null
+    return this.activeTurn instanceof TurnHandler
   }
 
   /** Sends the command snapshot after `session/new` has returned. It is deferred
@@ -305,6 +320,10 @@ export class SessionConnection {
     }
     // Already cancelled before anything was sent: no turn runs, nothing to abort.
     if (signal.aborted) return { stopReason: 'cancelled', acknowledgedMessageId: undefined }
+    // Checked before anything reaches Pi, so a built-in shadows a same-named
+    // extension command the way it does in Pi's own TUI.
+    const builtin = parseBuiltinCommand(prompt.message)
+    if (builtin !== undefined) return await this.runBuiltinCommand(client, builtin, signal)
 
     const turn = new TurnHandler({
       notifier: this.notifier,
@@ -343,6 +362,77 @@ export class SessionConnection {
       signal.removeEventListener('abort', onAbort)
       this.activeTurn = null
     }
+  }
+
+  /** Runs one of Pi's TUI built-ins through its RPC equivalent. It holds the
+   * session like a turn does, but Pi appends no user entry for it, so nothing is
+   * titled or recorded. */
+  private async runBuiltinCommand(client: PiClientLike, command: BuiltinCommand, signal: AbortSignal): Promise<PromptOutcome> {
+    const run = new BuiltinCommandRun()
+    this.activeTurn = run
+    const onAbort = (): void => this.cancel()
+    signal.addEventListener('abort', onAbort, { once: true })
+    try {
+      run.track(this.executeBuiltinCommand(client, command, run))
+      return { stopReason: await run.settled, acknowledgedMessageId: undefined }
+    } finally {
+      signal.removeEventListener('abort', onAbort)
+      this.activeTurn = null
+    }
+  }
+
+  private async executeBuiltinCommand(client: PiClientLike, command: BuiltinCommand, run: BuiltinCommandRun): Promise<void> {
+    switch (command.kind) {
+      case BUILTIN_COMMAND_COMPACT: {
+        const { customInstructions } = command
+        let compaction
+        try {
+          compaction = await client.request(
+            { type: 'compact', ...(customInstructions === undefined ? {} : { customInstructions }) },
+            { timeoutMs: COMPACT_TIMEOUT_MS },
+          )
+        } catch (error) {
+          // Pi refuses before it writes anything, so the session carries on unchanged.
+          if (!(error instanceof PiRpcError) || run.isCancelled) throw error
+          const reason = error.piMessage
+          this.emitAgentText(reason === PI_COMPACTION_CANCELLED ? reason : builtinTextCompactionFailed(reason))
+          return
+        }
+        this.emitAgentText(builtinTextCompacted(compaction.data.tokensBefore.toLocaleString()))
+        await this.emitEndOfTurnUsage(client)
+        return
+      }
+      case BUILTIN_COMMAND_NAME: {
+        if (command.name === '') {
+          const state = await client.request({ type: 'get_state' })
+          const current = state.data.sessionName
+          this.emitAgentText(current ? builtinTextName(current) : BUILTIN_TEXT_NAME_USAGE)
+          return
+        }
+        await client.request({ type: 'set_session_name', name: command.name })
+        this.needsTitle = false
+        // Pi normalizes the name it stores (a newline becomes a space), so the
+        // reply reads back what it kept.
+        const stored = (await client.request({ type: 'get_state' })).data.sessionName
+        const set = builtinTextNameSet(stored ?? command.name)
+        this.emitAgentText(
+          stored === command.name ? set : `${builtinTextNameNormalized(command.name, stored)}${BUILTIN_TEXT_PARAGRAPH_BREAK}${set}`,
+        )
+        return
+      }
+      case BUILTIN_COMMAND_SESSION: {
+        const [stats, state] = await Promise.all([
+          client.request({ type: 'get_session_stats' }),
+          client.request({ type: 'get_state' }),
+        ])
+        this.emitAgentText(formatSessionInfo(stats.data, state.data.sessionName))
+        return
+      }
+    }
+  }
+
+  private emitAgentText(text: string): void {
+    this.emit({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } })
   }
 
   /** Mirrors Pi's own dispatch parse so the two agree on what is a command: the

@@ -62,10 +62,12 @@ export class PiExitError extends Error {
 export class PiRpcError extends Error {
   override readonly name = 'PiRpcError'
   readonly command: string
+  readonly piMessage: string
 
   constructor(command: string, piMessage: string) {
     super(`Pi RPC method "${command}": ${piMessage}`)
     this.command = command
+    this.piMessage = piMessage
   }
 }
 

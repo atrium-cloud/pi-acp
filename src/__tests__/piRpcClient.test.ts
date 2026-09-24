@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { PiRpcClient } from '../pi/PiRpcClient.js'
 import type { PiRpcClientOptions } from '../pi/PiRpcClient.js'
 import { PI_RPC_MODE_ARGS } from '../constants.js'
-import { PiExitError, PiProtocolError, PiRpcError, PiRpcTimeoutError, PiSpawnError } from '../pi/errors.js'
+import { PiClientClosedError, PiExitError, PiProtocolError, PiRpcError, PiRpcTimeoutError, PiSpawnError } from '../pi/errors.js'
 import type { JsonAgentSessionEvent, RpcExtensionUIRequest, RpcExtensionUIResponse } from '../pi/types.js'
 
 const FAKE_PI = fileURLToPath(new URL('./fixtures/fake-pi.mjs', import.meta.url))
@@ -191,6 +191,18 @@ describe('PiRpcClient correlation', () => {
     const client = createClient({ timeoutMs: 800 })
     await client.start()
     await expect(client.request({ type: 'set_session_name', name: 'never' })).rejects.toBeInstanceOf(PiRpcTimeoutError)
+  })
+
+  it('keeps waiting past the client bound for a command sent with no timeout', async () => {
+    const client = createClient({ timeoutMs: 200 })
+    await client.start()
+    const pending = client.request({ type: 'set_session_name', name: 'never' }, { timeoutMs: null })
+
+    const outcome = await Promise.race([pending.then(() => 'answered', (error: unknown) => error), delay(600).then(() => 'waiting')])
+    expect(outcome).toBe('waiting')
+
+    await client.stop()
+    await expect(pending).rejects.toBeInstanceOf(PiClientClosedError)
   })
 })
 

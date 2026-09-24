@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
   AGENT_NAME,
+  BUILTIN_COMMANDS,
   JSONRPC_INTERNAL_ERROR,
   JSONRPC_INVALID_PARAMS,
   META_KEY_BREAKPOINT_NAMESPACE,
@@ -226,7 +227,7 @@ describe('session/resume', () => {
       sessionId: SESSION_ID,
       update: {
         sessionUpdate: 'available_commands_update',
-        availableCommands: [{ name: 'review', description: 'Review code' }],
+        availableCommands: [...BUILTIN_COMMANDS, { name: 'review', description: 'Review code' }],
       },
     })
   })
@@ -423,7 +424,7 @@ describe('session/fork', () => {
       sessionId: response.sessionId,
       update: {
         sessionUpdate: 'available_commands_update',
-        availableCommands: [{ name: 'review', description: 'Review code' }],
+        availableCommands: [...BUILTIN_COMMANDS, { name: 'review', description: 'Review code' }],
       },
     })
     await expect(server.closeSession({ params: { sessionId: response.sessionId } })).resolves.toEqual({})
