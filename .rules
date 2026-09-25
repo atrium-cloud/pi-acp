@@ -36,6 +36,7 @@ References:
 - Keeping things current
     - Perform web searches when current external facts matter. Keep the current date in mind and run `date` if uncertain.
     - When setting up dependencies, use the latest compatible versions unless the project pins a version.
+    - Update Pi version for every new release.
 - Maintaining documentation
     - If a task maps to docs/todos.md checkboxes, update them as work is completed. Keep docs/todos.md current when landing or descoping features.
     - After adding or changing a reference dependency (e.g., SDK version), update docs/refs.md.

@@ -1,6 +1,6 @@
 # Caveats
 
-Known gaps that are not on the roadmap, each with the reason it stays open. Verified against Pi 0.84.3 and ACP SDK 1.4.0 on 2026-08-29.
+Known gaps that are not on the roadmap, each with the reason it stays open. Verified against Pi 0.87.1 and ACP SDK 1.4.0 on 2026-09-24.
 
 ## MCP tool list changes
 
