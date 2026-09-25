@@ -5,7 +5,7 @@
 - Repo: https://github.com/agentclientprotocol/agent-client-protocol
 - Schema (latest release): https://github.com/agentclientprotocol/agent-client-protocol/releases/latest/download/schema.json
 - Protocol docs: https://agentclientprotocol.com/protocol
-- TypeScript SDK: `@agentclientprotocol/sdk` 1.4.0
+- TypeScript SDK: `@agentclientprotocol/sdk` 1.5.0
     - Generated types: `node_modules/@agentclientprotocol/sdk/dist/schema/types.gen.d.ts`
     - Authoritative method list: `dist/acp.d.ts` `methods`
     - `session/fork` (experimental): head-only by default, or cut at an earlier prompt named by `_meta.acpStack.messageId`, a `_meta` extension (docs/todos.md, the Fork entry under Delivered)
@@ -58,7 +58,9 @@ Shell tools (`bash`, `powershell`) render as terminal entries via the Zed `_meta
     - Versioning and negotiation: https://modelcontextprotocol.io/specification/versioning
 - TypeScript SDK v2 (implements 2026-07-28): https://github.com/modelcontextprotocol/typescript-sdk, docs https://ts.sdk.modelcontextprotocol.io/v2/
     - The 2026-07-28 support guide: https://ts.sdk.modelcontextprotocol.io/v2/migration/support-2026-07-28.html
-- Packages: `@modelcontextprotocol/client` 2.0.0 (pulls `@modelcontextprotocol/core`), bundled into the adapter's own Pi extension (`src/mcp/extension-entry.ts`, docs/todos.md, the Built-in MCP entry under Delivered); `@modelcontextprotocol/server` 2.0.0 is a dev dependency for the in-process probe server in tests
+- Packages
+    - `@modelcontextprotocol/client` 2.1.0 (pulls `@modelcontextprotocol/core`), bundled into the adapter's own Pi extension (`src/mcp/extension-entry.ts`, docs/todos.md, the Built-in MCP entry under Delivered)
+    - `@modelcontextprotocol/server` 2.1.0, a dev dependency for the in-process probe server in tests
     - Client transports: `StdioClientTransport` (`@modelcontextprotocol/client/stdio`), `StreamableHTTPClientTransport`, `SSEClientTransport`
     - `Client` defaults to the legacy `initialize` handshake; the adapter passes `versionNegotiation: { mode: 'auto' }` so a `server/discover` probe selects 2026-07-28 where the server offers it and falls back to the handshake otherwise
 
