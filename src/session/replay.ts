@@ -70,8 +70,10 @@ export function replayUpdates(messages: readonly ReplayMessage[], cwd: string): 
         toolCallArgs.delete(message.toolCallId)
         break
       }
-      // Pi-side history entries with no ACP session update: a `!` bash run, an
-      // extension-injected message, and the two summary markers.
+      // Pi-side history entries with no ACP session update: the prompt and tool
+      // state, a `!` bash run, an extension-injected message, and the two
+      // summary markers.
+      case 'system':
       case 'bashExecution':
       case 'custom':
       case 'branchSummary':
@@ -114,6 +116,5 @@ function toolResultPayload(message: ToolResultMessage): unknown {
     content: message.content,
     ...(message.details !== undefined ? { details: message.details } : {}),
     ...(message.usage !== undefined ? { usage: message.usage } : {}),
-    ...(message.addedToolNames !== undefined ? { addedToolNames: message.addedToolNames } : {}),
   }
 }

@@ -168,6 +168,7 @@ Pi upstream ships an ACP agent on current schemas with session resume, thought-l
         - A running built-in holds the session like a turn, so a second prompt is refused.
         - A fork taken while one runs keeps the whole file: a built-in leaves no partial turn, and a compaction entry lands whole.
         - Output is one `agent_message_chunk`.
+        - `/compact` also sends a `usage_update`, and `/name <name>` a `session_info_update`.
         - No title is derived and no breakpoint id is echoed, since Pi appends no user entry for a built-in.
         - `/name <name>` sets the name and reports the one Pi stored; a bare `/name` shows the current name.
         - When Pi normalizes the name, the TUI's normalization note comes first.
@@ -175,7 +176,7 @@ Pi upstream ships an ACP agent on current schemas with session resume, thought-l
         - `/compact [instructions]` reports the tokens it compacted from.
         - A Pi refusal (e.g. nothing outside the `keepRecentTokens` window) is agent text worded as the TUI words it, ending `end_turn`; nothing was written.
         - `/compact` has no timeout: Pi's `prompt` does not wait out a compaction, so freeing the session early would let the next prompt race it.
-        - Pi 0.84.4's `abort` does not stop a manual compaction, so a cancelled `/compact` answers `cancelled` once Pi finishes it; 0.87.1's does.
+        - Pi's `abort` stops a manual compaction (fixed in 0.85.0), so a cancelled `/compact` answers `cancelled` once Pi aborts it.
 - [x] Other extension UI requests
     - `confirm`, `input`, `editor`, and non-sentinel `select` are answered `cancelled: true` immediately (fail closed, never auto-answered, never wedged) — `editor` too, since Pi never auto-resolves it.
         - Form-elicitation mapping when the client advertises `elicitation.form` is DEFERRED; the compliant fallback (cancelled) ships. The SDK surface exists (`AgentContext.createElicitation`, gated on `ClientCapabilities.elicitation`).
@@ -200,7 +201,7 @@ Pi upstream ships an ACP agent on current schemas with session resume, thought-l
     - One shared flow (`establishSession` in an open mode) spawning a child with `--session <absolute .jsonl path>` and asserting the reported `sessionId` equals the requested one.
     - `mcpServers` (optional on resume) are translated and registered for the reopened session, as on `session/new`; `additionalDirectories` are refused non-empty.
     - An id already live in this adapter is reused rather than opened again (no lock upstream; a second child on one file forks the history, see Known limits): the request `cwd` must equal the live connection's cwd.
-    - Load replays `get_messages` (the active-branch, post-compaction view) before responding: `user_message_chunk` per block (string content is one text block, images map to image content), `agent_message_chunk` / `agent_thought_chunk`, and completed tool calls as `tool_call` + `tool_call_update` built by the live mappers from the cached `toolCall` arguments (edit diffs identical to live). A `toolCall` with no `toolResult` is omitted entirely so no row is stranded; `bashExecution`, `custom`, `branchSummary`, `compactionSummary` are skipped (no ACP surface). Pure `src/session/replay.ts`.
+    - Load replays `get_messages` (the active-branch, post-compaction view) before responding: `user_message_chunk` per block (string content is one text block, images map to image content), `agent_message_chunk` / `agent_thought_chunk`, and completed tool calls as `tool_call` + `tool_call_update` built by the live mappers from the cached `toolCall` arguments (edit diffs identical to live). A `toolCall` with no `toolResult` is omitted entirely so no row is stranded; `system`, `bashExecution`, `custom`, `branchSummary`, `compactionSummary` are skipped (no ACP surface). Pure `src/session/replay.ts`.
     - Both respond `{ configOptions }` (no modes); `available_commands_update` lands after the response, as on `session/new`.
     - Load on an id that is already live replays the full history again from the live subprocess: the replay is unconditional by design, the client asked for a load, and `cwd` equality is checked the same way. Path equality everywhere is `path.resolve` on both sides with no case folding, which is Pi's own rule.
 - [x] `session/close` and `session/delete`
@@ -213,7 +214,7 @@ Pi upstream ships an ACP agent on current schemas with session resume, thought-l
 - [x] Fork
     - The adapter writes the fork's file itself, in Pi's own format — a fresh header (`version`, a minted UUIDv7 id, the request `cwd`, `parentSession` = the parent's absolute path) followed by every parent entry in file order, re-serialized from its parsed form (key order kept, number formatting and escapes normalized, a malformed line dropped as on read), written in one call — and then opens it like any stored session with `--session`. If Pi fails to open it, the file is removed so no session the client never heard of stays listable.
     - It is written rather than delegated because Pi's `--fork` copies the parent's file as it stands, in-flight turn included, and Pi's RPC `fork` replaces the session inside the parent's own subprocess and aborts its turn; neither can produce a second live session the parent survives.
-    - A parent with a turn in flight in this adapter is forked from its last settled turn: Pi appends the user entry as a turn starts, so everything from the last user message on is dropped, and the adapter is the only writer of its own live sessions. A parent whose very first turn is in flight therefore forks to an empty session (header only).
+    - A parent with a turn in flight in this adapter is forked from its last settled turn: Pi appends the user entry as a turn starts, so everything from the last user message on is dropped, and the adapter is the only writer of its own live sessions. A parent whose very first turn is in flight therefore forks to a session with no conversation.
     - The copy is the whole tree (abandoned branches, summaries, labels, the `session_info` name included), so the fork inherits the parent's title until it is renamed.
     - The fork's file exists before its first turn, so unlike a `session/new` session it is immediately listable, resumable and deletable.
     - Forking into another `cwd` is supported and lands the file under that cwd's session directory; the parent's own cwd is never checked, since cross-project forking is the point of the method.
@@ -233,7 +234,7 @@ Pi upstream ships an ACP agent on current schemas with session resume, thought-l
         - A fork's own sidecar keeps only the ids whose entries survived the cut, and is written only when at least one did.
         - The cut is the ancestor path of the named user entry, exclusive: the fork's last entry is that entry's parent, which Pi adopts as the leaf.
         - Abandoned branches and labels off that path are dropped, unlike the head-only copy, which takes the whole tree.
-        - Naming the session's first prompt forks to a header-only session.
+        - Naming the session's first prompt forks to a session with no conversation.
         - A failed map write costs that prompt its echo only; the turn still resolves with its own stop reason, and one stderr line names the failure.
         - A message id that was never recorded is `invalid_params`, and so is one mapped to an entry that is not a user message.
         - A prompt cancelled after its turn started still records and echoes its message id (the user entry is already in Pi's tree, so the fork point stands); a prompt aborted before anything was sent records nothing.
@@ -265,12 +266,19 @@ Pi upstream ships an ACP agent on current schemas with session resume, thought-l
 - [x] E2E harness (`src/__tests__/e2e/`): the built `dist/index.js` driven as a real ACP client against a real Pi.
     - Uses the host's own Pi credentials; only the session store is redirected to scratch (`PI_CODING_AGENT_SESSION_DIR`).
     - `RUN_PI_E2E=true` (`bun run test:e2e`); model `openrouter/deepseek/deepseek-v4-flash-0731`.
-    - 23 cases across turns, config, lifecycle, fork, permissions, prompt content, MCP stdio, extension commands, built-in commands. 23/23 on the sprite against Pi 0.84.4 (2026-09-24).
+    - 23 cases across turns, config, lifecycle, fork, permissions, prompt content, MCP stdio, extension commands, built-in commands. 23/23 on the sprite against Pi 0.87.1 (2026-09-24).
     - The three cancel cases hold the turn open with a `sleep 30` bash call and cancel on the `tool_call` update: a long streamed reply can arrive from the provider as one burst with the settle right behind it, which is how they failed on 2026-09-21.
 - [x] Distribution: one `pi-acp.zip` (the `pi-acp` executable, a hashbang bundle, plus LICENSE and NOTICE) on GitHub Releases, no npm. Needs Node 22.19+ on PATH and `PI_ACP_PI_BIN`.
 - [x] CI (`.github/workflows/ci.yml`): typecheck, unit tests, build, `--version` smoke, `bun run package`.
 - [x] Release: `scripts/release.sh [patch|minor|major|X.Y.Z] [--dry-run] [--push]` bumps, tags and pushes; `release.yml` packages and attaches the zip with `docs/changelogs/<tag>.md` as the body.
 - [x] Pre-commit hook (`.githooks/pre-commit`, installed via `core.hooksPath` by the `prepare` script): typecheck, unit tests, build, `--version` smoke.
-- [x] Upstream drift: `bun update @earendil-works/pi-coding-agent`, then typecheck, unit tests, and the live tier on the sprite.
-    - 0.84.3 → 0.84.4 on 2026-08-29, all three green; docs/refs.md carries the pin.
+- [x] Upstream drift: on every Pi release, `bun update @earendil-works/pi-coding-agent`, then typecheck, unit tests, and the live tier on the sprite.
+    - Check `bun pm view @earendil-works/pi-coding-agent version` against `bun.lock`; `bun update` printing no changes proves nothing.
+    - 0.84.3 → 0.84.4 on 2026-08-29, all three green.
+    - 0.84.4 → 0.87.1 on 2026-09-24, all three green.
+        - The `^0.84` caret had held the lockfile on 0.84.x since 2026-08-29.
+        - `get_messages` can return `system` messages (the prompt and tool state); replay skips them.
+        - Tool results no longer carry `addedToolNames`.
+        - `rpc-types.d.ts` itself is unchanged.
+    - docs/refs.md carries the range.
 - [x] docs/caveats.md holds the gaps that stay open by design (MCP tool-list changes and startup status, the extension-command quiet window, unforwarded extension notifications, project trust, session-replacing commands), each with the reason.

@@ -25,7 +25,11 @@ Shell tools (`bash`, `powershell`) render as terminal entries via the Zed `_meta
 
 - Repo: https://github.com/earendil-works/pi
 - Package: `@earendil-works/pi-coding-agent` (bin `pi`, Node >= 22.19.0)
-- Dependency: `^0.84.4` (moved from `^0.84.3` on 2026-08-29), the same caret policy as codex-acp on `@openai/codex`. The adapter launches the installed package's `./rpc-entry` export by default (`src/pi/launch.ts`); `bun run typecheck` against the installed version is the drift check.
+- Dependency: `>=0.87.1`, a floor at the last verified version; `bun.lock` carries the exact one.
+    - Moved from `^0.84.4` on 2026-09-24.
+    - A caret on a 0.x version caps at its minor: the lockfile sat on 0.84.x while Pi shipped 0.85.0 through 0.87.1.
+    - The adapter launches the installed package's `./rpc-entry` export by default (`src/pi/launch.ts`).
+    - The drift check is the Upstream drift entry in docs/todos.md: typecheck, unit tests, and the live tier on the sprite.
 - `PI_ACP_PI_BIN` launches a different `pi` binary instead.
 - RPC mode docs: https://pi.dev/docs/latest/rpc (upstream `packages/coding-agent/docs/rpc.md`)
 - Key upstream files, relative to `packages/coding-agent/`

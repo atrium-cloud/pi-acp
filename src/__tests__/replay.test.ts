@@ -120,7 +120,7 @@ describe('replayUpdates', () => {
     ])
   })
 
-  it('carries usage and addedToolNames into the replayed raw output', () => {
+  it('carries usage into the replayed raw output', () => {
     const updates = replayUpdates([
       assistant([{ type: 'toolCall', id: 't3', name: 'bash', arguments: { command: 'ls' } }]),
       toolResult({
@@ -129,7 +129,6 @@ describe('replayUpdates', () => {
         content: [{ type: 'text', text: 'a.ts' }],
         details: {},
         usage: { input: 1, output: 2 },
-        addedToolNames: ['grep'],
       }),
     ])
     expect(updates[1]).toMatchObject({
@@ -137,7 +136,6 @@ describe('replayUpdates', () => {
         content: [{ type: 'text', text: 'a.ts' }],
         details: {},
         usage: { input: 1, output: 2 },
-        addedToolNames: ['grep'],
       },
     })
   })
@@ -208,6 +206,7 @@ describe('replayUpdates', () => {
 
   it('skips the Pi-only history roles', () => {
     const updates = replayUpdates([
+      msg({ role: 'system', content: 'You are Pi.', timestamp: 0 }),
       msg({ role: 'bashExecution', command: 'ls', output: 'a.ts', exitCode: 0, cancelled: false, truncated: false, timestamp: 1 }),
       msg({ role: 'custom', customType: 'note', content: 'injected', display: true, timestamp: 2 }),
       msg({ role: 'branchSummary', summary: 'branched', fromId: 'sess-0', timestamp: 3 }),

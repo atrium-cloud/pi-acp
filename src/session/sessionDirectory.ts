@@ -423,7 +423,8 @@ export function writeForkFile(options: WriteForkFileOptions): ForkFile {
 /** The parent's entries up to its last settled turn. Pi appends the user entry as
  * a turn starts, so with a turn in flight everything from the last user message
  * on is that unfinished turn; this adapter is the only writer of its own live
- * sessions, so nothing else can have appended past it. */
+ * sessions, so nothing else can have appended past it. The `system` entry Pi
+ * writes just before that user entry stays, as in Pi's own fork. */
 export function settledEntries(
   entries: readonly SessionFileEntry[],
   parentHasActiveTurn: boolean,
