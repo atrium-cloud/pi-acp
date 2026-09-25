@@ -313,12 +313,20 @@ describeE2E('pi live session lifecycle', () => {
       const agent = live()
       const parentId = await openPinnedSession(agent)
       expect((await promptOn(parentId, ECHO_PROMPT)).stopReason).toBe('end_turn')
+      // The first turn can call a tool of its own (a denied bash echo), and a match
+      // on that one would fork before Pi appends the second turn's user entry.
+      const firstTurnUpdates = new Set(agent.sessionUpdates(parentId))
 
       agent.answerPermissions(() => ({ outcome: { outcome: 'selected', optionId: PERMISSION_OPTION_ALLOW_ONCE } }))
       const pending = promptOn(parentId, SLEEP_PROMPT)
       const cancelled = expect(pending).resolves.toMatchObject({ stopReason: 'cancelled' })
       // The tool is running, so Pi has already appended this turn's user entry.
-      await agent.waitForUpdate(parentId, (update) => update.sessionUpdate === 'tool_call', E2E_TURN_TIMEOUT_MS)
+      await agent.waitForUpdate(
+        parentId,
+        (update) => update.sessionUpdate === 'tool_call' && !firstTurnUpdates.has(update),
+        E2E_TURN_TIMEOUT_MS,
+      )
+      const parentUpdatesAtFork = agent.sessionUpdates(parentId).map((update) => update.sessionUpdate)
 
       const forked = await agent.agent.request(acp.methods.agent.session.fork, {
         sessionId: parentId,
@@ -334,7 +342,7 @@ describeE2E('pi live session lifecycle', () => {
         mcpServers: [],
       })
       const replayed = userMessageText(agent, forked.sessionId)
-      expect(replayed).toContain(ECHO_MARKER)
+      expect(replayed, `parent updates at fork: ${JSON.stringify(parentUpdatesAtFork)}`).toContain(ECHO_MARKER)
       expect(replayed).not.toContain(SLEEP_MARKER)
     },
     TWO_TURN_TIMEOUT_MS,

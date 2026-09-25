@@ -21,16 +21,16 @@
     "package": "bun run build && cp dist/index.js dist/pi-acp && chmod +x dist/pi-acp && rm -f dist/pi-acp.zip && zip -j dist/pi-acp.zip dist/pi-acp LICENSE NOTICE"
   },
   "dependencies": {
-    "@agentclientprotocol/sdk": "^1.4.0",
+    "@agentclientprotocol/sdk": "^1.5.0",
     "@earendil-works/pi-coding-agent": ">=0.87.1",
-    "@modelcontextprotocol/client": "2.0.0",
-    "zod": "^4.4.3"
+    "@modelcontextprotocol/client": "2.1.0",
+    "zod": "^4.6.5"
   },
   "devDependencies": {
-    "@modelcontextprotocol/server": "2.0.0",
-    "@types/node": "^26.1.0",
+    "@modelcontextprotocol/server": "2.1.0",
+    "@types/node": "^26.6.2",
     "esbuild": "^0.28.2",
     "typescript": "^7.0.2",
-    "vitest": "^4.1.11"
+    "vitest": "^5.0.1"
   }
 }
