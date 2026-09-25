@@ -449,7 +449,7 @@ describe('settledEntries', () => {
     expect(settledEntries([...settled, ...inFlight], true)).toEqual(settled)
   })
 
-  it('keeps everything when the parent is idle', () => {
+  it('keeps everything when the parent has no unsettled turn in the store', () => {
     const all = [...settled, ...inFlight]
     expect(settledEntries(all, false)).toEqual(all)
   })

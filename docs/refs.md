@@ -10,6 +10,9 @@
     - Authoritative method list: `dist/acp.d.ts` `methods`
     - `session/fork` (experimental): head-only by default, or cut at an earlier prompt named by `_meta.acpStack.messageId`, a `_meta` extension (docs/todos.md, the Fork entry under Delivered)
     - `SessionConfigOptionCategory` includes `thought_level` (docs/todos.md, the Config options entry under Delivered)
+    - `notice` session update (experimental): sent only to a client that advertises `clientCapabilities.session.notices` (docs/todos.md, the Other extension UI requests entry)
+    - Session notices RFD: https://agentclientprotocol.com/rfds/session-notices
+    - `ToolCall.name` (stable since 1.5.0): Pi's tool name, on the `tool_call` only
     - Draft ACP v2 under `@agentclientprotocol/sdk/experimental/v2`: not used
 
 ## Terminal entries (shell tool rendering)

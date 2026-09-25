@@ -6,6 +6,7 @@ import { StringDecoder } from 'node:string_decoder'
 import {
   AGENT_NAME,
   DEFAULT_RPC_TIMEOUT_MS,
+  extensionNotifyLogLine,
   SIGTERM_GRACE_MS,
   STDERR_TAIL_MAX_BYTES,
   STDIN_END_GRACE_MS,
@@ -43,6 +44,8 @@ const LOG_PREFIX = `[${AGENT_NAME}]`
 
 type PiChildProcess = ChildProcessByStdio<Writable, Readable, Readable>
 
+export type RpcNotifyRequest = Extract<RpcExtensionUIRequest, { method: 'notify' }>
+
 /** Pi emits this frame from `runRpcMode`'s extension `onError`; it is not part
  * of `JsonAgentSessionEvent` and upstream ships no type for it. */
 interface PiExtensionErrorFrame {
@@ -71,6 +74,8 @@ export interface PiRpcClientOptions {
   /** Answers a Pi extension dialog (`select`/`confirm`/`input`/`editor`). When
    * unset the dialog is failed closed (the permission gate reads that as deny). */
   readonly onExtensionUiRequest?: (request: RpcExtensionUIRequest) => Promise<RpcExtensionUIResponse>
+  /** Takes an extension's `ctx.ui.notify`. When unset it is logged to stderr. */
+  readonly onNotify?: (request: RpcNotifyRequest) => void
 }
 
 // ── Client ──────────────────────────────────────────────────────────────────
@@ -404,7 +409,8 @@ export class PiRpcClient {
         this.routeExtensionDialog(request)
         return
       case 'notify':
-        console.error(`${LOG_PREFIX} Pi extension notify: ${request.message}`)
+        if (this.options.onNotify === undefined) console.error(extensionNotifyLogLine(request.message))
+        else this.options.onNotify(request)
         return
       case 'setStatus':
       case 'setWidget':

@@ -94,6 +94,7 @@ export class PiAcpServer {
   private readonly options: PiAcpServerOptions
   private readonly sessions = new Map<string, LiveSession>()
   private stopped = false
+  private clientSupportsNotices = false
 
   constructor(options: PiAcpServerOptions) {
     this.options = options
@@ -129,7 +130,8 @@ export class PiAcpServer {
     await Promise.all(sessions.map((session) => session.connection.stop()))
   }
 
-  initialize(_params: InitializeRequest): InitializeResponse {
+  initialize(params: InitializeRequest): InitializeResponse {
+    this.clientSupportsNotices = (params.clientCapabilities?.session?.notices ?? null) !== null
     return {
       protocolVersion: PROTOCOL_VERSION,
       agentInfo: { name: AGENT_NAME, title: AGENT_TITLE, version: AGENT_VERSION },
@@ -220,7 +222,10 @@ export class PiAcpServer {
     if (parentPath === null) throw acp.RequestError.resourceNotFound(request.sessionId)
 
     const breakpointMessageId = readMessageIdMeta(request._meta)
-    const parent = this.sessions.get(request.sessionId)
+    // Read before the file: Pi appends the user entry before reporting it, so a
+    // true flag means the snapshot holds that entry. A false one at worst copies
+    // a prompt Pi has just appended, unanswered.
+    const parentHasUnsettledTurn = this.sessions.get(request.sessionId)?.connection.hasUnsettledTurnInStore ?? false
     const parentEntries = await readSessionEntries(parentPath)
     // Read once: the same map decides the cut and seeds the fork's own sidecar.
     // Read even without a breakpoint, or a head-only fork of a recorded parent
@@ -228,7 +233,7 @@ export class PiAcpServer {
     const parentMap = readMessageMap(messageMapPathFor(parentPath))
     const entries =
       breakpointMessageId === undefined
-        ? settledEntries(parentEntries, parent?.connection.hasActiveTurn ?? false)
+        ? settledEntries(parentEntries, parentHasUnsettledTurn)
         : breakpointCut({
             entries: parentEntries,
             map: parentMap,
@@ -394,6 +399,7 @@ export class PiAcpServer {
       launch: this.options.launch,
       rpcTimeoutMs: this.options.rpcTimeoutMs,
       notifier: client,
+      clientSupportsNotices: this.clientSupportsNotices,
       gateExtensionPath: this.options.gateExtensionPath,
       mcpExtensionPath: this.options.mcpExtensionPath,
       createPiClient: this.options.createPiClient,

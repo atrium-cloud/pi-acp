@@ -16,11 +16,14 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: current
       - uses: oven-sh/setup-bun@v2
         with:
           # Pinned to the Bun that wrote bun.lock. Keep in step with the
           # release workflow.
-          bun-version: 1.4.0
+          bun-version: 1.4.2
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
       - run: bun run test

@@ -65,6 +65,7 @@ export class TurnHandler implements TurnEventSink {
 
   private done = false
   private startSeen = false
+  private userMessageSeen = false
   private startTimer: NodeJS.Timeout | null = null
   private cancelled = false
   private lastStopReason: string | null = null
@@ -137,6 +138,18 @@ export class TurnHandler implements TurnEventSink {
     return this.startSeen
   }
 
+  /** False until Pi reports this turn's user message, which it appends to the
+   * session file as it reports it. */
+  get reportedUserMessage(): boolean {
+    return this.userMessageSeen
+  }
+
+  /** True once `settled` has its outcome; from `agent_settled` on, Pi has
+   * written the turn whole. */
+  get isSettled(): boolean {
+    return this.done
+  }
+
   handleEvent(event: JsonAgentSessionEvent): void {
     switch (event.type) {
       case 'agent_start':
@@ -184,6 +197,9 @@ export class TurnHandler implements TurnEventSink {
         return
       }
       case 'message_end':
+        // Pi appends the user entry before this frame reaches stdout, so the store
+        // leads the flag, never trails it.
+        if ('role' in event.message && event.message.role === 'user') this.userMessageSeen = true
         if ('role' in event.message && event.message.role === 'assistant') {
           this.captureStop(event.message.stopReason, event.message.errorMessage)
         }

@@ -89,6 +89,7 @@ async function connect(createPiClient: CreatePiClient): Promise<{
     launch: LAUNCH,
     rpcTimeoutMs: 1_000,
     notifier: { notify } as unknown as AgentContext,
+    clientSupportsNotices: false,
     mcpExtensionPath: MCP_EXTENSION_PATH,
     createPiClient,
   })

@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs'
 
 import { PI_SESSION_ARG } from '../../constants.js'
+import type { RpcNotifyRequest } from '../../pi/PiRpcClient.js'
 import type { RpcExtensionUIRequest, RpcExtensionUIResponse } from '../../pi/types.js'
 import type { CreatePiClient, PiClientLike } from '../../session/SessionConnection.js'
 import type { JsonAgentSessionEvent } from '../../pi/types.js'
@@ -78,6 +79,12 @@ export interface FakePiSpec {
    * compaction open by returning a promise it settles itself; `abort` never
    * settles it, since Pi's `abort` does not stop a manual compaction. */
   onCompact?: (customInstructions: string | undefined) => Promise<FakeCompaction>
+  /** Awaited before `get_session_stats` answers, so a test can hold the
+   * end-of-turn usage read open by returning a promise it settles itself. */
+  onSessionStats?: () => Promise<void>
+  /** Runs inside `start()`, before the readiness answer, the way an extension's
+   * `session_start` handler notifies while Pi starts. */
+  onStart?: (notify: (request: RpcNotifyRequest) => void) => void
 }
 
 export interface FakePiClient {
@@ -93,6 +100,8 @@ export interface FakePiClient {
   exit: (error: Error) => void
   /** Drives an extension UI request through the wired `onExtensionUiRequest`. */
   requestUi: (request: RpcExtensionUIRequest) => Promise<RpcExtensionUIResponse>
+  /** Drives an extension notify through the wired `onNotify`. */
+  notify: (request: RpcNotifyRequest) => void
 }
 
 function readHeaderSessionId(sessionFile: string | undefined): string {
@@ -111,7 +120,12 @@ export function makeFakePiClient(spec: FakePiSpec): FakePiClient {
   let onEvent: ((event: JsonAgentSessionEvent) => void) | undefined
   let onExit: ((error: Error) => void) | undefined
   let onExtensionUiRequest: ((request: RpcExtensionUIRequest) => Promise<RpcExtensionUIResponse>) | undefined
+  let onNotify: ((request: RpcNotifyRequest) => void) | undefined
   const emit = (event: JsonAgentSessionEvent): void => onEvent?.(event)
+  const notify = (request: RpcNotifyRequest): void => {
+    if (onNotify === undefined) throw new Error('fake pi: no onNotify handler wired')
+    onNotify(request)
+  }
 
   const respond = async (command: Record<string, unknown> & { type: string }): Promise<unknown> => {
     calls.push(command)
@@ -154,6 +168,7 @@ export function makeFakePiClient(spec: FakePiSpec): FakePiClient {
         return { type: 'response', command: 'set_session_name', success: true }
       }
       case 'get_session_stats': {
+        await spec.onSessionStats?.()
         const data = { sessionFile: state.sessionFile, sessionId: state.sessionId, ...DEFAULT_STATS, ...spec.stats }
         return { type: 'response', command: 'get_session_stats', success: true, data }
       }
@@ -174,7 +189,10 @@ export function makeFakePiClient(spec: FakePiSpec): FakePiClient {
   }
 
   const client: PiClientLike = {
-    start: (async () => state) as unknown as PiClientLike['start'],
+    start: (async () => {
+      spec.onStart?.(notify)
+      return state
+    }) as unknown as PiClientLike['start'],
     request: respond as unknown as PiClientLike['request'],
     stop: async () => {
       stopped = true
@@ -195,6 +213,7 @@ export function makeFakePiClient(spec: FakePiSpec): FakePiClient {
     onEvent = options.onEvent
     onExit = options.onExit
     onExtensionUiRequest = options.onExtensionUiRequest
+    onNotify = options.onNotify
     return client
   }
 
@@ -209,5 +228,6 @@ export function makeFakePiClient(spec: FakePiSpec): FakePiClient {
       if (onExtensionUiRequest === undefined) throw new Error('fake pi: no onExtensionUiRequest handler wired')
       return onExtensionUiRequest(request)
     },
+    notify,
   }
 }

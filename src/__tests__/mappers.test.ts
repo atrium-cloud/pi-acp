@@ -19,6 +19,7 @@ describe('tool call mappers', () => {
       sessionUpdate: 'tool_call',
       toolCallId: 't1',
       title: 'read /repo/a.ts',
+      name: 'read',
       kind: 'read',
       status: 'in_progress',
       rawInput: { path: '/repo/a.ts' },
@@ -31,6 +32,7 @@ describe('tool call mappers', () => {
       sessionUpdate: 'tool_call',
       toolCallId: 't2',
       title: 'echo hi\nsecond',
+      name: 'bash',
       kind: 'execute',
       status: 'in_progress',
       rawInput: { command: 'echo hi\nsecond' },
@@ -48,6 +50,22 @@ describe('tool call mappers', () => {
 
   it('titles a shell call by its tool name when the input has no command string', () => {
     expect(toolTitle('bash', {})).toBe('bash')
+  })
+
+  it("names the tool_call by Pi's tool name verbatim", () => {
+    const update = toolCallStarted({ toolCallId: 'n1', toolName: 'mcp__docs__search_pages', args: { query: 'x' } }, CWD)
+    expect(update).toMatchObject({ sessionUpdate: 'tool_call', name: 'mcp__docs__search_pages', kind: 'other' })
+  })
+
+  it("names a shell tool_call by Pi's shell tool name alongside its terminal entry", () => {
+    const update = toolCallStarted({ toolCallId: 'n2', toolName: 'powershell', args: { command: 'dir' } }, CWD)
+    expect(update).toMatchObject({ name: 'powershell', title: 'dir', content: [{ type: 'terminal', terminalId: 'n2' }] })
+  })
+
+  it('leaves the name off the end update, so the one from the tool_call stands', () => {
+    const result = { content: [{ type: 'text', text: 'done' }] }
+    expect(toolCallEnded({ toolCallId: 'n3', toolName: 'read', result, isError: false, args: {} })).not.toHaveProperty('name')
+    expect(toolCallEnded({ toolCallId: 'n4', toolName: 'bash', result, isError: false, args: {} })).not.toHaveProperty('name')
   })
 
   it('maps an unknown tool to kind other', () => {

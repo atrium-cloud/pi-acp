@@ -1,20 +1,39 @@
+import { createServer } from 'node:http'
+import type { AddressInfo } from 'node:net'
+
 import { describe, expect, it } from 'vitest'
 
 import {
   boundOutput,
   buildToolName,
+  createTransport,
   mapCallToolResult,
+  McpSetupError,
   normalizeInputSchema,
   sanitizeToolPart,
+  startupFailureLog,
+  startupFailureNotice,
   unwrapJsonStringParams,
 } from '../mcp/extension-entry.js'
 import { MCP_OUTPUT_MAX_BYTES, MCP_OUTPUT_MAX_LINES } from '../mcp/mcpConstants.js'
 
 const TOOL = 'mcp__probe__echo'
+const LOOPBACK = '127.0.0.1'
+const SSE_ENDPOINT_EVENT = 'event: endpoint\ndata: /messages\n\n'
 
 function textOf(result: { content: { type: string }[] }): string {
   const block = result.content.find((entry) => entry.type === 'text')
   return (block as { text?: string } | undefined)?.text ?? ''
+}
+
+/** Every value sent under `name`: `rawHeaders` keeps repeated names apart,
+ * where `headers` would join them into one string. */
+function rawHeaderValues(rawHeaders: string[], name: string): string[] {
+  const values: string[] = []
+  for (let index = 0; index < rawHeaders.length; index += 2) {
+    if (rawHeaders[index]?.toLowerCase() === name.toLowerCase()) values.push(rawHeaders[index + 1] ?? '')
+  }
+  return values
 }
 
 describe('tool naming', () => {
@@ -32,6 +51,57 @@ describe('tool naming', () => {
 
   it('collides when two tool names sanitize alike, which is what the dedup skip catches', () => {
     expect(buildToolName('probe', 'a.b')).toBe(buildToolName('probe', 'a-b'))
+  })
+})
+
+describe('createTransport for an sse server', () => {
+  it('sends each client header exactly once on the stream GET and on the POST', async () => {
+    const requests: { method: string | undefined; rawHeaders: string[] }[] = []
+    const server = createServer((request, response) => {
+      requests.push({ method: request.method, rawHeaders: request.rawHeaders })
+      if (request.method === 'GET') {
+        response.writeHead(200, { 'content-type': 'text/event-stream' })
+        response.write(SSE_ENDPOINT_EVENT)
+        return
+      }
+      response.writeHead(202).end()
+    })
+    await new Promise<void>((resolve) => server.listen(0, LOOPBACK, resolve))
+    const { port } = server.address() as AddressInfo
+    const headers = { Authorization: 'Bearer probe-token', 'X-Probe-Key': 'probe-key' }
+    const { transport } = createTransport({ kind: 'sse', name: 'legacy', url: `http://${LOOPBACK}:${port}/sse`, headers })
+    try {
+      await transport.start()
+      await transport.send({ jsonrpc: '2.0', id: 0, method: 'ping' })
+    } finally {
+      await transport.close()
+      server.closeAllConnections()
+      server.close()
+    }
+
+    expect(requests.map((request) => request.method)).toEqual(['GET', 'POST'])
+    for (const request of requests) {
+      for (const [name, value] of Object.entries(headers)) expect(rawHeaderValues(request.rawHeaders, name)).toEqual([value])
+    }
+  })
+})
+
+describe('startup failure text', () => {
+  const withTail = new McpSetupError(new Error('MCP error -32000: Connection closed'), 'boot failed: missing token\nexiting')
+
+  it('names the server and the error in the notice, without the stderr tail', () => {
+    expect(startupFailureNotice('dead', withTail)).toBe('MCP server dead failed: MCP error -32000: Connection closed')
+    expect(startupFailureNotice('dead', new Error('spawn /nowhere ENOENT'))).toBe('MCP server dead failed: spawn /nowhere ENOENT')
+    expect(startupFailureNotice('dead', 'plain reason')).toBe('MCP server dead failed: plain reason')
+  })
+
+  it('folds a multi-line error message onto one line in the notice', () => {
+    expect(startupFailureNotice('dead', new Error('first line\n  second line\n\n  third line'))).toBe('MCP server dead failed: first line second line third line')
+  })
+
+  it('keeps the stderr tail on the lines after the message in the log', () => {
+    expect(startupFailureLog('dead', withTail)).toBe('server dead failed: MCP error -32000: Connection closed\nboot failed: missing token\nexiting')
+    expect(startupFailureLog('dead', new McpSetupError(new Error('spawn /nowhere ENOENT'), ''))).toBe('server dead failed: spawn /nowhere ENOENT')
   })
 })
 

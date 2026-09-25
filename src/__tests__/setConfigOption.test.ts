@@ -30,6 +30,7 @@ async function connectionFor(spec: FakePiSpec) {
     launch: LAUNCH,
     rpcTimeoutMs: 1_000,
     notifier: stubNotifier,
+    clientSupportsNotices: false,
     mcpExtensionPath: MCP_EXTENSION_PATH,
     createPiClient: fake.createPiClient,
   })

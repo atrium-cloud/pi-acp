@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 
@@ -19,6 +19,7 @@ import {
   SESSION_TITLE_MAX_CHARS,
 } from '../constants.js'
 import { PiAcpServer } from '../server/PiAcpServer.js'
+import { SessionConnection } from '../session/SessionConnection.js'
 import {
   messageMapPathFor,
   readMessageMap,
@@ -375,6 +376,12 @@ describe('session/fork', () => {
   /** A UUIDv7 in canonical form: version 7 and the RFC variant nibbles pinned. */
   const MINTED_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
   const TOOL_CALL = { type: 'toolCall', id: 'call', parentId: null, timestamp: HEADER_TIME, toolName: 'bash' }
+  const SETTLED_TURN = [message('user', 'settled', 1_000), message('assistant', 'answered', 2_000)]
+  const EXTENSION_COMMAND = { name: 'extcmd', description: 'ext', source: 'extension' }
+
+  /** Pi's report of the in-flight prompt, the point at which its user entry lands. */
+  const reportPrompt: NonNullable<FakePiSpec['onPrompt']> = (emit) =>
+    emit({ type: 'message_end', message: { role: 'user', content: 'in flight', timestamp: 3_000 } } as never)
 
   /** The file a spawn opened with `--session`, plus the cwd it ran in. */
   function forkSpawn(fake: ReturnType<typeof makeFakePiClient>, index: number): { cwd: string; path: string } {
@@ -450,14 +457,9 @@ describe('session/fork', () => {
   })
 
   it('forks a live parent from its last settled turn, leaving the in-flight one out', async () => {
-    const { fake, server, client } = makeServer(makeSpec({ sessionIdFromSessionFile: true }))
+    const { fake, server, client } = makeServer(makeSpec({ sessionIdFromSessionFile: true, onPrompt: reportPrompt }))
     await startSession(server, client)
-    writeSession(CWD, SESSION_ID, [
-      message('user', 'settled', 1_000),
-      message('assistant', 'answered', 2_000),
-      message('user', 'in flight', 3_000),
-      TOOL_CALL,
-    ])
+    writeSession(CWD, SESSION_ID, [...SETTLED_TURN, message('user', 'in flight', 3_000), TOOL_CALL])
 
     const turn = server.prompt({
       params: { sessionId: SESSION_ID, prompt: HELLO_PROMPT },
@@ -466,10 +468,118 @@ describe('session/fork', () => {
     await Promise.resolve()
     await server.forkSession({ params: { sessionId: SESSION_ID, cwd: CWD }, client })
 
-    expect(readEntries(forkSpawn(fake, 1).path).slice(1)).toEqual([
-      message('user', 'settled', 1_000),
-      message('assistant', 'answered', 2_000),
-    ])
+    expect(readEntries(forkSpawn(fake, 1).path).slice(1)).toEqual(SETTLED_TURN)
+
+    await expect(server.closeSession({ params: { sessionId: SESSION_ID } })).resolves.toEqual({})
+    await expect(turn).resolves.toEqual({ stopReason: 'cancelled' })
+  })
+
+  // Pi appends the prompt's user entry only once it reports the user message, so
+  // until then the last user entry on disk opens a settled turn.
+  it('keeps every settled entry of a live parent whose running turn Pi has not reported a prompt for', async () => {
+    const { fake, server, client } = makeServer(
+      makeSpec({ sessionIdFromSessionFile: true, onPrompt: (emit) => emit({ type: 'agent_start' } as never) }),
+    )
+    await startSession(server, client)
+    writeSession(CWD, SESSION_ID, SETTLED_TURN)
+
+    const turn = server.prompt({
+      params: { sessionId: SESSION_ID, prompt: HELLO_PROMPT },
+      signal: new AbortController().signal,
+    })
+    await Promise.resolve()
+    await server.forkSession({ params: { sessionId: SESSION_ID, cwd: CWD }, client })
+
+    expect(readEntries(forkSpawn(fake, 1).path).slice(1)).toEqual(SETTLED_TURN)
+
+    await expect(server.closeSession({ params: { sessionId: SESSION_ID } })).resolves.toEqual({})
+    await expect(turn).resolves.toEqual({ stopReason: 'cancelled' })
+  })
+
+  it('reads the turn state before the file, so a prompt Pi reports in between is in the snapshot it cuts', async () => {
+    const { fake, server, client } = makeServer(makeSpec({ sessionIdFromSessionFile: true }))
+    await startSession(server, client)
+    const parentPath = writeSession(CWD, SESSION_ID, SETTLED_TURN)
+
+    const turn = server.prompt({
+      params: { sessionId: SESSION_ID, prompt: HELLO_PROMPT },
+      signal: new AbortController().signal,
+    })
+    const readFlag = Object.getOwnPropertyDescriptor(SessionConnection.prototype, 'hasUnsettledTurnInStore')?.get
+    if (readFlag === undefined) throw new Error('SessionConnection has no hasUnsettledTurnInStore getter')
+    // Pi appends the prompt and then reports it, landing between the fork's two reads.
+    const flag = vi
+      .spyOn(SessionConnection.prototype, 'hasUnsettledTurnInStore', 'get')
+      .mockImplementationOnce(function (this: SessionConnection) {
+        appendFileSync(parentPath, `${JSON.stringify(message('user', 'in flight', 3_000))}\n`)
+        reportPrompt(fake.emit)
+        return readFlag.call(this)
+      })
+    await server.forkSession({ params: { sessionId: SESSION_ID, cwd: CWD }, client })
+    flag.mockRestore()
+
+    expect(readEntries(forkSpawn(fake, 1).path).slice(1)).toEqual(SETTLED_TURN)
+
+    await expect(server.closeSession({ params: { sessionId: SESSION_ID } })).resolves.toEqual({})
+    await expect(turn).resolves.toEqual({ stopReason: 'cancelled' })
+  })
+
+  it('keeps the whole turn of a live parent that settled while its prompt still reads usage', async () => {
+    let statsRequested!: () => void
+    const requested = new Promise<void>((resolve) => {
+      statsRequested = resolve
+    })
+    let releaseStats!: () => void
+    const released = new Promise<void>((resolve) => {
+      releaseStats = resolve
+    })
+    const { fake, server, client } = makeServer(
+      makeSpec({
+        sessionIdFromSessionFile: true,
+        onPrompt: (emit) => {
+          emit({ type: 'agent_start' } as never)
+          reportPrompt(emit)
+          emit({ type: 'message_end', message: { role: 'assistant', stopReason: 'stop' } } as never)
+          emit({ type: 'agent_settled' } as never)
+        },
+        onSessionStats: () => {
+          statsRequested()
+          return released
+        },
+      }),
+    )
+    await startSession(server, client)
+    const whole = [...SETTLED_TURN, message('user', 'in flight', 3_000), message('assistant', 'done', 4_000)]
+    writeSession(CWD, SESSION_ID, whole)
+
+    const turn = server.prompt({
+      params: { sessionId: SESSION_ID, prompt: HELLO_PROMPT },
+      signal: new AbortController().signal,
+    })
+    await requested
+    await server.forkSession({ params: { sessionId: SESSION_ID, cwd: CWD }, client })
+
+    expect(readEntries(forkSpawn(fake, 1).path).slice(1)).toEqual(whole)
+
+    releaseStats()
+    await expect(turn).resolves.toEqual({ stopReason: 'end_turn' })
+  })
+
+  it('keeps every settled entry of a live parent waiting out an extension command that runs no turn', async () => {
+    const { fake, server, client } = makeServer(
+      makeSpec({ sessionIdFromSessionFile: true, commands: [...COMMANDS, EXTENSION_COMMAND] }),
+    )
+    await startSession(server, client)
+    writeSession(CWD, SESSION_ID, SETTLED_TURN)
+
+    const turn = server.prompt({
+      params: { sessionId: SESSION_ID, prompt: [{ type: 'text', text: `/${EXTENSION_COMMAND.name}` }] },
+      signal: new AbortController().signal,
+    })
+    await Promise.resolve()
+    await server.forkSession({ params: { sessionId: SESSION_ID, cwd: CWD }, client })
+
+    expect(readEntries(forkSpawn(fake, 1).path).slice(1)).toEqual(SETTLED_TURN)
 
     await expect(server.closeSession({ params: { sessionId: SESSION_ID } })).resolves.toEqual({})
     await expect(turn).resolves.toEqual({ stopReason: 'cancelled' })
@@ -551,7 +661,7 @@ describe('session/fork', () => {
   })
 
   it('drops breakpoints whose entries a head-only fork of a live parent leaves out', async () => {
-    const { fake, server, client } = makeServer(makeSpec({ sessionIdFromSessionFile: true }))
+    const { fake, server, client } = makeServer(makeSpec({ sessionIdFromSessionFile: true, onPrompt: reportPrompt }))
     await startSession(server, client)
     const parentPath = writeSession(CWD, SESSION_ID, [
       treeMessage('u1', null, 'user', 'settled'),

@@ -26,6 +26,7 @@ import { fileURLToPath } from 'node:url'
 
 import * as acp from '@agentclientprotocol/sdk'
 import type {
+  ClientCapabilities,
   McpServer,
   RequestPermissionRequest,
   RequestPermissionResponse,
@@ -105,6 +106,8 @@ export interface SpawnedAgentOptions {
   readonly paths?: ScratchPaths
   /** Scripted answer for a permission request; absent means fail closed. */
   readonly onPermission?: PermissionAnswer
+  /** What the client advertises on `initialize`; absent means none. */
+  readonly clientCapabilities?: ClientCapabilities
 }
 
 export interface SpawnedAgent {
@@ -301,7 +304,7 @@ export async function createSpawnedAgent(options: SpawnedAgentOptions = {}): Pro
   try {
     await connection.agent.request(acp.methods.agent.initialize, {
       protocolVersion: PROTOCOL_VERSION,
-      clientCapabilities: {},
+      clientCapabilities: options.clientCapabilities ?? {},
     })
   } catch (error) {
     await fixture.stop()

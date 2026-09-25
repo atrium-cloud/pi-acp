@@ -5,8 +5,8 @@ import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { PiRpcClient } from '../pi/PiRpcClient.js'
-import type { PiRpcClientOptions } from '../pi/PiRpcClient.js'
-import { PI_RPC_MODE_ARGS } from '../constants.js'
+import type { PiRpcClientOptions, RpcNotifyRequest } from '../pi/PiRpcClient.js'
+import { extensionNotifyLogLine, PI_RPC_MODE_ARGS } from '../constants.js'
 import { PiClientClosedError, PiExitError, PiProtocolError, PiRpcError, PiRpcTimeoutError, PiSpawnError } from '../pi/errors.js'
 import type { JsonAgentSessionEvent, RpcExtensionUIRequest, RpcExtensionUIResponse } from '../pi/types.js'
 
@@ -32,6 +32,7 @@ interface FixtureClientOptions {
   readonly onEvent?: (event: JsonAgentSessionEvent) => void
   readonly onExit?: (error: Error) => void
   readonly onExtensionUiRequest?: (request: RpcExtensionUIRequest) => Promise<RpcExtensionUIResponse>
+  readonly onNotify?: (request: RpcNotifyRequest) => void
 }
 
 const openClients: PiRpcClient[] = []
@@ -49,6 +50,7 @@ function createClient(overrides: FixtureClientOptions = {}): PiRpcClient {
     ...(overrides.onEvent ? { onEvent: overrides.onEvent } : {}),
     ...(overrides.onExit ? { onExit: overrides.onExit } : {}),
     ...(overrides.onExtensionUiRequest ? { onExtensionUiRequest: overrides.onExtensionUiRequest } : {}),
+    ...(overrides.onNotify ? { onNotify: overrides.onNotify } : {}),
   }
   const client = new PiRpcClient(options)
   openClients.push(client)
@@ -310,6 +312,30 @@ describe('PiRpcClient event and extension frames', () => {
     await client.request({ type: 'set_session_name', name: 'editor-request' })
     const payload: unknown = JSON.parse(sessionName(await answered).slice('ui-response:'.length))
     expect(payload).toEqual({ type: 'extension_ui_response', id: 'ui-editor', value: 'the answer' })
+  })
+
+  it('routes a notify to onNotify instead of logging it', async () => {
+    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const notifies: RpcNotifyRequest[] = []
+    const client = createClient({ onNotify: (request) => notifies.push(request) })
+    await client.start()
+
+    await client.request({ type: 'set_session_name', name: 'notify-request' })
+
+    expect(notifies).toEqual([
+      { type: 'extension_ui_request', id: 'ui-notify', method: 'notify', message: 'heads up', notifyType: 'info' },
+    ])
+    expect(errorLog).not.toHaveBeenCalledWith(extensionNotifyLogLine('heads up'))
+  })
+
+  it('logs a notify to stderr when no onNotify is set', async () => {
+    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const client = createClient()
+    await client.start()
+
+    await client.request({ type: 'set_session_name', name: 'notify-request' })
+
+    expect(errorLog).toHaveBeenCalledWith(extensionNotifyLogLine('heads up'))
   })
 
   it('fails a dialog closed when its handler rejects', async () => {

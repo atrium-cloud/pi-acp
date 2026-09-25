@@ -1,9 +1,10 @@
 /**
  * Live-Pi extension seams: the permission gate's three outcomes, prompt content
- * that is not plain text, the built-in MCP client over stdio, and extension
- * commands.
+ * that is not plain text, the built-in MCP client over stdio and its startup
+ * notice, and extension commands.
  *
- * One adapter boot serves the whole file; every case opens its own session, so
+ * One adapter boot serves every case but the notice one, which needs a client
+ * that advertises notices; every case opens its own session, so
  * the gate's per-session `allow_always` memory (which lives in the extension
  * inside each session's own Pi subprocess) never leaks between cases. Skipped
  * unless RUN_PI_E2E=true (see e2eGate.ts).
@@ -16,7 +17,7 @@ import { fileURLToPath } from 'node:url'
 import { deflateSync } from 'node:zlib'
 
 import * as acp from '@agentclientprotocol/sdk'
-import type { McpServer, PromptResponse, RequestPermissionResponse } from '@agentclientprotocol/sdk'
+import type { ClientCapabilities, McpServer, PromptResponse, RequestPermissionResponse } from '@agentclientprotocol/sdk'
 import { afterAll, afterEach, beforeAll, expect, it } from 'vitest'
 
 import {
@@ -54,6 +55,14 @@ const MCP_MARKER = 'pi-e2e-mcp'
 const MCP_PROMPT = `Use the ${MCP_SHAPE_TOOL} tool with the payload {"a": "${MCP_MARKER}"} and tell me exactly what it returned.`
 const PROBE_SERVER = resolve(dirname(fileURLToPath(import.meta.url)), '../fixtures/mcp-probe-server.mjs')
 const NODE_COMMAND = 'node'
+
+/** A stdio server whose command does not exist, so it fails at startup. Its
+ * name is not part of the command path, so a title naming it names the server. */
+const UNSTARTABLE_MCP_SERVER_NAME = 'pi-e2e-unstartable'
+const MISSING_COMMAND_NAME = 'no-such-mcp-server'
+const NOTICES_CAPABILITIES: ClientCapabilities = { session: { notices: {} } }
+/** The notice follows the command snapshot, a macrotask after `session/new`. */
+const NOTICE_WAIT_MS = 10_000
 
 /** The probe command is installed as a GLOBAL Pi extension, in the host agent
  * dir this tier already authenticates against. Pi's other discovery location,
@@ -102,6 +111,8 @@ describeE2E('pi live extension seams', () => {
   // Nullable so a failed boot leaves the teardown with something to check: the
   // real failure should not be buried under a TypeError from afterAll.
   let agent: SpawnedAgent | null = null
+  /** A case that needs other client capabilities boots its own adapter. */
+  let caseAgent: SpawnedAgent | null = null
 
   beforeAll(async () => {
     agent = await createSpawnedAgent()
@@ -111,8 +122,10 @@ describeE2E('pi live extension seams', () => {
     await agent?.stop()
   }, E2E_SETUP_TIMEOUT_MS)
 
-  afterEach(() => {
+  afterEach(async () => {
     agent?.answerPermissions(null)
+    await caseAgent?.stop()
+    caseAgent = null
   })
 
   /** The booted adapter, or a loud failure naming the boot as the cause. */
@@ -254,6 +267,33 @@ describeE2E('pi live extension seams', () => {
       expect(completed.join('\n')).toContain(MCP_MARKER)
     },
     E2E_TURN_TIMEOUT_MS,
+  )
+
+  it(
+    'opens a session whose MCP stdio server cannot start, and reports the server as a warning notice',
+    async () => {
+      caseAgent = await createSpawnedAgent({ clientCapabilities: NOTICES_CAPABILITIES })
+      const agent = caseAgent
+      const servers: McpServer[] = [
+        { name: UNSTARTABLE_MCP_SERVER_NAME, command: join(agent.workspace, MISSING_COMMAND_NAME), args: [], env: [] },
+      ]
+
+      const created = await agent.agent.request(acp.methods.agent.session.new, {
+        cwd: agent.workspace,
+        mcpServers: servers,
+      })
+
+      const notice = await agent.waitForUpdate(
+        created.sessionId,
+        (update) =>
+          update.sessionUpdate === 'notice' &&
+          update.severity === 'warning' &&
+          update.title.includes(UNSTARTABLE_MCP_SERVER_NAME),
+        NOTICE_WAIT_MS,
+      )
+      expect(notice).toMatchObject({ sessionUpdate: 'notice', severity: 'warning' })
+    },
+    E2E_SETUP_TIMEOUT_MS + NOTICE_WAIT_MS,
   )
 
   // Last in the file: while this case runs, the probe command is advertised to
