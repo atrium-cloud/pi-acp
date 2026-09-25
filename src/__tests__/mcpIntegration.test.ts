@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 
 import { MCP_EXTENSION_SOURCE } from '../mcp/extensionSource.generated.js'
 import { ENV_MCP_SERVERS, MCP_EXTENSION_FILENAME } from '../mcp/mcpConstants.js'
@@ -13,7 +13,10 @@ import { ENV_MCP_SERVERS, MCP_EXTENSION_FILENAME } from '../mcp/mcpConstants.js'
 // self-contained, which is the only shape jiti can load inside Pi.
 
 const PROBE_SERVER = fileURLToPath(new URL('./fixtures/mcp-probe-server.mjs', import.meta.url))
+const START_EVENT = 'session_start'
 const SHUTDOWN_EVENT = 'session_shutdown'
+const SESSION_START = { type: START_EVENT, reason: 'startup' }
+const STARTUP_FAILURE_TAIL = 'probe startup failed: missing token'
 // Present in this process while the servers spawn; must not reach them.
 const CANARY_ENV = 'PI_ACP_TEST_CANARY'
 
@@ -30,8 +33,10 @@ interface LoadedExtension {
   connectServer: (spec: unknown) => Promise<{ client: { getProtocolEra: () => string | undefined; close: () => Promise<void> } }>
 }
 
+type EventHandler = (event?: unknown, context?: unknown) => Promise<void> | void
+
 const tools: RegisteredTool[] = []
-const handlers = new Map<string, () => Promise<void>>()
+const handlers = new Map<string, EventHandler>()
 const stderrLines: string[] = []
 let dir: string
 let loaded: LoadedExtension
@@ -51,7 +56,7 @@ beforeAll(async () => {
     registerTool: (tool: unknown) => {
       tools.push(tool as RegisteredTool)
     },
-    on: (event: string, handler: () => Promise<void>) => {
+    on: (event: string, handler: EventHandler) => {
       handlers.set(event, handler)
     },
   }
@@ -59,6 +64,8 @@ beforeAll(async () => {
   process.env[CANARY_ENV] = 'leaked'
   process.env[ENV_MCP_SERVERS] = JSON.stringify([
     { kind: 'stdio', name: 'probe', command: process.execPath, args: [PROBE_SERVER], env: { PROBE_SECRET: 'probe-only' } },
+    // Listed ahead of `dead`, which fails first: a missing executable fails at spawn.
+    { kind: 'stdio', name: 'crashing', command: process.execPath, args: [PROBE_SERVER], env: { PROBE_STARTUP_FAILURE: STARTUP_FAILURE_TAIL } },
     { kind: 'stdio', name: 'dead', command: join(dir, 'not-an-executable'), args: [], env: {} },
   ])
 
@@ -90,10 +97,45 @@ describe('the generated MCP extension against a real stdio server', () => {
     expect(tools.map((tool) => tool.name).sort()).toEqual(['mcp__probe__boom', 'mcp__probe__echo', 'mcp__probe__env', 'mcp__probe__shape'])
   })
 
-  it('skips the server that cannot start and says so on stderr', () => {
-    expect(stderrLines.join('')).toMatch(/pi-acp mcp: server dead failed:/)
-    expect(tools.some((tool) => tool.name.startsWith('mcp__dead__'))).toBe(false)
+  it('skips the servers that cannot start and logs each to stderr, the stderr tail included', () => {
+    expect(tools.some((tool) => tool.name.startsWith('mcp__crashing__') || tool.name.startsWith('mcp__dead__'))).toBe(false)
+    const stderr = stderrLines.join('')
+    expect(stderr).toMatch(new RegExp(`pi-acp mcp: server crashing failed: [^\\n]+\\n${STARTUP_FAILURE_TAIL}\\n`))
+    expect(stderr).toMatch(/pi-acp mcp: server dead failed: \S/)
   })
+
+  it('reports each server that cannot start with one warning notify on session start, in listed order and without its stderr tail', async () => {
+    const notify = vi.fn()
+    await handlers.get(START_EVENT)?.(SESSION_START, { ui: { notify } })
+    expect(notify.mock.calls).toEqual([
+      [expect.stringMatching(/^MCP server crashing failed: \S/), 'warning'],
+      [expect.stringMatching(/^MCP server dead failed: \S/), 'warning'],
+    ])
+    for (const [message] of notify.mock.calls) {
+      expect(message).not.toContain(STARTUP_FAILURE_TAIL)
+      expect(message).not.toMatch(/\n/)
+    }
+  })
+
+  it('notifies nothing on session start when every server starts', async () => {
+    const healthyHandlers = new Map<string, EventHandler>()
+    process.env[ENV_MCP_SERVERS] = JSON.stringify([{ kind: 'stdio', name: 'probe', command: process.execPath, args: [PROBE_SERVER], env: {} }])
+    await loaded.default({
+      registerTool: () => {},
+      on: (event: string, handler: EventHandler) => {
+        healthyHandlers.set(event, handler)
+      },
+    })
+    try {
+      const notify = vi.fn()
+      const start = healthyHandlers.get(START_EVENT)
+      expect(start).toBeTypeOf('function')
+      await start?.(SESSION_START, { ui: { notify } })
+      expect(notify).not.toHaveBeenCalled()
+    } finally {
+      await healthyHandlers.get(SHUTDOWN_EVENT)?.()
+    }
+  }, 30_000)
 
   it('carries the label, description, and the server schema minus its $schema', () => {
     const echo = toolNamed('mcp__probe__echo')

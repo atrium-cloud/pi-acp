@@ -29,7 +29,11 @@ const TOOL_LABEL_PREFIX = 'MCP: '
 const TOOL_NAME_PART_SEPARATOR = '/'
 const TOOL_NAME_DISALLOWED = /[^A-Za-z0-9_]/g
 const CONTENT_SEPARATOR = '\n'
+const LINE_BREAKS = /\s*\n\s*/g
+const LINE_BREAK_REPLACEMENT = ' '
+const EVENT_SESSION_START = 'session_start'
 const EVENT_SESSION_SHUTDOWN = 'session_shutdown'
+const NOTIFY_TYPE_WARNING = 'warning'
 const STDIO_STDERR_MODE = 'pipe'
 const EMPTY_OBJECT_SCHEMA = { type: 'object', properties: {} }
 const SCHEMA_KEY_SCHEMA = '$schema'
@@ -50,6 +54,11 @@ const TRAILING_REPLACEMENT_CHAR = new RegExp(`${String.fromCharCode(0xff_fd)}$`)
 interface PiExtensionApi {
   registerTool: (tool: unknown) => void
   on: (event: string, handler: (...args: never[]) => unknown) => unknown
+}
+
+/** The slice of the context Pi hands an event handler. */
+interface PiExtensionContext {
+  ui: { notify: (message: string, type?: 'info' | 'warning' | 'error') => void }
 }
 
 /** Pi tool result content: text or image, nothing else. */
@@ -228,6 +237,18 @@ function truncateToBytes(value: string, maxBytes: number): string {
 
 // ── Connecting ────────────────────────────────────────────────────────────────
 
+/** A failed connect or `listTools`. The stdio server's stderr tail stays out of
+ * the message: it is operator diagnostics, not client-facing text. */
+export class McpSetupError extends Error {
+  override readonly name = 'McpSetupError'
+  readonly stderrTail: string
+
+  constructor(cause: unknown, stderrTail: string) {
+    super(errorMessage(cause), { cause })
+    this.stderrTail = stderrTail
+  }
+}
+
 /** Connects one server. The transport is closed here on failure: no client owns
  * it yet, so an aborted connect would otherwise leak a running subprocess. */
 export async function connectServer(spec: McpServerSpec, options?: SetupOptions): Promise<McpConnection> {
@@ -240,7 +261,7 @@ export async function connectServer(spec: McpServerSpec, options?: SetupOptions)
     await client.connect(transport, options ?? setupBudget())
   } catch (error) {
     await closeQuietly(transport)
-    throw withStderrTail(error, stderrTail())
+    throw new McpSetupError(error, stderrTail())
   }
   return { client, stderrTail }
 }
@@ -256,21 +277,14 @@ export async function listAllTools(client: Client, options?: SetupOptions): Prom
   return tools
 }
 
-function createTransport(spec: McpServerSpec): { transport: Transport; stderrTail: () => string } {
+export function createTransport(spec: McpServerSpec): { transport: Transport; stderrTail: () => string } {
   if (spec.kind === 'stdio') return createStdioTransport(spec)
+  // Both transports apply these to every request, the SSE stream GET included.
   const requestInit: RequestInit = { headers: { ...spec.headers } }
   if (spec.kind === 'http') {
     return { transport: new StreamableHTTPClientTransport(new URL(spec.url), { requestInit }), stderrTail: noStderr }
   }
-  // EventSourceInit has no headers field, so the stream request carries them
-  // through a fetch wrapper; the POST leg uses requestInit as usual.
-  const transport = new SSEClientTransport(new URL(spec.url), {
-    requestInit,
-    eventSourceInit: {
-      fetch: (input: string | URL, init?: RequestInit) => fetch(input, { ...init, headers: { ...headersOf(init), ...spec.headers } }),
-    },
-  })
-  return { transport, stderrTail: noStderr }
+  return { transport: new SSEClientTransport(new URL(spec.url), { requestInit }), stderrTail: noStderr }
 }
 
 function createStdioTransport(spec: Extract<McpServerSpec, { kind: 'stdio' }>): { transport: Transport; stderrTail: () => string } {
@@ -295,18 +309,6 @@ function createStdioTransport(spec: Extract<McpServerSpec, { kind: 'stdio' }>): 
   return { transport, stderrTail: () => tail.toString('utf8').trim() }
 }
 
-function headersOf(init: RequestInit | undefined): Record<string, string> {
-  const headers = init?.headers
-  if (headers === undefined) return {}
-  if (headers instanceof Headers) return Object.fromEntries(headers.entries())
-  if (Array.isArray(headers)) return Object.fromEntries(headers)
-  const record: Record<string, string> = {}
-  for (const [key, value] of Object.entries(headers as Record<string, string | undefined>)) {
-    if (value !== undefined) record[key] = value
-  }
-  return record
-}
-
 function noStderr(): string {
   return ''
 }
@@ -323,9 +325,8 @@ function setupBudget(): SetupOptions {
   return { signal: controller.signal, timeout: MCP_CONNECT_TIMEOUT_MS }
 }
 
-function withStderrTail(error: unknown, tail: string): Error {
-  const message = error instanceof Error ? error.message : String(error)
-  return new Error(tail === '' ? message : `${message}${CONTENT_SEPARATOR}${tail}`)
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
 }
 
 async function closeQuietly(closable: { close: () => Promise<void> }): Promise<void> {
@@ -345,7 +346,7 @@ async function startServer(spec: McpServerSpec): Promise<{ connection: McpConnec
     return { connection, tools: await listAllTools(connection.client, options) }
   } catch (error) {
     await closeQuietly(connection.client)
-    throw withStderrTail(error, connection.stderrTail())
+    throw new McpSetupError(error, connection.stderrTail())
   }
 }
 
@@ -374,6 +375,19 @@ function registerServerTools(pi: PiExtensionApi, spec: McpServerSpec, connection
   }
 }
 
+/** The client's notice title, which must stand alone: one line, and never the
+ * stderr tail, which can run to MCP_STDERR_TAIL_BYTES. */
+export function startupFailureNotice(server: string, error: unknown): string {
+  return `MCP server ${server} failed: ${errorMessage(error)}`.replace(LINE_BREAKS, LINE_BREAK_REPLACEMENT)
+}
+
+/** The operator log keeps the stderr tail on the lines after the message. */
+export function startupFailureLog(server: string, error: unknown): string {
+  const message = `server ${server} failed: ${errorMessage(error)}`
+  const tail = error instanceof McpSetupError ? error.stderrTail : ''
+  return tail === '' ? message : `${message}${CONTENT_SEPARATOR}${tail}`
+}
+
 function warn(message: string): void {
   process.stderr.write(`${LOG_PREFIX}${message}${CONTENT_SEPARATOR}`)
 }
@@ -388,25 +402,30 @@ export default async function (pi: PiExtensionApi): Promise<void> {
   const specs = JSON.parse(payload) as McpServerSpec[]
   if (specs.length === 0) return
 
-  const started = await Promise.all(
-    specs.map(async (spec) => {
-      try {
-        return await startServer(spec)
-      } catch (error) {
-        warn(`server ${spec.name} failed: ${error instanceof Error ? error.message : String(error)}`)
-        return null
-      }
-    }),
-  )
+  const started = await Promise.allSettled(specs.map((spec) => startServer(spec)))
 
+  // Walked by index, so failures are reported in the order the servers were
+  // listed rather than the order they failed in.
   const connections: McpConnection[] = []
+  const failures: string[] = []
   const taken = new Set<string>()
   for (const [index, result] of started.entries()) {
     const spec = specs[index]
-    if (result === null || spec === undefined) continue
-    connections.push(result.connection)
-    registerServerTools(pi, spec, result.connection, result.tools, taken)
+    if (spec === undefined) continue
+    if (result.status === 'rejected') {
+      warn(startupFailureLog(spec.name, result.reason))
+      failures.push(startupFailureNotice(spec.name, result.reason))
+      continue
+    }
+    connections.push(result.value.connection)
+    registerServerTools(pi, spec, result.value.connection, result.value.tools, taken)
   }
+
+  // The factory runs before Pi binds its UI context; session_start is the first
+  // point a notify reaches the RPC client.
+  pi.on(EVENT_SESSION_START, (_event: unknown, context: PiExtensionContext) => {
+    for (const failure of failures) context.ui.notify(failure, NOTIFY_TYPE_WARNING)
+  })
 
   pi.on(EVENT_SESSION_SHUTDOWN, async () => {
     await Promise.all(connections.map((connection) => closeQuietly(connection.client)))

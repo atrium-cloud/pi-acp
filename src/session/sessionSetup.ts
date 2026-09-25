@@ -24,6 +24,8 @@ export interface SessionSetupDeps {
   readonly launch: PiLaunch
   readonly rpcTimeoutMs: number
   readonly notifier: AgentContext
+  /** Whether the client advertised `session.notices` on initialize. */
+  readonly clientSupportsNotices: boolean
   /** Absolute path to the materialized permission gate, loaded with `-e`. Absent
    * in tests (the fake client ignores args), so no temp file is written. */
   readonly gateExtensionPath?: string | undefined
@@ -66,7 +68,11 @@ export async function establishSession(
 ): Promise<EstablishedSession> {
   const mcpServers = validateSessionRequest(request)
 
-  const connection = new SessionConnection({ notifier: deps.notifier, cwd: request.cwd })
+  const connection = new SessionConnection({
+    notifier: deps.notifier,
+    cwd: request.cwd,
+    clientSupportsNotices: deps.clientSupportsNotices,
+  })
   const createPiClient = deps.createPiClient ?? defaultCreatePiClient
   // The gate loads alongside the user's own extensions (no --no-extensions).
   const args = deps.gateExtensionPath !== undefined ? ['-e', deps.gateExtensionPath] : []
@@ -87,6 +93,9 @@ export async function establishSession(
       connection.handleExit(error)
     },
     onExtensionUiRequest: (uiRequest) => connection.handleExtensionUiRequest(uiRequest),
+    onNotify: (notifyRequest) => {
+      connection.handleNotify(notifyRequest)
+    },
   })
 
   // start() self-cleans a failure inside itself; a failure in the follow-up

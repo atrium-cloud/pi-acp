@@ -20,8 +20,10 @@ import {
   COMPACT_TIMEOUT_MS,
   CONFIG_ID_MODEL,
   CONFIG_ID_THOUGHT_LEVEL,
+  extensionNotifyLogLine,
   JSONRPC_INVALID_PARAMS,
   JSONRPC_INVALID_REQUEST,
+  NOTICE_SEVERITY_DEFAULT,
   PERMISSION_OPTION_ALLOW_ALWAYS,
   PERMISSION_OPTION_ALLOW_ONCE,
   PERMISSION_REQUEST_TIMEOUT_MS,
@@ -30,7 +32,7 @@ import {
 } from '../constants.js'
 import { buildPermissionOptions, decodeSentinelTitle } from '../permissions/gate.js'
 import { PiRpcError } from '../pi/errors.js'
-import type { PiRpcClient, PiRpcClientOptions } from '../pi/PiRpcClient.js'
+import type { PiRpcClient, PiRpcClientOptions, RpcNotifyRequest } from '../pi/PiRpcClient.js'
 import type { JsonAgentSessionEvent, RpcCommand, RpcExtensionUIRequest, RpcExtensionUIResponse, RpcSessionState } from '../pi/types.js'
 import { asMessage } from '../server/errors.js'
 import { buildConfigOptions, type ModelChoice, resolveModelSelection } from '../turn/configOptions.js'
@@ -88,6 +90,7 @@ export interface SessionConnectionInit {
  * keeps session-level updates that fire between turns from being lost. */
 export class SessionConnection {
   private readonly notifier: AgentContext
+  private readonly clientSupportsNotices: boolean
   readonly cwd: string
   private piClient: PiClientLike | null = null
   private sessionId = ''
@@ -114,10 +117,15 @@ export class SessionConnection {
   /** The breakpoint map, read from the sidecar at most once per connection (a
    * resumed or forked session inherits one) and rewritten whole after that. */
   private messageMap: Readonly<Record<string, string>> | null = null
+  /** False until the first command snapshot goes out; a notice that arrives
+   * before then waits in `pendingNotices`, since the client could not route it. */
+  private announced = false
+  private pendingNotices: SessionUpdate[] = []
 
-  constructor(init: { notifier: AgentContext; cwd: string }) {
+  constructor(init: { notifier: AgentContext; cwd: string; clientSupportsNotices: boolean }) {
     this.notifier = init.notifier
     this.cwd = init.cwd
+    this.clientSupportsNotices = init.clientSupportsNotices
   }
 
   attach(init: SessionConnectionInit): void {
@@ -137,17 +145,18 @@ export class SessionConnection {
     return this.exitError
   }
 
-  /** A fork of this session is taken from the store, so the writer needs to know
-   * whether the tail of the file is a turn still being appended. A built-in never
-   * leaves one: its writes (a name or compaction entry) each land whole. */
-  get hasActiveTurn(): boolean {
-    return this.activeTurn instanceof TurnHandler
+  /** True while the store's tail is a turn Pi is still appending: from its report
+   * of the turn's user message until the turn settles. A built-in never counts,
+   * since its writes each land whole. */
+  get hasUnsettledTurnInStore(): boolean {
+    return this.activeTurn instanceof TurnHandler && this.activeTurn.reportedUserMessage && !this.activeTurn.isSettled
   }
 
   /** Sends the command snapshot after `session/new` has returned. It is deferred
    * a macrotask because the SDK client only attaches its session-update queue
    * inside the `session/new` response callback (acp.js SessionUpdateRouter), so an
-   * update sent before that response lands is dropped for an unknown session. */
+   * update sent before that response lands is dropped for an unknown session.
+   * Notices held back during setup follow it, in arrival order. */
   announceCommands(commands: readonly AvailableCommand[]): void {
     setTimeout(() => {
       if (this.exitError || this.closing) return
@@ -159,6 +168,10 @@ export class SessionConnection {
         .catch((error: unknown) => {
           console.error(`[${AGENT_NAME}] [${this.sessionId}] failed to send available_commands_update: ${asMessage(error)}`)
         })
+      this.announced = true
+      const notices = this.pendingNotices
+      this.pendingNotices = []
+      for (const notice of notices) this.emit(notice)
     }, 0)
   }
 
@@ -490,6 +503,21 @@ export class SessionConnection {
       )
       return undefined
     }
+  }
+
+  /** Logs an extension's `ctx.ui.notify` and forwards it as a `notice` too. The
+   * line stays either way, so a server log keeps it whatever the client shows;
+   * a blank message is never forwarded, since a notice needs a title. */
+  handleNotify(request: RpcNotifyRequest): void {
+    console.error(extensionNotifyLogLine(request.message))
+    if (!this.clientSupportsNotices || request.message.trim() === '') return
+    const notice: SessionUpdate = {
+      sessionUpdate: 'notice',
+      severity: request.notifyType ?? NOTICE_SEVERITY_DEFAULT,
+      title: request.message,
+    }
+    if (this.announced) this.emit(notice)
+    else this.pendingNotices.push(notice)
   }
 
   /** Answers a Pi extension dialog. Only a sentinel `select` from the permission

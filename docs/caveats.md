@@ -1,6 +1,6 @@
 # Caveats
 
-Known gaps that are not on the roadmap, each with the reason it stays open. Verified against Pi 0.87.1 and ACP SDK 1.4.0 on 2026-09-24.
+Known gaps that are not on the roadmap, each with the reason it stays open. Verified against Pi 0.87.1 and ACP SDK 1.5.0 on 2026-09-25.
 
 ## MCP tool list changes
 
@@ -8,15 +8,15 @@ Known gaps that are not on the roadmap, each with the reason it stays open. Veri
 
 ## MCP startup status
 
-A server that fails to connect or to list its tools is skipped with one line on the adapter's stderr, and the session proceeds without its tools. ACP v1 has no MCP status surface, so the client is not told in band; skipping rather than failing `session/new` is deliberate, since a client can send every configured server unconditionally and a dead one should not block the session.
+A server that fails to connect or to list its tools is logged to the adapter's stderr and skipped, and the session proceeds without its tools. The client is told in band only through the experimental `notice` update, which ACP v1 allows only for a client that advertises `session.notices`; any other client is not told. Skipping rather than failing `session/new` is deliberate, since a client can send every configured server unconditionally and a dead one should not block the session.
 
 ## Extension commands wait out a window
 
 A prompt that invokes an advertised extension command which starts no turn resolves `end_turn` only after `EXTENSION_COMMAND_QUIET_MS` (10 s). Pi's `prompt` ack is the same for accepted, queued and handled prompts, there is no second response, and nothing is emitted on the no-turn path, so the adapter has no signal short of waiting for `agent_start`. Polling `get_state.isStreaming` could finish early but races a preflight compaction (no turn active yet, one coming), so it is not used. An upstream ack that distinguishes handled-without-turn would remove the window.
 
-## Extension notifications are not shown
+## Extension notifications need client notice support
 
-`ctx.ui.notify` from an extension arrives as an `extension_ui_request` and is logged to stderr, not forwarded as `agent_message_chunk`. An informational extension command therefore ends as an empty `end_turn`. Forwarding it would change every session's output, not only command prompts, so it stays off.
+`ctx.ui.notify` from an extension arrives as an `extension_ui_request`, is logged to stderr, and reaches the client only as a `notice`, which ACP v1 allows only for a client that advertises `session.notices`. It is not forwarded as `agent_message_chunk`, so for any other client an informational extension command ends as an empty `end_turn`. Forwarding it as agent text would change every session's output, not only command prompts, so it stays off.
 
 ## Project-local Pi resources need a prior trust decision
 

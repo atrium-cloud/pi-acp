@@ -49,6 +49,7 @@ export function toolCallStarted(start: ToolStart, cwd: string): SessionUpdate {
     sessionUpdate: 'tool_call',
     toolCallId: start.toolCallId,
     title: toolTitle(start.toolName, start.args),
+    name: start.toolName,
     kind: toolKind(start.toolName),
     status: 'in_progress',
     rawInput: start.args,

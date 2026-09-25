@@ -107,6 +107,25 @@ describe('TurnHandler', () => {
     await expect(turn.settled).resolves.toBe('max_tokens')
   })
 
+  it('reports the user message on its message_end, not its message_start', () => {
+    const { turn } = makeTurn()
+    turn.handleEvent(evt({ type: 'agent_start' }))
+    turn.handleEvent(evt({ type: 'message_start', message: { role: 'user', content: 'hi', timestamp: 1 } }))
+    expect(turn.reportedUserMessage).toBe(false)
+    turn.handleEvent(evt({ type: 'message_end', message: { role: 'user', content: 'hi', timestamp: 1 } }))
+    expect(turn.reportedUserMessage).toBe(true)
+  })
+
+  it('counts as settled from agent_settled on, not from the last assistant message_end', async () => {
+    const { turn } = makeTurn()
+    turn.handleEvent(evt({ type: 'agent_start' }))
+    turn.handleEvent(evt({ type: 'message_end', message: { role: 'assistant', stopReason: 'stop' } }))
+    expect(turn.isSettled).toBe(false)
+    turn.handleEvent(evt({ type: 'agent_settled' }))
+    expect(turn.isSettled).toBe(true)
+    await expect(turn.settled).resolves.toBe('end_turn')
+  })
+
   it('fails the turn with the subprocess exit cause', async () => {
     const { turn } = makeTurn()
     turn.handleEvent(evt({ type: 'agent_start' }))
@@ -150,6 +169,7 @@ describe('TurnHandler', () => {
         sessionUpdate: 'tool_call',
         toolCallId: 'b',
         title: 'make',
+        name: 'bash',
         kind: 'execute',
         status: 'in_progress',
         rawInput: { command: 'make' },

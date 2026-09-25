@@ -38,6 +38,7 @@ const ALLOW_ONCE: PermissionAnswer = () => ({ outcome: { outcome: 'selected', op
 /** Drives the gate: `bash` is one of the mutating built-ins it intercepts. */
 const TOOL_MARKER = 'pi-e2e-tool'
 const TOOL_PROMPT = `Use your bash tool to run \`echo ${TOOL_MARKER}\` and tell me the output.`
+const BASH_TOOL_NAME = 'bash'
 
 /** `usage_update` is emitted, not awaited, at the end of a turn, so it can land
  * just after the prompt response. */
@@ -140,6 +141,13 @@ describeE2E('pi live turns', () => {
         PERMISSION_OPTION_ALLOW_ALWAYS,
         PERMISSION_OPTION_REJECT_ONCE,
       ])
+
+      // The gate asks by tool call id, which picks out the shell command's row.
+      const gatedCallId = requests[0]?.toolCall.toolCallId
+      const toolCall = agent
+        .sessionUpdates(sessionId)
+        .find((update) => update.sessionUpdate === 'tool_call' && update.toolCallId === gatedCallId)
+      expect(toolCall).toMatchObject({ name: BASH_TOOL_NAME })
     },
     E2E_BOOT_AND_TURN_TIMEOUT_MS,
   )

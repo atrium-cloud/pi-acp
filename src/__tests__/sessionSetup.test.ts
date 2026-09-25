@@ -8,6 +8,7 @@ import {
   CONFIG_ID_MODEL,
   CONFIG_ID_THOUGHT_LEVEL,
   ENV_MCP_SERVERS,
+  extensionNotifyLogLine,
   JSONRPC_INVALID_PARAMS,
   PI_SESSION_ARG,
 } from '../constants.js'
@@ -87,6 +88,7 @@ function makeDeps(fake: ReturnType<typeof makeFakePiClient>) {
     launch: LAUNCH,
     rpcTimeoutMs: 1_000,
     notifier: stubNotifier,
+    clientSupportsNotices: false,
     mcpExtensionPath: MCP_EXTENSION_PATH,
     createPiClient: fake.createPiClient,
   }
@@ -262,6 +264,18 @@ describe('establishSession', () => {
     established.connection.routeEvent({ type: 'entry_appended' } as never)
     established.connection.routeEvent({ type: 'agent_start' } as never)
     expect(notify).not.toHaveBeenCalled()
+  })
+
+  it('logs a notify rather than sending a notice when the client did not advertise notices', async () => {
+    const fake = makeFakePiClient(makeSpec())
+    await establishSession({ cwd: ABS_CWD, mcpServers: [] }, makeDeps(fake))
+    const notify = vi.mocked(stubNotifier.notify)
+    notify.mockClear()
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    fake.notify({ type: 'extension_ui_request', id: 'ui-notify', method: 'notify', message: 'heads up', notifyType: 'warning' })
+    expect(notify).not.toHaveBeenCalled()
+    expect(errorSpy).toHaveBeenCalledWith(extensionNotifyLogLine('heads up'))
+    errorSpy.mockRestore()
   })
 
   it('logs and drops an unrecognized event rather than throwing (it runs in the stdout handler)', async () => {

@@ -1,5 +1,5 @@
 import { PROTOCOL_VERSION as ACP_PROTOCOL_VERSION } from '@agentclientprotocol/sdk'
-import type { AvailableCommand, ToolKind } from '@agentclientprotocol/sdk'
+import type { AvailableCommand, NoticeSeverity, ToolKind } from '@agentclientprotocol/sdk'
 
 // Static JSON import (not createRequire): the release artifact is the bundle
 // alone, with no package.json beside it, so a runtime `require('../package.json')`
@@ -217,6 +217,15 @@ export const GATE_FILENAME = 'permission-gate.ts'
 // be bundled too), so the MCP constants live in a leaf, re-exported here.
 
 export * from './mcp/mcpConstants.js'
+
+// ── Extension notify ──────────────────────────────────────────────────────────
+//
+// A Pi extension's `ctx.ui.notify` becomes an ACP `notice` for a client that
+// advertised `session.notices`, and a stderr line for any other.
+
+/** Pi's own severity for a notify that names no type. */
+export const NOTICE_SEVERITY_DEFAULT: NoticeSeverity = 'info'
+export const extensionNotifyLogLine = (message: string): string => `[${AGENT_NAME}] Pi extension notify: ${message}`
 
 // ── Session title ──────────────────────────────────────────────────────────────
 //

@@ -440,6 +440,7 @@ describe('a running built-in', () => {
       launch: LAUNCH,
       rpcTimeoutMs: 1_000,
       notifier,
+      clientSupportsNotices: false,
       mcpExtensionPath: MCP_EXTENSION_PATH,
       createPiClient: fake.createPiClient,
     })
@@ -454,7 +455,7 @@ describe('a running built-in', () => {
 
     const pending = connection.runPrompt(COMPACT, new AbortController().signal)
     await waitFor(() => fake.calls.some((call) => call['type'] === 'compact'), 'the compact to reach Pi')
-    expect(connection.hasActiveTurn).toBe(false)
+    expect(connection.hasUnsettledTurnInStore).toBe(false)
     await expect(connection.runPrompt(COMPACT, new AbortController().signal)).rejects.toMatchObject({ code: -32600 })
 
     compaction.finish(DEFAULT_COMPACTION)

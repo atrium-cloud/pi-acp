@@ -23,11 +23,11 @@ function makeServer(): PiAcpServer {
 
 const INIT_REQUEST = { protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} }
 
-function callInitialize(server: PiAcpServer): Promise<acp.InitializeResponse> {
+function callInitialize(server: PiAcpServer, request: acp.InitializeRequest = INIT_REQUEST): Promise<acp.InitializeResponse> {
   const app = server.register(acp.agent({ name: AGENT_NAME }))
   return acp
     .client({ name: 'test-client' })
-    .connectWith(app, (context) => context.request(acp.methods.agent.initialize, INIT_REQUEST))
+    .connectWith(app, (context) => context.request(acp.methods.agent.initialize, request))
 }
 
 describe('initialize (over an ACP connection)', () => {
@@ -49,6 +49,15 @@ describe('initialize (over an ACP connection)', () => {
         },
       },
     })
+  })
+
+  it('answers a client that advertises session.notices with the same capabilities', async () => {
+    const plain = await callInitialize(makeServer())
+    const withNotices = await callInitialize(makeServer(), {
+      ...INIT_REQUEST,
+      clientCapabilities: { session: { notices: {} } },
+    })
+    expect(withNotices).toEqual(plain)
   })
 
   it('advertises the breakpoint fork marker as a JSON object', async () => {

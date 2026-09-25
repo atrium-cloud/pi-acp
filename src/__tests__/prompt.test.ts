@@ -51,6 +51,7 @@ async function connect(spec: FakePiSpec): Promise<{
     launch: LAUNCH,
     rpcTimeoutMs: 1_000,
     notifier,
+    clientSupportsNotices: false,
     mcpExtensionPath: MCP_EXTENSION_PATH,
     createPiClient: fake.createPiClient,
   })
