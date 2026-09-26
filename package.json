@@ -1,6 +1,6 @@
 {
   "name": "pi-acp",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "private": true,
   "description": "ACP v1 adapter for Pi Agent, built on Pi's RPC mode",
   "license": "Apache-2.0",
