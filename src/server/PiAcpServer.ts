@@ -312,12 +312,12 @@ export class PiAcpServer {
     if (session === undefined) throw invalidParams(`unknown session "${context.params.sessionId}"`)
     const prompt = flattenPromptContent(context.params.prompt)
     const messageId = readMessageIdMeta(context.params._meta)
-    const outcome = await session.connection.runPrompt(prompt, context.signal, messageId)
-    const acknowledged = outcome.acknowledgedMessageId
-    if (acknowledged === undefined) return { stopReason: outcome.stopReason }
+    const { stopReason, usage, acknowledgedMessageId } = await session.connection.runPrompt(prompt, context.signal, messageId)
+    const response: PromptResponse = { stopReason, ...(usage === undefined ? {} : { usage }) }
+    if (acknowledgedMessageId === undefined) return response
     return {
-      stopReason: outcome.stopReason,
-      _meta: { [META_KEY_BREAKPOINT_NAMESPACE]: { [META_KEY_MESSAGE_ID]: acknowledged } },
+      ...response,
+      _meta: { [META_KEY_BREAKPOINT_NAMESPACE]: { [META_KEY_MESSAGE_ID]: acknowledgedMessageId } },
     }
   }
 

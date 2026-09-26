@@ -1,4 +1,4 @@
-import type { SessionConfigOption, SessionUpdate, ToolCallContent, ToolCallLocation, ToolKind } from '@agentclientprotocol/sdk'
+import type { SessionConfigOption, SessionUpdate, ToolCallContent, ToolCallLocation, ToolKind, Usage } from '@agentclientprotocol/sdk'
 
 import {
   SHELL_EMPTY_OUTPUT_PLACEHOLDER,
@@ -11,6 +11,7 @@ import {
   TOOL_NAME_EDIT,
   USAGE_COST_CURRENCY,
 } from '../constants.js'
+import type { SessionStats } from '../pi/types.js'
 
 // Pi tool events carry `args`/`result`/`partialResult` as `any` (emitted before
 // schema validation), so every field is read defensively.
@@ -105,6 +106,19 @@ export function toolCallEnded(end: ToolEnd): SessionUpdate {
 
 export function usageUpdate(used: number, size: number, cost: number): SessionUpdate {
   return { sessionUpdate: 'usage_update', used, size, cost: { amount: cost, currency: USAGE_COST_CURRENCY } }
+}
+
+/** The turn's share of Pi's running session totals, from reads taken just before
+ * and just after it. The stats carry no reasoning count, so `thoughtTokens`
+ * stays unset. */
+export function turnUsage(before: SessionStats['tokens'], after: SessionStats['tokens']): Usage {
+  return {
+    inputTokens: after.input - before.input,
+    outputTokens: after.output - before.output,
+    cachedReadTokens: after.cacheRead - before.cacheRead,
+    cachedWriteTokens: after.cacheWrite - before.cacheWrite,
+    totalTokens: after.total - before.total,
+  }
 }
 
 export function sessionInfoUpdate(title: string): SessionUpdate {

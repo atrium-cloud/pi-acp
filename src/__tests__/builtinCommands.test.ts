@@ -32,6 +32,7 @@ import {
 import {
   DEFAULT_COMPACTION,
   DEFAULT_STATS,
+  DEFAULT_TURN_USAGE,
   type FakeCompaction,
   type FakePiSpec,
   makeFakePiClient,
@@ -186,6 +187,10 @@ function sentTypes(scenario: AcpTestFixture): unknown[] {
   return scenario.fake.calls.map((call) => call['type'])
 }
 
+function statsReads(scenario: AcpTestFixture): unknown[] {
+  return sentTypes(scenario).filter((type) => type === 'get_session_stats')
+}
+
 async function waitFor(predicate: () => boolean, description: string): Promise<void> {
   for (let attempt = 0; attempt < MAX_WAIT_TICKS; attempt++) {
     if (predicate()) return
@@ -228,7 +233,7 @@ describe('built-in commands over the wire', () => {
     ])
 
     // The built-in shadows the extension on submit too: nothing reaches Pi as a prompt.
-    await expect(prompt(scenario, '/compact')).resolves.toEqual({ stopReason: 'end_turn' })
+    await expect(prompt(scenario, '/compact')).resolves.toEqual({ stopReason: 'end_turn', usage: DEFAULT_TURN_USAGE })
     expect(sentTypes(scenario)).not.toContain('prompt')
   })
 
@@ -246,6 +251,7 @@ describe('built-in commands over the wire', () => {
     expect(sentTypes(scenario)).not.toContain('prompt')
     expect(sentTypes(scenario)).not.toContain('set_session_name')
     expect(sentTypes(scenario)).not.toContain('get_entries')
+    expect(statsReads(scenario)).toHaveLength(1)
   })
 
   it('answers a bare /name with the usage line on a nameless session', async () => {
@@ -255,6 +261,7 @@ describe('built-in commands over the wire', () => {
     await scenario.flushAnnouncements()
 
     expect(scenario.transcript()).toEqual([agentText(BUILTIN_TEXT_NAME_USAGE)])
+    expect(statsReads(scenario)).toEqual([])
   })
 
   it('answers a bare /name with the current name', async () => {
@@ -270,10 +277,11 @@ describe('built-in commands over the wire', () => {
   it('sets a name Pi keeps as typed without a normalization note', async () => {
     const scenario = await startSession()
 
-    await prompt(scenario, `/name ${SESSION_NAME}`)
+    await expect(prompt(scenario, `/name ${SESSION_NAME}`)).resolves.toEqual({ stopReason: 'end_turn' })
     await scenario.flushAnnouncements()
 
     expect(scenario.transcript()).toEqual([agentText(builtinTextNameSet(SESSION_NAME))])
+    expect(statsReads(scenario)).toEqual([])
   })
 
   it('sets the name, notes how Pi normalized it, and stops the first prompt from retitling', async () => {
@@ -302,11 +310,14 @@ describe('built-in commands over the wire', () => {
     expect(scenario.fake.calls.filter((call) => call['type'] === 'set_session_name')).toHaveLength(1)
   })
 
-  it('compacts with the custom instructions and reports the tokens it compacted from', async () => {
+  it("compacts with the custom instructions and reports the tokens it compacted from and the compaction's usage", async () => {
     const onCompact = vi.fn(async (_customInstructions: string | undefined) => DEFAULT_COMPACTION)
     const scenario = await startSession({ onCompact })
 
-    await expect(prompt(scenario, '/compact keep the API notes')).resolves.toEqual({ stopReason: 'end_turn' })
+    await expect(prompt(scenario, '/compact keep the API notes')).resolves.toEqual({
+      stopReason: 'end_turn',
+      usage: DEFAULT_TURN_USAGE,
+    })
     await scenario.flushAnnouncements()
 
     expect(onCompact).toHaveBeenCalledWith('keep the API notes')
@@ -315,6 +326,11 @@ describe('built-in commands over the wire', () => {
       notification(EXPECTED_USAGE),
     ])
     expect(sentTypes(scenario)).not.toContain('set_session_name')
+    expect(sentTypes(scenario).filter((type) => type === 'get_session_stats' || type === 'compact')).toEqual([
+      'get_session_stats',
+      'compact',
+      'get_session_stats',
+    ])
   })
 
   it('sends no custom instructions for a bare /compact', async () => {
@@ -384,7 +400,7 @@ describe('built-in commands over the wire', () => {
 
     // A Pi whose abort cannot stop a manual compaction finishes it anyway.
     compaction.finish(DEFAULT_COMPACTION)
-    await expect(pending).resolves.toEqual({ stopReason: 'cancelled' })
+    await expect(pending).resolves.toEqual({ stopReason: 'cancelled', usage: DEFAULT_TURN_USAGE })
     await scenario.flushAnnouncements()
     expect(scenario.transcript()).toContainEqual(
       agentText(builtinTextCompacted(DEFAULT_COMPACTION.tokensBefore.toLocaleString())),
@@ -459,7 +475,7 @@ describe('a running built-in', () => {
     await expect(connection.runPrompt(COMPACT, new AbortController().signal)).rejects.toMatchObject({ code: -32600 })
 
     compaction.finish(DEFAULT_COMPACTION)
-    await expect(pending).resolves.toEqual({ stopReason: 'end_turn', acknowledgedMessageId: undefined })
+    await expect(pending).resolves.toEqual({ stopReason: 'end_turn', usage: DEFAULT_TURN_USAGE, acknowledgedMessageId: undefined })
   })
 
   it('cancels through the prompt signal', async () => {
@@ -472,7 +488,7 @@ describe('a running built-in', () => {
     controller.abort()
     compaction.finish(DEFAULT_COMPACTION)
 
-    await expect(pending).resolves.toEqual({ stopReason: 'cancelled', acknowledgedMessageId: undefined })
+    await expect(pending).resolves.toEqual({ stopReason: 'cancelled', usage: DEFAULT_TURN_USAGE, acknowledgedMessageId: undefined })
     expect(fake.calls.map((call) => call['type'])).toContain('abort')
   })
 

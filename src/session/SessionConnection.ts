@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs'
 
 import * as acp from '@agentclientprotocol/sdk'
-import type { AgentContext, AvailableCommand, SessionConfigOption, SessionUpdate, StopReason } from '@agentclientprotocol/sdk'
+import type { AgentContext, AvailableCommand, SessionConfigOption, SessionUpdate, StopReason, Usage } from '@agentclientprotocol/sdk'
 
 import {
   AGENT_NAME,
@@ -33,10 +33,17 @@ import {
 import { buildPermissionOptions, decodeSentinelTitle } from '../permissions/gate.js'
 import { PiRpcError } from '../pi/errors.js'
 import type { PiRpcClient, PiRpcClientOptions, RpcNotifyRequest } from '../pi/PiRpcClient.js'
-import type { JsonAgentSessionEvent, RpcCommand, RpcExtensionUIRequest, RpcExtensionUIResponse, RpcSessionState } from '../pi/types.js'
+import type {
+  JsonAgentSessionEvent,
+  RpcCommand,
+  RpcExtensionUIRequest,
+  RpcExtensionUIResponse,
+  RpcSessionState,
+  SessionStats,
+} from '../pi/types.js'
 import { asMessage } from '../server/errors.js'
 import { buildConfigOptions, type ModelChoice, resolveModelSelection } from '../turn/configOptions.js'
-import { configOptionUpdate, sessionInfoUpdate, toolKind, toolTitle, usageUpdate } from '../turn/mappers.js'
+import { configOptionUpdate, sessionInfoUpdate, toolKind, toolTitle, turnUsage, usageUpdate } from '../turn/mappers.js'
 import type { FlattenedPrompt } from '../turn/promptContent.js'
 import { type AnnouncedToolCall, type TurnEventSink, TurnHandler } from '../turn/TurnHandler.js'
 import { type BuiltinCommand, BuiltinCommandRun, formatSessionInfo, parseBuiltinCommand } from './builtinCommands.js'
@@ -68,9 +75,11 @@ interface ConfigState {
 
 /** The result of one `session/prompt`. `acknowledgedMessageId` is the client's own
  * breakpoint message id, echoed back only once it is recorded against a Pi entry
- * id, so a client that sees no echo knows the prompt cannot be forked from. */
+ * id, so a client that sees no echo knows the prompt cannot be forked from.
+ * `usage` is set only when a turn or compaction ran and both stats reads held. */
 export interface PromptOutcome {
   readonly stopReason: StopReason
+  readonly usage: Usage | undefined
   readonly acknowledgedMessageId: string | undefined
 }
 
@@ -332,7 +341,7 @@ export class SessionConnection {
       throw new acp.RequestError(JSONRPC_INVALID_REQUEST, 'a turn is already in progress for this session')
     }
     // Already cancelled before anything was sent: no turn runs, nothing to abort.
-    if (signal.aborted) return { stopReason: 'cancelled', acknowledgedMessageId: undefined }
+    if (signal.aborted) return { stopReason: 'cancelled', usage: undefined, acknowledgedMessageId: undefined }
     // Checked before anything reaches Pi, so a built-in shadows a same-named
     // extension command the way it does in Pi's own TUI.
     const builtin = parseBuiltinCommand(prompt.message)
@@ -349,6 +358,7 @@ export class SessionConnection {
     signal.addEventListener('abort', onAbort, { once: true })
 
     try {
+      const before = this.readSessionTokens(client)
       try {
         // The ack returns only after preflight (which can run a compaction), so it
         // gets a far more generous bound than a metadata round-trip.
@@ -365,12 +375,12 @@ export class SessionConnection {
       // Nothing left to name or meter on a session whose subprocess is stopping,
       // nor on a prompt an extension command handled without running a turn:
       // its text is the command line, not a title, and no tokens were spent.
-      if (this.closing || !turn.startedTurn) return { stopReason: reason, acknowledgedMessageId: undefined }
+      if (this.closing || !turn.startedTurn) return { stopReason: reason, usage: undefined, acknowledgedMessageId: undefined }
       await this.maybeSetTitle(client, prompt.firstText)
-      await this.emitEndOfTurnUsage(client)
+      const usage = await this.reportEndOfTurnUsage(client, await before)
       const acknowledgedMessageId =
         messageId === undefined ? undefined : await this.recordMessageId(client, messageId)
-      return { stopReason: reason, acknowledgedMessageId }
+      return { stopReason: reason, usage, acknowledgedMessageId }
     } finally {
       signal.removeEventListener('abort', onAbort)
       this.activeTurn = null
@@ -387,17 +397,23 @@ export class SessionConnection {
     signal.addEventListener('abort', onAbort, { once: true })
     try {
       run.track(this.executeBuiltinCommand(client, command, run))
-      return { stopReason: await run.settled, acknowledgedMessageId: undefined }
+      const stopReason = await run.settled
+      return { stopReason, usage: run.usage, acknowledgedMessageId: undefined }
     } finally {
       signal.removeEventListener('abort', onAbort)
       this.activeTurn = null
     }
   }
 
-  private async executeBuiltinCommand(client: PiClientLike, command: BuiltinCommand, run: BuiltinCommandRun): Promise<void> {
+  private async executeBuiltinCommand(
+    client: PiClientLike,
+    command: BuiltinCommand,
+    run: BuiltinCommandRun,
+  ): Promise<Usage | undefined> {
     switch (command.kind) {
       case BUILTIN_COMMAND_COMPACT: {
         const { customInstructions } = command
+        const before = this.readSessionTokens(client)
         let compaction
         try {
           compaction = await client.request(
@@ -409,18 +425,17 @@ export class SessionConnection {
           if (!(error instanceof PiRpcError) || run.isCancelled) throw error
           const reason = error.piMessage
           this.emitAgentText(reason === PI_COMPACTION_CANCELLED ? reason : builtinTextCompactionFailed(reason))
-          return
+          return undefined
         }
         this.emitAgentText(builtinTextCompacted(compaction.data.tokensBefore.toLocaleString()))
-        await this.emitEndOfTurnUsage(client)
-        return
+        return await this.reportEndOfTurnUsage(client, await before)
       }
       case BUILTIN_COMMAND_NAME: {
         if (command.name === '') {
           const state = await client.request({ type: 'get_state' })
           const current = state.data.sessionName
           this.emitAgentText(current ? builtinTextName(current) : BUILTIN_TEXT_NAME_USAGE)
-          return
+          return undefined
         }
         await client.request({ type: 'set_session_name', name: command.name })
         this.needsTitle = false
@@ -431,7 +446,7 @@ export class SessionConnection {
         this.emitAgentText(
           stored === command.name ? set : `${builtinTextNameNormalized(command.name, stored)}${BUILTIN_TEXT_PARAGRAPH_BREAK}${set}`,
         )
-        return
+        return undefined
       }
       case BUILTIN_COMMAND_SESSION: {
         const [stats, state] = await Promise.all([
@@ -439,7 +454,7 @@ export class SessionConnection {
           client.request({ type: 'get_state' }),
         ])
         this.emitAgentText(formatSessionInfo(stats.data, state.data.sessionName))
-        return
+        return undefined
       }
     }
   }
@@ -459,17 +474,34 @@ export class SessionConnection {
     return this.extensionCommandNames.has(name)
   }
 
-  /** Synthesizes `usage_update` from the authoritative post-turn context stats.
-   * Best-effort: usage never fails a turn, and `null` tokens (right after a
-   * compaction, before the next response) are skipped and self-heal next turn. */
-  private async emitEndOfTurnUsage(client: PiClientLike): Promise<void> {
+  /** Pi's session token totals, read just before the command that runs a turn,
+   * with no await in between: Pi answers in arrival order, so the read predates
+   * the turn, and a cancel cannot slip in before that command is sent. */
+  private readSessionTokens(client: PiClientLike): Promise<SessionStats['tokens'] | undefined> {
+    return client.request({ type: 'get_session_stats' }).then(
+      (stats) => stats.data.tokens,
+      (error: unknown) => {
+        console.error(`[${AGENT_NAME}] [${this.sessionId}] failed to read session tokens before the turn: ${asMessage(error)}`)
+        return undefined
+      },
+    )
+  }
+
+  /** Synthesizes `usage_update` from the authoritative post-turn context stats and
+   * returns the turn's token usage. Best-effort: usage never fails a turn, and
+   * `null` context tokens (right after a compaction, before the next response)
+   * skip the update and self-heal next turn. */
+  private async reportEndOfTurnUsage(client: PiClientLike, before: SessionStats['tokens'] | undefined): Promise<Usage | undefined> {
     try {
       const stats = await client.request({ type: 'get_session_stats' })
-      const usage = stats.data.contextUsage
-      if (usage === undefined || usage.tokens === null) return
-      this.emit(usageUpdate(usage.tokens, usage.contextWindow, stats.data.cost))
+      const context = stats.data.contextUsage
+      if (context !== undefined && context.tokens !== null) {
+        this.emit(usageUpdate(context.tokens, context.contextWindow, stats.data.cost))
+      }
+      return before === undefined ? undefined : turnUsage(before, stats.data.tokens)
     } catch (error) {
       console.error(`[${AGENT_NAME}] [${this.sessionId}] failed to report end-of-turn usage: ${asMessage(error)}`)
+      return undefined
     }
   }
 

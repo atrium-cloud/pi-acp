@@ -13,7 +13,7 @@ import {
 import { encodeSentinelTitle } from '../permissions/gate.js'
 import type { RpcExtensionUIRequest } from '../pi/types.js'
 import { type AcpTestFixture, createAcpTestFixture, TEST_SESSION_ID } from './acpTestFixture.js'
-import type { FakePiSpec } from './fixtures/fakePiClient.js'
+import { DEFAULT_TURN_USAGE, type FakePiSpec } from './fixtures/fakePiClient.js'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -147,7 +147,7 @@ describe('a streamed turn', () => {
     const response = await prompt(scenario)
     await scenario.flushAnnouncements()
 
-    expect(response).toEqual({ stopReason: 'end_turn' })
+    expect(response).toEqual({ stopReason: 'end_turn', usage: DEFAULT_TURN_USAGE })
     expect(scenario.transcript()).toEqual([
       COMMANDS_ANNOUNCEMENT,
       notification({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: MESSAGE_TEXT } }),
@@ -246,7 +246,7 @@ describe('a gated mutating turn', () => {
     expect(uiResponse).toEqual({ type: 'extension_ui_response', id: UI_REQUEST_ID, cancelled: true })
 
     finishTurn(scenario, DENIED_RESULT, true)
-    await expect(turn).resolves.toEqual({ stopReason: 'end_turn' })
+    await expect(turn).resolves.toEqual({ stopReason: 'end_turn', usage: DEFAULT_TURN_USAGE })
     await scenario.flushAnnouncements()
 
     expect(scenario.transcript()).toEqual([
@@ -277,7 +277,7 @@ describe('a gated mutating turn', () => {
     })
 
     finishTurn(scenario, EDIT_RESULT, false)
-    await expect(turn).resolves.toEqual({ stopReason: 'end_turn' })
+    await expect(turn).resolves.toEqual({ stopReason: 'end_turn', usage: DEFAULT_TURN_USAGE })
     await scenario.flushAnnouncements()
 
     expect(scenario.transcript()).toEqual([
@@ -308,7 +308,7 @@ describe('session/cancel mid-turn', () => {
     await waitFor(() => sentAnyOf(scenario, 'abort'), 'the abort to reach Pi')
     scenario.fake.emit({ type: 'agent_settled' } as never)
 
-    await expect(turn).resolves.toEqual({ stopReason: 'cancelled' })
+    await expect(turn).resolves.toEqual({ stopReason: 'cancelled', usage: DEFAULT_TURN_USAGE })
     await scenario.flushAnnouncements()
 
     // The turn ran, so it is still titled and metered; nothing streamed.

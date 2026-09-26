@@ -63,7 +63,7 @@ describeE2E('pi live turns', () => {
   })
 
   it(
-    'streams a turn from the pinned model, ends it with end_turn, and reports usage',
+    'streams a turn from the pinned model, ends it with end_turn, and reports its token usage and the context gauge',
     async () => {
       fixture = await createSpawnedAgent()
       const agent = fixture
@@ -77,8 +77,13 @@ describeE2E('pi live turns', () => {
       expect(response.stopReason).toBe('end_turn')
       expect(agent.agentText(sessionId)).toContain(ECHO_MARKER)
 
-      // Synthesized from Pi's post-turn context stats; Pi has no usage event of
-      // its own, so this is the whole of the ACP usage surface.
+      // The response carries the turn's growth in Pi's session token totals; a
+      // provider may bill the prompt as cache reads rather than fresh input.
+      const usage = response.usage
+      if (usage === undefined || usage === null) throw new Error('the prompt response carries no usage')
+      expect(usage.inputTokens + (usage.cachedReadTokens ?? 0)).toBeGreaterThan(0)
+
+      // The context gauge, synthesized from Pi's post-turn context stats.
       await vi.waitFor(
         () => {
           const usage = agent.updates.filter(

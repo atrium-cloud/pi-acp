@@ -8,6 +8,7 @@ import {
   toolCallProgress,
   toolCallStarted,
   toolTitle,
+  turnUsage,
   usageUpdate,
 } from '../turn/mappers.js'
 
@@ -253,6 +254,26 @@ describe('usage and session mappers', () => {
       size: 200_000,
       cost: { amount: 0.42, currency: 'USD' },
     })
+  })
+
+  it("reports the turn's share of Pi's session totals, field by field", () => {
+    const before = { input: 300, output: 40, cacheRead: 5_000, cacheWrite: 700, total: 6_040 }
+    const after = { input: 350, output: 95, cacheRead: 11_000, cacheWrite: 900, total: 12_345 }
+    expect(turnUsage(before, after)).toEqual({
+      inputTokens: 50,
+      outputTokens: 55,
+      cachedReadTokens: 6_000,
+      cachedWriteTokens: 200,
+      totalTokens: 6_305,
+    })
+  })
+
+  it('sends both cache fields at zero and never a thought count', () => {
+    const before = { input: 10, output: 2, cacheRead: 30, cacheWrite: 4, total: 46 }
+    const usage = turnUsage(before, { ...before, input: 20, output: 5, total: 59 })
+    expect(usage).toHaveProperty('cachedReadTokens', 0)
+    expect(usage).toHaveProperty('cachedWriteTokens', 0)
+    expect(usage).not.toHaveProperty('thoughtTokens')
   })
 
   it('builds session_info_update and config_option_update', () => {

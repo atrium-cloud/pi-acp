@@ -27,7 +27,7 @@ import {
   sessionDirForCwd,
   writeMessageMap,
 } from '../session/sessionDirectory.js'
-import { type FakePiSpec, makeFakePiClient } from './fixtures/fakePiClient.js'
+import { DEFAULT_TURN_USAGE, type FakePiSpec, makeFakePiClient } from './fixtures/fakePiClient.js'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -542,7 +542,9 @@ describe('session/fork', () => {
           emit({ type: 'message_end', message: { role: 'assistant', stopReason: 'stop' } } as never)
           emit({ type: 'agent_settled' } as never)
         },
-        onSessionStats: () => {
+        // Read 0 is the turn's baseline; only the end-of-turn read is held.
+        onSessionStats: (read) => {
+          if (read === 0) return Promise.resolve()
           statsRequested()
           return released
         },
@@ -562,7 +564,7 @@ describe('session/fork', () => {
     expect(readEntries(forkSpawn(fake, 1).path).slice(1)).toEqual(whole)
 
     releaseStats()
-    await expect(turn).resolves.toEqual({ stopReason: 'end_turn' })
+    await expect(turn).resolves.toEqual({ stopReason: 'end_turn', usage: DEFAULT_TURN_USAGE })
   })
 
   it('keeps every settled entry of a live parent waiting out an extension command that runs no turn', async () => {
