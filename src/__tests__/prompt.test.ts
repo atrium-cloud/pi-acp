@@ -21,12 +21,17 @@ import { messageMapPathFor } from '../session/sessionDirectory.js'
 import { establishSession } from '../session/sessionSetup.js'
 import type { SessionConnection } from '../session/SessionConnection.js'
 import { type FlattenedPrompt, flattenPromptContent } from '../turn/promptContent.js'
-import { type FakePiSpec, makeFakePiClient } from './fixtures/fakePiClient.js'
+import { DEFAULT_TURN_USAGE, type FakePiSpec, makeFakePiClient } from './fixtures/fakePiClient.js'
 
 const LAUNCH = { command: 'pi', args: ['--mode', 'rpc'], source: 'test' }
 const ABS_CWD = '/tmp/pi-acp-session'
 const MCP_EXTENSION_PATH = '/tmp/mcp-extension.mjs'
 const HELLO: FlattenedPrompt = { message: 'hi', images: [], firstText: 'hi' }
+/** Pi's session totals either side of a turn; `total` is the sum, as Pi reports it. */
+const TOKENS_BEFORE_TURN = { input: 1_200, output: 300, cacheRead: 8_000, cacheWrite: 2_000, total: 11_500 }
+const TOKENS_AFTER_TURN = { input: 1_450, output: 380, cacheRead: 14_500, cacheWrite: 2_600, total: 18_930 }
+const TURN_USAGE = { inputTokens: 250, outputTokens: 80, cachedReadTokens: 6_500, cachedWriteTokens: 600, totalTokens: 7_430 }
+const USAGE_UPDATE = { sessionUpdate: 'usage_update', used: 1234, size: 200_000, cost: { amount: 0.05, currency: 'USD' } }
 type Emit = Parameters<NonNullable<FakePiSpec['onPrompt']>>[0]
 
 function baseSpec(onPrompt?: FakePiSpec['onPrompt']): FakePiSpec {
@@ -65,6 +70,13 @@ const fullTurn = (emit: Emit): void => {
   emit({ type: 'agent_settled' } as never)
 }
 
+const ANY_USAGE_UPDATE = expect.objectContaining({ update: expect.objectContaining({ sessionUpdate: 'usage_update' }) })
+
+/** The stats reads and the prompt, in the order they reached Pi. */
+function meteringOrder(fake: ReturnType<typeof makeFakePiClient>): unknown[] {
+  return fake.calls.map((call) => call['type']).filter((type) => type === 'get_session_stats' || type === 'prompt')
+}
+
 describe('SessionConnection.runPrompt', () => {
   it('registers the turn before sending, so a synchronous agent_start is not missed', async () => {
     const { connection, notify } = await connect(baseSpec(fullTurn))
@@ -79,20 +91,51 @@ describe('SessionConnection.runPrompt', () => {
   it('emits a usage_update from end-of-turn context stats', async () => {
     const { connection, notify } = await connect(baseSpec(fullTurn))
     await connection.runPrompt(HELLO, new AbortController().signal)
-    expect(notify).toHaveBeenCalledWith(acp.methods.client.session.update, {
-      sessionId: 'sess-1',
-      update: { sessionUpdate: 'usage_update', used: 1234, size: 200_000, cost: { amount: 0.05, currency: 'USD' } },
-    })
+    expect(notify).toHaveBeenCalledWith(acp.methods.client.session.update, { sessionId: 'sess-1', update: USAGE_UPDATE })
   })
 
-  it('skips usage when post-compaction context tokens are null', async () => {
+  it("returns the growth of Pi's session totals across the turn as its usage", async () => {
+    const spec: FakePiSpec = {
+      ...baseSpec(fullTurn),
+      stats: (read) => ({ tokens: read === 0 ? TOKENS_BEFORE_TURN : TOKENS_AFTER_TURN }),
+    }
+    const { connection } = await connect(spec)
+    const outcome = await connection.runPrompt(HELLO, new AbortController().signal)
+    expect(outcome.usage).toEqual(TURN_USAGE)
+  })
+
+  it('reads the baseline totals before the prompt reaches Pi', async () => {
+    const { fake, connection } = await connect(baseSpec(fullTurn))
+    await connection.runPrompt(HELLO, new AbortController().signal)
+    expect(meteringOrder(fake)).toEqual(['get_session_stats', 'prompt', 'get_session_stats'])
+  })
+
+  it('keeps the stop reason and the usage_update but reports no usage when the baseline read fails', async () => {
+    const { connection, notify } = await connect({ ...baseSpec(fullTurn), failOnce: 'get_session_stats' })
+    const outcome = await connection.runPrompt(HELLO, new AbortController().signal)
+    expect(outcome).toEqual({ stopReason: 'end_turn', usage: undefined, acknowledgedMessageId: undefined })
+    expect(notify).toHaveBeenCalledWith(acp.methods.client.session.update, { sessionId: 'sess-1', update: USAGE_UPDATE })
+  })
+
+  it('keeps the stop reason but reports no usage when the end-of-turn read fails', async () => {
+    const spec: FakePiSpec = {
+      ...baseSpec(fullTurn),
+      onSessionStats: async (read) => {
+        if (read === 1) throw new Error('fake pi: get_session_stats failed')
+      },
+    }
+    const { connection, notify } = await connect(spec)
+    const outcome = await connection.runPrompt(HELLO, new AbortController().signal)
+    expect(outcome).toEqual({ stopReason: 'end_turn', usage: undefined, acknowledgedMessageId: undefined })
+    expect(notify).not.toHaveBeenCalledWith(acp.methods.client.session.update, ANY_USAGE_UPDATE)
+  })
+
+  it('returns usage but skips the usage_update when post-compaction context tokens are null', async () => {
     const spec: FakePiSpec = { ...baseSpec(fullTurn), stats: { cost: 0.1, contextUsage: { tokens: null, contextWindow: 1_000, percent: null } } }
     const { connection, notify } = await connect(spec)
-    await connection.runPrompt(HELLO, new AbortController().signal)
-    expect(notify).not.toHaveBeenCalledWith(
-      acp.methods.client.session.update,
-      expect.objectContaining({ update: expect.objectContaining({ sessionUpdate: 'usage_update' }) }),
-    )
+    const outcome = await connection.runPrompt(HELLO, new AbortController().signal)
+    expect(outcome.usage).toEqual(DEFAULT_TURN_USAGE)
+    expect(notify).not.toHaveBeenCalledWith(acp.methods.client.session.update, ANY_USAGE_UPDATE)
   })
 
   it('titles a nameless session from the first prompt', async () => {
@@ -140,14 +183,14 @@ describe('SessionConnection.runPrompt', () => {
     await expect(first).resolves.toMatchObject({ stopReason: 'end_turn' })
   })
 
-  it('resolves cancelled when the prompt signal aborts', async () => {
+  it('resolves cancelled with the usage of the turn it cut short when the prompt signal aborts', async () => {
     const { fake, connection } = await connect(baseSpec((emit) => emit({ type: 'agent_start' } as never)))
     const controller = new AbortController()
     const turn = connection.runPrompt(HELLO, controller.signal)
     await Promise.resolve()
     controller.abort()
     fake.emit({ type: 'agent_settled' } as never)
-    await expect(turn).resolves.toMatchObject({ stopReason: 'cancelled' })
+    await expect(turn).resolves.toEqual({ stopReason: 'cancelled', usage: DEFAULT_TURN_USAGE, acknowledgedMessageId: undefined })
     expect(fake.calls.map((call) => call['type'])).toContain('abort')
   })
 
@@ -155,8 +198,12 @@ describe('SessionConnection.runPrompt', () => {
     const { fake, connection } = await connect(baseSpec(fullTurn))
     const controller = new AbortController()
     controller.abort()
-    await expect(connection.runPrompt(HELLO, controller.signal)).resolves.toMatchObject({ stopReason: 'cancelled' })
-    expect(fake.calls.map((call) => call['type'])).not.toContain('prompt')
+    await expect(connection.runPrompt(HELLO, controller.signal)).resolves.toEqual({
+      stopReason: 'cancelled',
+      usage: undefined,
+      acknowledgedMessageId: undefined,
+    })
+    expect(meteringOrder(fake)).toEqual([])
   })
 
   it('fails the in-flight turn when the subprocess dies', async () => {
@@ -233,7 +280,7 @@ describe('breakpoint message id recording', () => {
 
     const outcome = await connection.runPrompt(HELLO, new AbortController().signal, MESSAGE_ID)
 
-    expect(outcome).toEqual({ stopReason: 'end_turn', acknowledgedMessageId: MESSAGE_ID })
+    expect(outcome).toEqual({ stopReason: 'end_turn', usage: DEFAULT_TURN_USAGE, acknowledgedMessageId: MESSAGE_ID })
     expect(readSidecar()).toEqual({
       [MESSAGE_MAP_KEY_VERSION]: MESSAGE_MAP_VERSION,
       [MESSAGE_MAP_KEY_MESSAGES]: { [MESSAGE_ID]: 'u2' },
@@ -271,7 +318,7 @@ describe('breakpoint message id recording', () => {
 
     const outcome = await connection.runPrompt(HELLO, new AbortController().signal, MESSAGE_ID)
 
-    expect(outcome).toEqual({ stopReason: 'end_turn', acknowledgedMessageId: undefined })
+    expect(outcome).toEqual({ stopReason: 'end_turn', usage: DEFAULT_TURN_USAGE, acknowledgedMessageId: undefined })
     expect(fake.calls.map((call) => call['type'])).not.toContain('get_entries')
   })
 
@@ -281,7 +328,7 @@ describe('breakpoint message id recording', () => {
 
     const outcome = await connection.runPrompt(HELLO, new AbortController().signal, MESSAGE_ID)
 
-    expect(outcome).toEqual({ stopReason: 'end_turn', acknowledgedMessageId: undefined })
+    expect(outcome).toEqual({ stopReason: 'end_turn', usage: DEFAULT_TURN_USAGE, acknowledgedMessageId: undefined })
     expect(fake.calls.map((call) => call['type'])).not.toContain('get_entries')
     expect(existsSync(messageMapPathFor(sessionFile))).toBe(false)
   })
@@ -291,7 +338,7 @@ describe('breakpoint message id recording', () => {
 
     const outcome = await connection.runPrompt(HELLO, new AbortController().signal, MESSAGE_ID)
 
-    expect(outcome).toEqual({ stopReason: 'end_turn', acknowledgedMessageId: undefined })
+    expect(outcome).toEqual({ stopReason: 'end_turn', usage: DEFAULT_TURN_USAGE, acknowledgedMessageId: undefined })
     expect(existsSync(messageMapPathFor(sessionFile))).toBe(false)
   })
 
@@ -338,10 +385,11 @@ describe('extension command prompts', () => {
     const settled = connection.runPrompt(prompt, new AbortController().signal, messageId).then(
       (outcome) => ({
         reason: outcome.stopReason as StopReason | undefined,
+        usage: outcome.usage,
         acknowledgedMessageId: outcome.acknowledgedMessageId,
         error: undefined as unknown,
       }),
-      (error: unknown) => ({ reason: undefined, acknowledgedMessageId: undefined, error }),
+      (error: unknown) => ({ reason: undefined, usage: undefined, acknowledgedMessageId: undefined, error }),
     )
     // Zero first, so the ack resolves and arms the timer before the clock moves.
     await vi.advanceTimersByTimeAsync(0)
@@ -368,11 +416,12 @@ describe('extension command prompts', () => {
   })
 
   it('neither titles nor meters a command prompt that ran no turn', async () => {
-    const { reason, fake } = await runQuiet(textPrompt('/extcmd'))
+    const { reason, usage, fake } = await runQuiet(textPrompt('/extcmd'))
     expect(reason).toBe('end_turn')
-    const types = fake.calls.map((call) => call['type'])
-    expect(types).not.toContain('set_session_name')
-    expect(types).not.toContain('get_session_stats')
+    expect(usage).toBeUndefined()
+    expect(fake.calls.map((call) => call['type'])).not.toContain('set_session_name')
+    // The baseline goes out before Pi says whether a turn runs; nothing is read after.
+    expect(meteringOrder(fake)).toEqual(['get_session_stats', 'prompt'])
   })
 
   it('records no breakpoint for a command prompt that ran no turn', async () => {
@@ -384,7 +433,7 @@ describe('extension command prompts', () => {
 })
 
 describe('session/prompt over the wire', () => {
-  it('streams a chunk and returns end_turn', async () => {
+  it("streams a chunk and returns end_turn with the turn's usage", async () => {
     const fake = makeFakePiClient(baseSpec(fullTurn))
     const server = new PiAcpServer({
       launch: LAUNCH,
@@ -411,6 +460,7 @@ describe('session/prompt over the wire', () => {
       })
 
     expect(result.stopReason).toBe('end_turn')
+    expect(result.usage).toEqual(DEFAULT_TURN_USAGE)
     expect(chunks).toContainEqual({
       sessionId: 'sess-1',
       update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Hello' } },

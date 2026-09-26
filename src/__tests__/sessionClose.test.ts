@@ -111,9 +111,10 @@ describe('SessionConnection.close', () => {
     await expect(turn).resolves.toMatchObject({ stopReason: 'cancelled' })
     expect(timeline.indexOf('abort')).toBeGreaterThan(-1)
     expect(timeline.indexOf('abort')).toBeLessThan(timeline.indexOf('stop'))
-    // A cancelled turn on a stopping subprocess has nothing left to name or meter.
+    // A cancelled turn on a stopping subprocess has nothing left to name or meter:
+    // the only stats read is the baseline sent ahead of the prompt.
     expect(timeline).not.toContain('set_session_name')
-    expect(timeline).not.toContain('get_session_stats')
+    expect(timeline.filter((type) => type === 'get_session_stats' || type === 'prompt')).toEqual(['get_session_stats', 'prompt'])
   })
 
   it('cancels a turn whose prompt ack is still in flight', async () => {

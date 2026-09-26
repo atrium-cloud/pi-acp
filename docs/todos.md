@@ -130,6 +130,14 @@ Pi upstream ships an ACP agent on current schemas with session resume, thought-l
     - Exhaustive switch over `JsonAgentSessionEvent` with no `default` keeps the list honest.
 - [x] Usage
     - `usage_update` from `get_session_stats.contextUsage` at turn end; `contextWindow` is the gauge size; `null` tokens right after compaction are skipped.
+    - `PromptResponse.usage` is the turn's share of Pi's session totals: `get_session_stats.tokens` read just before the turn's command, subtracted from the end-of-turn read.
+        - Per turn, as the `usage` field's own doc says ("Token usage for this turn"); the `Usage` type's field docs say session-wide, which the schema contradicts.
+        - Zed shows the latest response's input and output counts rather than adding them up, so per-turn numbers read right there.
+        - Counts what Pi bills during the turn: auto-compaction, cache-warming refreshes while it runs, tool-result usage.
+        - Both cache fields are always sent; no `thoughtTokens`, since the stats carry no reasoning count.
+        - Sent on every turn that started, whatever the stop reason, and on a `/compact` Pi completes; left out when either stats read fails.
+        - A `/compact` Pi refuses or aborts carries none: Pi records a compaction's usage only when it appends the entry, so an aborted summary call never reaches the totals.
+        - No clamp on the delta: Pi's totals only grow, so a negative field would mean Pi changed its stats and should show.
     - Mid-turn `usage_update` from `message_update.usage` is DEFERRED: the occupancy formula can't be matched to Pi's own accounting without a live sprite run, so only the authoritative end-of-turn path ships (the plan's sanctioned fallback).
 - [x] Permissions via a pi-acp-owned Pi extension loaded with `-e`
     - Extension side (`src/permissions/gate.ts`, source built from shared constants, materialized once at startup)

@@ -1,5 +1,7 @@
 import { readFileSync } from 'node:fs'
 
+import type { Usage } from '@agentclientprotocol/sdk'
+
 import { PI_SESSION_ARG } from '../../constants.js'
 import type { RpcNotifyRequest } from '../../pi/PiRpcClient.js'
 import type { RpcExtensionUIRequest, RpcExtensionUIResponse } from '../../pi/types.js'
@@ -41,6 +43,19 @@ export const DEFAULT_STATS: FakeStats = {
   contextUsage: { tokens: 1234, contextWindow: 200_000, percent: 1 },
 }
 
+/** What the fake adds to its session totals for each `prompt` it acks and each
+ * `compact` that succeeds. */
+export const DEFAULT_TURN_TOKENS: FakeStats['tokens'] = { input: 40, output: 15, cacheRead: 200, cacheWrite: 60, total: 315 }
+
+/** The ACP usage one DEFAULT_TURN_TOKENS turn reports. */
+export const DEFAULT_TURN_USAGE: Usage = {
+  inputTokens: 40,
+  outputTokens: 15,
+  cachedReadTokens: 200,
+  cachedWriteTokens: 60,
+  totalTokens: 315,
+}
+
 /** The `CompactionResult` subset the adapter reads. */
 export interface FakeCompaction {
   summary: string
@@ -55,8 +70,10 @@ export interface FakePiSpec {
   models: { provider: string; id: string; name: string }[]
   levels: string[]
   commands: { name: string; description?: string; source: string }[]
-  /** `get_session_stats` fields laid over DEFAULT_STATS. */
-  stats?: Partial<FakeStats>
+  /** `get_session_stats` fields laid over DEFAULT_STATS and the running token
+   * totals; a function is called with the 0-based index among the reads the fake
+   * answers, so a test can script the totals before and after a turn. */
+  stats?: Partial<FakeStats> | ((read: number) => Partial<FakeStats>)
   /** The `get_messages` history a `session/load` replays. */
   messages?: readonly unknown[]
   /** The `get_entries` session tree; a function is called per request, so a test
@@ -79,9 +96,10 @@ export interface FakePiSpec {
    * compaction open by returning a promise it settles itself; `abort` never
    * settles it, since Pi's `abort` does not stop a manual compaction. */
   onCompact?: (customInstructions: string | undefined) => Promise<FakeCompaction>
-  /** Awaited before `get_session_stats` answers, so a test can hold the
-   * end-of-turn usage read open by returning a promise it settles itself. */
-  onSessionStats?: () => Promise<void>
+  /** Awaited before `get_session_stats` answers, with the same read index as
+   * `stats`, so a test can hold one read open, or fail it, by returning a promise
+   * it settles itself. A turn's baseline is read 0 on a fresh session. */
+  onSessionStats?: (read: number) => Promise<void>
   /** Runs inside `start()`, before the readiness answer, the way an extension's
    * `session_start` handler notifies while Pi starts. */
   onStart?: (notify: (request: RpcNotifyRequest) => void) => void
@@ -116,6 +134,17 @@ export function makeFakePiClient(spec: FakePiSpec): FakePiClient {
   const calls: Array<Record<string, unknown>> = []
   const failedOnce = new Set<string>()
   let state = spec.state
+  let tokens = DEFAULT_STATS.tokens
+  let statsReads = 0
+  const addTurnTokens = (): void => {
+    tokens = {
+      input: tokens.input + DEFAULT_TURN_TOKENS.input,
+      output: tokens.output + DEFAULT_TURN_TOKENS.output,
+      cacheRead: tokens.cacheRead + DEFAULT_TURN_TOKENS.cacheRead,
+      cacheWrite: tokens.cacheWrite + DEFAULT_TURN_TOKENS.cacheWrite,
+      total: tokens.total + DEFAULT_TURN_TOKENS.total,
+    }
+  }
   let stopped = false
   let onEvent: ((event: JsonAgentSessionEvent) => void) | undefined
   let onExit: ((error: Error) => void) | undefined
@@ -168,17 +197,23 @@ export function makeFakePiClient(spec: FakePiSpec): FakePiClient {
         return { type: 'response', command: 'set_session_name', success: true }
       }
       case 'get_session_stats': {
-        await spec.onSessionStats?.()
-        const data = { sessionFile: state.sessionFile, sessionId: state.sessionId, ...DEFAULT_STATS, ...spec.stats }
+        // Taken on arrival: Pi answers in order, so a read sent just ahead of a
+        // `prompt` must not see the tokens that prompt adds.
+        const read = statsReads++
+        const overrides = typeof spec.stats === 'function' ? spec.stats(read) : spec.stats
+        const data = { sessionFile: state.sessionFile, sessionId: state.sessionId, ...DEFAULT_STATS, tokens, ...overrides }
+        await spec.onSessionStats?.(read)
         return { type: 'response', command: 'get_session_stats', success: true, data }
       }
       case 'compact': {
         const customInstructions = command['customInstructions'] as string | undefined
         const data = await (spec.onCompact?.(customInstructions) ?? DEFAULT_COMPACTION)
+        addTurnTokens()
         return { type: 'response', command: 'compact', success: true, data }
       }
       case 'prompt':
         if (spec.preflightFails) throw new Error('fake pi: prompt preflight failed')
+        addTurnTokens()
         spec.onPrompt?.(emit)
         return { type: 'response', command: 'prompt', success: true }
       case 'abort':

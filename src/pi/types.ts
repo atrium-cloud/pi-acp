@@ -8,4 +8,5 @@ export type {
   RpcExtensionUIRequest,
   RpcExtensionUIResponse,
   JsonAgentSessionEvent,
+  SessionStats,
 } from '@earendil-works/pi-coding-agent'

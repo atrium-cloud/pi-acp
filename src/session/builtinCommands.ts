@@ -1,4 +1,4 @@
-import type { StopReason } from '@agentclientprotocol/sdk'
+import type { StopReason, Usage } from '@agentclientprotocol/sdk'
 
 import {
   BUILTIN_COMMAND_COMPACT,
@@ -14,11 +14,9 @@ import {
   SESSION_INFO_INDENT,
   SESSION_INFO_LABELS,
 } from '../constants.js'
-import type { RpcResponse } from '../pi/types.js'
+import type { SessionStats } from '../pi/types.js'
 import { toRequestError } from '../server/errors.js'
 import type { AnnouncedToolCall, TurnEventSink } from '../turn/TurnHandler.js'
-
-type SessionStats = Extract<RpcResponse, { command: 'get_session_stats'; success: true }>['data']
 
 export type BuiltinCommand =
   | { readonly kind: typeof BUILTIN_COMMAND_COMPACT; readonly customInstructions: string | undefined }
@@ -92,6 +90,7 @@ export class BuiltinCommandRun implements TurnEventSink {
   private reject!: (error: Error) => void
   private done = false
   private cancelled = false
+  private reportedUsage: Usage | undefined
 
   constructor() {
     this.settled = new Promise<StopReason>((resolve, reject) => {
@@ -104,10 +103,19 @@ export class BuiltinCommandRun implements TurnEventSink {
     return this.cancelled
   }
 
+  /** The command's usage, kept only when its own outcome settled the run. */
+  get usage(): Usage | undefined {
+    return this.reportedUsage
+  }
+
   /** Settles on the command's own outcome unless a close or a death got there first. */
-  track(work: Promise<void>): void {
+  track(work: Promise<Usage | undefined>): void {
     work.then(
-      () => this.finish(() => this.resolve(this.cancelled ? 'cancelled' : 'end_turn')),
+      (usage) =>
+        this.finish(() => {
+          this.reportedUsage = usage
+          this.resolve(this.cancelled ? 'cancelled' : 'end_turn')
+        }),
       (error: unknown) => this.finish(() => (this.cancelled ? this.resolve('cancelled') : this.reject(toRequestError(error)))),
     )
   }
