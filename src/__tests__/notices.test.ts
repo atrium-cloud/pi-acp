@@ -98,6 +98,7 @@ function makeServer(spec: Partial<FakePiSpec> = {}): {
     rpcTimeoutMs: RPC_TIMEOUT_MS,
     sessionDirs: SESSION_DIRS,
     mcpExtensionPath: MCP_EXTENSION_PATH,
+    hiddenCommands: new Set(),
     createPiClient: fake.createPiClient,
   })
   server.initialize(initRequest(NOTICES_CAPABILITIES))
@@ -184,6 +185,7 @@ describe('extension notify with a client that advertised session.notices', () =>
       rpcTimeoutMs: RPC_TIMEOUT_MS,
       sessionDirs: SESSION_DIRS,
       mcpExtensionPath: MCP_EXTENSION_PATH,
+      hiddenCommands: new Set(),
       createPiClient: fake.createPiClient,
     })
     const app = server.register(acp.agent({ name: AGENT_NAME }))

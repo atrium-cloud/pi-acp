@@ -161,6 +161,9 @@ function handleLine(line) {
     case 'set_session_name':
       handleTrigger(parsed.id, parsed.name)
       return
+    case 'prompt':
+      respond(parsed.id, 'prompt', { disposition: 'started' })
+      return
     default:
       respond(parsed.id, parsed.type)
   }

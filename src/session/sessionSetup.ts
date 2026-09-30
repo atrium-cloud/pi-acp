@@ -9,7 +9,6 @@ import {
   AGENT_NAME,
   BUILTIN_COMMANDS,
   CARRIAGE_RETURN_LINE_BREAK,
-  COMMAND_SOURCE_EXTENSION,
   COMMAND_SOURCE_PROMPT,
   ENV_MCP_SERVERS,
   FRONTMATTER_DELIMITER,
@@ -43,6 +42,8 @@ export interface SessionSetupDeps {
   /** Absolute path to the materialized MCP extension, loaded with a second `-e`
    * only by a session whose request carries servers. */
   readonly mcpExtensionPath: string
+  /** Command names left out of the advertised commands. */
+  readonly hiddenCommands: ReadonlySet<string>
   /** Injectable for tests; defaults to spawning a real Pi RPC subprocess. */
   readonly createPiClient?: CreatePiClient | undefined
 }
@@ -52,10 +53,6 @@ export interface EstablishedSession {
   readonly sessionId: string
   readonly configOptions: acp.SessionConfigOption[]
   readonly availableCommands: AvailableCommand[]
-  /** Invocation names of the extension-sourced commands, verbatim as reported
-   * (Pi disambiguates two extensions registering one name as `name:1`/`name:2`,
-   * and dispatches on that form). */
-  readonly extensionCommandNames: readonly string[]
 }
 
 /** `new` starts an empty session; `open` reopens a stored one from its file. Pi's
@@ -132,22 +129,19 @@ export async function establishSession(
       id: model.id,
       name: model.name,
     }))
-    const extensionCommandNames = extensionNames(commands.data.commands)
-    const availableCommands = await mapCommands(commands.data.commands)
+    const availableCommands = await mapCommands(commands.data.commands, deps.hiddenCommands)
     connection.attach({
       piClient,
       sessionId: state.sessionId,
       state,
       models: modelChoices,
       levels: levels.data.levels,
-      extensionCommandNames,
     })
     return {
       connection,
       sessionId: state.sessionId,
       configOptions: connection.configOptions,
       availableCommands,
-      extensionCommandNames,
     }
   } catch (error) {
     await piClient.stop()
@@ -176,10 +170,14 @@ interface PiCommand {
 
 // A command named like a built-in is dropped, before any template is read: the
 // built-in runs in its place on submit, so advertising both would offer one name twice.
-async function mapCommands(commands: readonly PiCommand[]): Promise<AvailableCommand[]> {
+// A hidden command, built-in or Pi's, is dropped the same way; a client that
+// sends one anyway still runs it.
+async function mapCommands(commands: readonly PiCommand[], hidden: ReadonlySet<string>): Promise<AvailableCommand[]> {
   const builtinNames = new Set(BUILTIN_COMMANDS.map((command) => command.name))
-  const mapped = await Promise.all(commands.filter((command) => !builtinNames.has(command.name)).map(mapCommand))
-  return [...BUILTIN_COMMANDS, ...mapped]
+  const mapped = await Promise.all(
+    commands.filter((command) => !builtinNames.has(command.name) && !hidden.has(command.name)).map(mapCommand),
+  )
+  return [...BUILTIN_COMMANDS.filter((command) => !hidden.has(command.name)), ...mapped]
 }
 
 async function mapCommand(command: PiCommand): Promise<AvailableCommand> {
@@ -210,12 +208,6 @@ export function parseArgumentHint(content: string): string | undefined {
   if (typeof frontmatter !== 'object' || frontmatter === null) return undefined
   const hint = (frontmatter as Record<string, unknown>)[FRONTMATTER_KEY_ARGUMENT_HINT]
   return typeof hint === 'string' && hint !== '' ? hint : undefined
-}
-
-// An extension command is the only kind that can be handled without a turn, so
-// the turn layer needs the names to read a quiet window as `end_turn`.
-function extensionNames(commands: readonly PiCommand[]): string[] {
-  return commands.filter((command) => command.source === COMMAND_SOURCE_EXTENSION).map((command) => command.name)
 }
 
 function invalidParams(message: string): acp.RequestError {

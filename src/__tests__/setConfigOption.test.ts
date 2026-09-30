@@ -32,6 +32,7 @@ async function connectionFor(spec: FakePiSpec) {
     notifier: stubNotifier,
     clientSupportsNotices: false,
     mcpExtensionPath: MCP_EXTENSION_PATH,
+    hiddenCommands: new Set(),
     createPiClient: fake.createPiClient,
   })
   return { fake, connection: established.connection }
@@ -87,6 +88,7 @@ describe('PiAcpServer.setConfigOption', () => {
       rpcTimeoutMs: 1_000,
       sessionDirs: { mode: 'flat', dir: '/tmp/pi-acp-sessions' },
       mcpExtensionPath: MCP_EXTENSION_PATH,
+      hiddenCommands: new Set(),
       createPiClient: fake.createPiClient,
     })
   }

@@ -91,6 +91,7 @@ async function connect(createPiClient: CreatePiClient): Promise<{
     notifier: { notify } as unknown as AgentContext,
     clientSupportsNotices: false,
     mcpExtensionPath: MCP_EXTENSION_PATH,
+    hiddenCommands: new Set(),
     createPiClient,
   })
   return { connection: established.connection, notify }

@@ -127,6 +127,7 @@ export function createAcpTestFixture(spec: Partial<FakePiSpec> = {}): AcpTestFix
     rpcTimeoutMs: RPC_TIMEOUT_MS,
     sessionDirs,
     mcpExtensionPath: MCP_EXTENSION_PATH,
+    hiddenCommands: new Set(),
     createPiClient: fake.createPiClient,
   })
 

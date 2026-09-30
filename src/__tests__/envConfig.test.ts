@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest'
 
-import { DEFAULT_RPC_TIMEOUT_MS, ENV_RPC_TIMEOUT_MS, resolveRpcTimeoutMs } from '../constants.js'
+import {
+  DEFAULT_RPC_TIMEOUT_MS,
+  ENV_HIDE_COMMANDS,
+  ENV_RPC_TIMEOUT_MS,
+  resolveHiddenCommands,
+  resolveRpcTimeoutMs,
+} from '../constants.js'
 
 describe('resolveRpcTimeoutMs', () => {
   it('defaults when unset, empty, or blank', () => {
@@ -21,5 +27,21 @@ describe('resolveRpcTimeoutMs', () => {
     expect(() => resolveRpcTimeoutMs({ [ENV_RPC_TIMEOUT_MS]: '-5' })).toThrow(/whole number/)
     expect(() => resolveRpcTimeoutMs({ [ENV_RPC_TIMEOUT_MS]: '0' })).toThrow(/greater than zero/)
     expect(() => resolveRpcTimeoutMs({ [ENV_RPC_TIMEOUT_MS]: '9999999999' })).toThrow(/exceeds the maximum/)
+  })
+})
+
+describe('resolveHiddenCommands', () => {
+  it('hides nothing when unset, empty, or only separators and space', () => {
+    expect(resolveHiddenCommands({})).toEqual(new Set())
+    expect(resolveHiddenCommands({ [ENV_HIDE_COMMANDS]: '' })).toEqual(new Set())
+    expect(resolveHiddenCommands({ [ENV_HIDE_COMMANDS]: ' , ,, ' })).toEqual(new Set())
+  })
+
+  it('trims each name and drops empty entries', () => {
+    expect(resolveHiddenCommands({ [ENV_HIDE_COMMANDS]: ' mcp , llama,,' })).toEqual(new Set(['mcp', 'llama']))
+  })
+
+  it('keeps names verbatim, including a disambiguated form and case', () => {
+    expect(resolveHiddenCommands({ [ENV_HIDE_COMMANDS]: 'review:1,Compact' })).toEqual(new Set(['review:1', 'Compact']))
   })
 })

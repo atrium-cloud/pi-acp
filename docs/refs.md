@@ -28,8 +28,8 @@ Shell tools (`bash`, `powershell`) render as terminal entries via the Zed `_meta
 
 - Repo: https://github.com/earendil-works/pi
 - Package: `@earendil-works/pi-coding-agent` (bin `pi`, Node >= 22.19.0)
-- Dependency: `>=0.87.1`, a floor at the last verified version; `bun.lock` carries the exact one.
-    - Moved from `^0.84.4` on 2026-09-24.
+- Dependency: `>=0.99.1`, a floor at the last verified version; `bun.lock` carries the exact one.
+    - Moved from `>=0.87.1` on 2026-09-30 (0.99.0 is the first release with built-in MCP and the `prompt` disposition, both of which the adapter relies on), and from `^0.84.4` on 2026-09-24.
     - A caret on a 0.x version caps at its minor: the lockfile sat on 0.84.x while Pi shipped 0.85.0 through 0.87.1.
     - The adapter launches the installed package's `./rpc-entry` export by default (`src/pi/launch.ts`).
     - The drift check is the Upstream drift entry in docs/todos.md: typecheck, unit tests, and the live tier.
@@ -40,15 +40,23 @@ Shell tools (`bash`, `powershell`) render as terminal entries via the Zed `_meta
         - `src/modes/rpc/rpc-types.ts`: `RpcCommand`, `RpcResponse`, `RpcSessionState`, `RpcExtensionUIRequest`, `RpcExtensionUIResponse`; all exported from the package root
         - `src/modes/rpc/rpc-mode.ts`, `src/modes/rpc/jsonl.ts`: server side and the strict LF-only JSONL framing
         - `rpc-mode.ts` `get_commands`: omits a prompt template's `argument-hint`
+        - `docs/rpc-commands.md` `prompt`: the ack's `data.disposition` (`started`, `handled`, `queued`), since 0.99.0
         - `src/modes/rpc/rpc-client.ts`: Pi's typed subprocess client
         - `src/modes/json-event.ts`: `JsonAgentSessionEvent`, the event union streamed on stdout
         - `src/core/agent-session.ts`: `AgentSessionEvent`, the session-level members the RPC docs' event table omits
         - `src/core/output-guard.ts`: stdout is reserved for protocol frames; stray writes go to stderr
     - Sessions
-        - `src/core/session-manager.ts`: `SessionHeader` (`id`, `cwd`, `parentSession`), the `<sessions-dir>/<encoded-cwd>/<timestamp>_<id>.jsonl` layout, `SessionManager.list` / `listAll`
+        - `src/core/session-manager.ts`: `SessionHeader` (`id`, `cwd`, `parentSession`), the `<sessions-dir>/<encoded-cwd>/<timestamp>_<id>.jsonl` layout, `SessionManager.list` / `listAll`; `_hasConversation` is the rule that creates the file at the first user message (since 0.99.0)
     - Extensions
         - `src/core/extensions/types.ts`, `docs/extensions.md` (Tool Events): `tool_call` handler contract (`{ block, reason, terminate }`), `ctx.ui.select/confirm/input/editor`
         - `examples/extensions/permission-gate.ts`: permission prompt from a `tool_call` handler
+        - `src/core/source-info.ts`: `builtin:<name>` extension paths (`builtin:mcp`, `builtin:llama.cpp`), whose commands `get_commands` reports with `sourceInfo.source` `builtin`
+    - MCP (built in since 0.99.0)
+        - `docs/mcp.md`: configuration (`mcp.json`), exposure (`codemode` default, `direct`, `deferred`, `hidden`), OAuth, resources, permissions
+        - `src/core/mcp-servers.ts`: `McpServerConfig` (the shape `pi.registerMcpServer` takes), the `^[A-Za-z0-9_-]+$` server-name rule
+        - `src/core/resolve-config-value.ts`: `${NAME}` / `$NAME` / leading `!cmd` interpolation of `env` and `headers` values, with `$$` and `$!` as the literal escapes
+        - `src/extensions/mcp/`: the built-in extension (`index.ts` connects on `session_start`, `runtime.ts` spawns stdio servers with the full `process.env`, `tools.ts` names tools `mcp__<server>__<tool>`)
+        - `packages/mcp`: Pi's own MCP client (stdio and streamable HTTP; no SSE)
     - CLI
         - `src/cli/args.ts`: flags consumed at spawn: `--mode rpc`, `--session`, `--session-dir`, `--extension` / `-e`, `--no-extensions`, `--model`, `--thinking`, `--name`
         - `src/cli/auth-command.ts`: `pi auth check --provider`, the only non-interactive credential check
@@ -60,16 +68,9 @@ Shell tools (`bash`, `powershell`) render as terminal entries via the Zed `_meta
 
 ## MCP
 
-- Specification, current revision 2026-07-28: https://modelcontextprotocol.io/specification/2026-07-28
-    - Changelog versus 2025-11-25: https://modelcontextprotocol.io/specification/2026-07-28/changelog (stateless requests with the version in `_meta`, `server/discover`, no `initialize` handshake, no `Mcp-Session-Id`, `subscriptions/listen` instead of the GET stream, HTTP+SSE transport deprecated)
-    - Versioning and negotiation: https://modelcontextprotocol.io/specification/versioning
-- TypeScript SDK v2 (implements 2026-07-28): https://github.com/modelcontextprotocol/typescript-sdk, docs https://ts.sdk.modelcontextprotocol.io/v2/
-    - The 2026-07-28 support guide: https://ts.sdk.modelcontextprotocol.io/v2/migration/support-2026-07-28.html
-- Packages
-    - `@modelcontextprotocol/client` 2.1.0 (pulls `@modelcontextprotocol/core`), bundled into the adapter's own Pi extension (`src/mcp/extension-entry.ts`, docs/todos.md, the Built-in MCP entry under Delivered)
-    - `@modelcontextprotocol/server` 2.1.0, a dev dependency for the in-process probe server in tests
-    - Client transports: `StdioClientTransport` (`@modelcontextprotocol/client/stdio`), `StreamableHTTPClientTransport`, `SSEClientTransport`
-    - `Client` defaults to the legacy `initialize` handshake; the adapter passes `versionNegotiation: { mode: 'auto' }` so a `server/discover` probe selects 2026-07-28 where the server offers it and falls back to the handshake otherwise
+- The adapter speaks no MCP itself since Pi 0.99.0: it hands the ACP `mcpServers` to Pi's built-in support through `pi.registerMcpServer` (docs/todos.md, the MCP entry under Delivered; the upstream files are listed under Pi Agent above).
+- Specification: https://modelcontextprotocol.io/specification
+- `@modelcontextprotocol/server` 2.1.0, a dev dependency for the stdio probe server the e2e tier spawns (`src/__tests__/fixtures/mcp-probe-server.mjs`)
 
 ## Reference adapters
 

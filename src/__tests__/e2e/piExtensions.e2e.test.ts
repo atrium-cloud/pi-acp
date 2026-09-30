@@ -28,7 +28,6 @@ import {
   BUILTIN_HINT_NAME,
   DEFAULT_PI_AGENT_DIR_SEGMENTS,
   ENV_PI_AGENT_DIR,
-  EXTENSION_COMMAND_QUIET_MS,
   MCP_TOOL_PREFIX,
   MCP_TOOL_SEPARATOR,
   PERMISSION_OPTION_ALLOW_ALWAYS,
@@ -123,8 +122,6 @@ const PNG_PIXEL: readonly number[] = [0x00, 0x7f, 0x7f, 0x7f]
 const PNG_MIME_TYPE = 'image/png'
 
 const TWO_TURN_TIMEOUT_MS = 2 * E2E_TURN_TIMEOUT_MS
-/** The command turn waits out the quiet window before it resolves. */
-const EXTENSION_COMMAND_TIMEOUT_MS = 2 * E2E_TURN_TIMEOUT_MS + EXTENSION_COMMAND_QUIET_MS
 
 describeE2E('pi live extension seams', () => {
   // Nullable so a failed boot leaves the teardown with something to check: the
@@ -373,8 +370,8 @@ describeE2E('pi live extension seams', () => {
           E2E_TURN_TIMEOUT_MS,
         )
 
-        // An extension command that starts no turn resolves off the quiet
-        // window, with nothing streamed.
+        // Pi reports the command handled without a run, so the prompt resolves
+        // at once with nothing streamed.
         const textBefore = agent.agentText(sessionId).length
         const command = await promptText(sessionId, `/${EXTENSION_COMMAND_NAME}`)
         expect(command.stopReason).toBe('end_turn')
@@ -388,7 +385,7 @@ describeE2E('pi live extension seams', () => {
         rmSync(extensionPath, { force: true })
       }
     },
-    EXTENSION_COMMAND_TIMEOUT_MS,
+    TWO_TURN_TIMEOUT_MS,
   )
 })
 

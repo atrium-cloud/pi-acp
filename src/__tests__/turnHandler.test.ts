@@ -11,7 +11,7 @@ const CWD = '/repo'
 function makeTurn(graceMs = 10_000) {
   const notify = vi.fn(async (_method: string, _params: { sessionId: string; update: SessionUpdate }) => {})
   const notifier = { notify } as unknown as AgentContext
-  const turn = new TurnHandler({ notifier, sessionId: SESSION_ID, cwd: CWD, graceMs, quietMs: graceMs })
+  const turn = new TurnHandler({ notifier, sessionId: SESSION_ID, cwd: CWD, graceMs })
   return { turn, notify }
 }
 
@@ -74,37 +74,51 @@ describe('TurnHandler', () => {
     await expect(turn.settled).resolves.toBe('cancelled')
   })
 
-  it('reports a protocol error when the prompt starts no turn', async () => {
+  it('reports a protocol error when a started prompt begins no turn within the grace window', async () => {
     const { turn } = makeTurn(15)
-    turn.armStartTimer(false)
+    turn.acknowledge('started')
     await expect(turn.settled).rejects.toMatchObject({ code: -32_603, message: expect.stringMatching(/no turn/) })
     expect(turn.startedTurn).toBe(false)
   })
 
-  it('resolves end_turn when an advertised extension command starts no turn', async () => {
+  it('resolves cancelled when a started prompt cancelled during the ack begins no turn', async () => {
     const { turn } = makeTurn(15)
-    turn.armStartTimer(true)
+    turn.cancel()
+    turn.acknowledge('started')
+    await expect(turn.settled).resolves.toBe('cancelled')
+  })
+
+  it('reports the real stop reason once a started prompt begins its turn', async () => {
+    const { turn } = makeTurn(15)
+    turn.acknowledge('started')
+    turn.handleEvent(evt({ type: 'agent_start' }))
+    expect(turn.startedTurn).toBe(true)
+    // Settled after the grace window has passed, so a live timer would have decided first.
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    turn.handleEvent(evt({ type: 'message_end', message: { role: 'assistant', stopReason: 'length' } }))
+    turn.handleEvent(evt({ type: 'agent_settled' }))
+    await expect(turn.settled).resolves.toBe('max_tokens')
+  })
+
+  it('resolves end_turn at once for a prompt Pi handled without a run', async () => {
+    const { turn } = makeTurn()
+    turn.acknowledge('handled')
+    expect(turn.isSettled).toBe(true)
     await expect(turn.settled).resolves.toBe('end_turn')
     expect(turn.startedTurn).toBe(false)
   })
 
-  it('resolves cancelled rather than end_turn when a command prompt was cancelled', async () => {
-    const { turn } = makeTurn(15)
-    turn.armStartTimer(true)
+  it('resolves cancelled for a handled prompt cancelled during the ack', async () => {
+    const { turn } = makeTurn()
     turn.cancel()
+    turn.acknowledge('handled')
     await expect(turn.settled).resolves.toBe('cancelled')
   })
 
-  it('reports the real stop reason when an advertised command does start a turn', async () => {
-    const { turn } = makeTurn(15)
-    turn.armStartTimer(true)
-    turn.handleEvent(evt({ type: 'agent_start' }))
-    expect(turn.startedTurn).toBe(true)
-    // `max_tokens` is unreachable from the quiet path, so it pins that the real
-    // turn settled this and the armed timer never decided anything.
-    turn.handleEvent(evt({ type: 'message_end', message: { role: 'assistant', stopReason: 'length' } }))
-    turn.handleEvent(evt({ type: 'agent_settled' }))
-    await expect(turn.settled).resolves.toBe('max_tokens')
+  it('fails a prompt Pi queued with an internal error', async () => {
+    const { turn } = makeTurn()
+    turn.acknowledge('queued')
+    await expect(turn.settled).rejects.toMatchObject({ name: 'RequestError', code: -32_603, message: expect.stringMatching(/queued/) })
   })
 
   it('reports the user message on its message_end, not its message_start', () => {

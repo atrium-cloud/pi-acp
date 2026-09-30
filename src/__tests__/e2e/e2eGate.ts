@@ -29,7 +29,7 @@ const RUN_E2E_TRUTHY: readonly string[] = [RUN_E2E_VALUE, '1']
  * string depends on the host's model list and must be read back from the
  * adapter's own option set. */
 export const E2E_PROVIDER_SLUG = 'openrouter'
-export const E2E_MODEL_ID = 'deepseek/deepseek-v4-flash-0731'
+export const E2E_MODEL_ID = 'deepseek/deepseek-v4.1-flash'
 
 /** Finds the pinned model's value in a returned config-option set: the bare id,
  * or the provider-prefixed form inside the pinned provider's group when the id

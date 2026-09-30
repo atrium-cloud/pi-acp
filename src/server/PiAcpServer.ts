@@ -79,6 +79,8 @@ export interface PiAcpServerOptions {
   /** Absolute path to the MCP extension, loaded only by a session whose request
    * carries `mcpServers`. */
   readonly mcpExtensionPath: string
+  /** Command names left out of every session's advertised commands. */
+  readonly hiddenCommands: ReadonlySet<string>
   /** Injectable for tests; defaults to spawning a real Pi RPC subprocess. */
   readonly createPiClient?: CreatePiClient | undefined
 }
@@ -140,9 +142,9 @@ export class PiAcpServer {
       agentCapabilities: {
         loadSession: true,
         promptCapabilities: { image: true, audio: false, embeddedContext: true },
-        // Both remote transports are served by the built-in MCP extension; the
+        // HTTP is served by Pi's own built-in MCP support, which rejects SSE; the
         // experimental `acp` transport has no client to proxy to and is refused.
-        mcpCapabilities: { http: true, sse: true },
+        mcpCapabilities: { http: true, sse: false },
         sessionCapabilities: {
           list: {},
           resume: {},
@@ -402,6 +404,7 @@ export class PiAcpServer {
       clientSupportsNotices: this.clientSupportsNotices,
       gateExtensionPath: this.options.gateExtensionPath,
       mcpExtensionPath: this.options.mcpExtensionPath,
+      hiddenCommands: this.options.hiddenCommands,
       createPiClient: this.options.createPiClient,
     }
   }

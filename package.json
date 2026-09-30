@@ -11,27 +11,25 @@
   },
   "scripts": {
     "prepare": "git config core.hooksPath .githooks",
-    "start": "bun run generate && bun src/index.ts",
-    "generate": "node scripts/generate-mcp-extension.mjs",
-    "build": "bun run generate && node build.mjs",
-    "typecheck": "bun run generate && tsc --noEmit",
-    "test": "bun run generate && vitest run",
+    "start": "bun src/index.ts",
+    "build": "node build.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
     "test:e2e": "bun run build && RUN_PI_E2E=true vitest run --no-file-parallelism src/__tests__/e2e",
     "release": "bash scripts/release.sh",
     "package": "bun run build && cp dist/index.js dist/pi-acp && chmod +x dist/pi-acp && rm -f dist/pi-acp.zip && zip -j dist/pi-acp.zip dist/pi-acp LICENSE NOTICE"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "^1.5.0",
-    "@earendil-works/pi-coding-agent": ">=0.87.1",
-    "@modelcontextprotocol/client": "2.1.0",
-    "yaml": "^2.9.1",
-    "zod": "^4.6.5"
+    "@earendil-works/pi-coding-agent": ">=0.99.1",
+    "yaml": "^2.9.1"
   },
   "devDependencies": {
     "@modelcontextprotocol/server": "2.1.0",
     "@types/node": "^26.6.3",
     "esbuild": "^0.28.2",
     "typescript": "^7.0.2",
-    "vitest": "^5.0.2"
+    "vitest": "^5.0.2",
+    "zod": "^4.6.5"
   }
 }

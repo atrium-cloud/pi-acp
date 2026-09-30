@@ -9,9 +9,15 @@
 
 The release is a single executable, `pi-acp`; put it on PATH or point your ACP client at it. On Windows run it as `node pi-acp`.
 
+## Environment
+
+- `PI_ACP_PI_BIN`: the `pi` executable to launch; unset from a checkout.
+- `PI_ACP_RPC_TIMEOUT_MS`: bound on each Pi RPC round-trip; default 30000.
+- `PI_ACP_HIDE_COMMANDS`: comma-separated command names to leave out of the advertised slash commands, for example `llama`.
+
 ## ACP support
 
-The adapter supports rich prompts, streamed message and tool updates, permissions, model and thinking-level configuration, slash commands, MCP servers (stdio, streamable HTTP, SSE), session list/resume/load/close/delete, and forks either from the last settled turn or from an earlier prompt the client names.
+The adapter supports rich prompts, streamed message and tool updates, permissions, model and thinking-level configuration, slash commands, MCP servers (stdio, streamable HTTP) through Pi's own MCP support, session list/resume/load/close/delete, and forks either from the last settled turn or from an earlier prompt the client names.
 
 Audio prompts, session modes, and Pi interactions that need its own terminal UI are not exposed. See [docs/caveats.md](docs/caveats.md) for the gaps that stay open by design and [docs/todos.md](docs/todos.md) for the roadmap.
 
