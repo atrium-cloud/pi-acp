@@ -5,7 +5,7 @@
 - Repo: https://github.com/agentclientprotocol/agent-client-protocol
 - Schema (latest release): https://github.com/agentclientprotocol/agent-client-protocol/releases/latest/download/schema.json
 - Protocol docs: https://agentclientprotocol.com/protocol
-- TypeScript SDK: `@agentclientprotocol/sdk` 1.5.0
+- TypeScript SDK: `@agentclientprotocol/sdk` 1.5.1
     - Generated types: `node_modules/@agentclientprotocol/sdk/dist/schema/types.gen.d.ts`
     - Authoritative method list: `dist/acp.d.ts` `methods`
     - `session/fork` (experimental): head-only by default, or cut at an earlier prompt named by `_meta.acpStack.messageId`, a `_meta` extension (docs/todos.md, the Fork entry under Delivered)
@@ -13,6 +13,7 @@
     - `notice` session update (experimental): sent only to a client that advertises `clientCapabilities.session.notices` (docs/todos.md, the Other extension UI requests entry)
     - Session notices RFD: https://agentclientprotocol.com/rfds/session-notices
     - `ToolCall.name` (stable since 1.5.0): Pi's tool name, on the `tool_call` only
+    - `ndJsonStream` caps one incoming message at `maxMessageBytes` (since 1.5.1, default 32 MiB); the adapter passes no override, and a larger message errors the stream, which ends the connection
     - Draft ACP v2 under `@agentclientprotocol/sdk/experimental/v2`: not used
 
 ## Terminal entries (shell tool rendering)
