@@ -6,7 +6,7 @@ import type { Usage } from '@agentclientprotocol/sdk'
 
 import { PI_SESSION_ARG } from '../../constants.js'
 import type { RpcNotifyRequest } from '../../pi/PiRpcClient.js'
-import type { RpcExtensionUIRequest, RpcExtensionUIResponse } from '../../pi/types.js'
+import type { PromptDisposition, RpcExtensionUIRequest, RpcExtensionUIResponse } from '../../pi/types.js'
 import type { CreatePiClient, PiClientLike } from '../../session/SessionConnection.js'
 import type { JsonAgentSessionEvent } from '../../pi/types.js'
 
@@ -45,8 +45,8 @@ export const DEFAULT_STATS: FakeStats = {
   contextUsage: { tokens: 1234, contextWindow: 200_000, percent: 1 },
 }
 
-/** What the fake adds to its session totals for each `prompt` it acks and each
- * `compact` that succeeds. */
+/** What the fake adds to its session totals for each `prompt` it acks as
+ * `started` and each `compact` that succeeds. */
 export const DEFAULT_TURN_TOKENS: FakeStats['tokens'] = { input: 40, output: 15, cacheRead: 200, cacheWrite: 60, total: 315 }
 
 /** The ACP usage one DEFAULT_TURN_TOKENS turn reports. */
@@ -99,6 +99,8 @@ export interface FakePiSpec {
   failOnce?: string
   /** Makes a `prompt` command reject as a failed preflight. */
   preflightFails?: boolean
+  /** How the `prompt` ack says Pi dispatched it; `started` when unset. */
+  promptDisposition?: PromptDisposition
   /** Emits events synchronously while the `prompt` request is in flight (before
    * the ack resolves), to exercise subscribe-before-send ordering. */
   onPrompt?: (emit: (event: JsonAgentSessionEvent) => void) => void
@@ -225,11 +227,13 @@ export function makeFakePiClient(spec: FakePiSpec): FakePiClient {
         addTurnTokens()
         return { type: 'response', command: 'compact', success: true, data }
       }
-      case 'prompt':
+      case 'prompt': {
         if (spec.preflightFails) throw new Error('fake pi: prompt preflight failed')
-        addTurnTokens()
+        const disposition = spec.promptDisposition ?? 'started'
+        if (disposition === 'started') addTurnTokens()
         spec.onPrompt?.(emit)
-        return { type: 'response', command: 'prompt', success: true }
+        return { type: 'response', command: 'prompt', success: true, data: { disposition } }
+      }
       case 'abort':
         return { type: 'response', command: 'abort', success: true }
       default:

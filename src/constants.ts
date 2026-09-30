@@ -40,15 +40,10 @@ export const ENV_RPC_TIMEOUT_MS = 'PI_ACP_RPC_TIMEOUT_MS'
 export const STDIN_END_GRACE_MS = 5_000
 export const SIGTERM_GRACE_MS = 1_000
 
-// Bounded wait for `agent_start` after the prompt ack. The subprocess is already
-// warm from session/new, so this only catches a prompt that started no turn at
-// all (an extension command this session never advertised, or an extension
-// `input` handler that swallowed the prompt).
+// Bounded wait for `agent_start` after Pi acks a prompt as `started`. The
+// subprocess is already warm from session/new, so this only catches a run Pi
+// reported and never began. A `handled` prompt runs nothing and waits for nothing.
 export const AGENT_START_GRACE_MS = 10_000
-
-// The same wait for a prompt invoking an advertised extension command, where a
-// quiet window is the normal outcome rather than a fault; separate so it tunes on its own.
-export const EXTENSION_COMMAND_QUIET_MS = 10_000
 
 // The prompt ack returns only after preflight, which can run an overflow
 // compaction (a full summarization LLM call) on a long session. That legitimately
@@ -81,14 +76,16 @@ export const PROMPT_BLOCK_SEPARATOR = '\n'
 
 // ── Slash commands ────────────────────────────────────────────────────────────
 //
-// A command is invoked as prompt text. Pi dispatches an extension command by the
-// name between the leading `/` and the first LITERAL space (never any whitespace,
-// so a newline is not a delimiter there), matched against the invocation names
-// `get_commands` reports.
+// A command is invoked as prompt text: `/`, the name, then any arguments after a
+// literal space.
 export const COMMAND_PREFIX = '/'
 export const COMMAND_ARG_SEPARATOR = ' '
-export const COMMAND_SOURCE_EXTENSION = 'extension'
 export const COMMAND_SOURCE_PROMPT = 'prompt'
+
+// Pi disables one built-in extension only through its settings file, never a CLI
+// flag, so this comma-separated list of command names drops the advertised commands instead.
+export const ENV_HIDE_COMMANDS = 'PI_ACP_HIDE_COMMANDS'
+export const HIDE_COMMANDS_SEPARATOR = ','
 
 // A prompt template's `argument-hint`, read by Pi's own frontmatter rule.
 export const FRONTMATTER_DELIMITER = '---'
@@ -314,4 +311,14 @@ export function resolveRpcTimeoutMs(env: NodeJS.ProcessEnv): number {
   if (ms <= 0) throw new Error(`${ENV_RPC_TIMEOUT_MS}="${raw}" must be greater than zero`)
   if (ms > MAX_RPC_TIMEOUT_MS) throw new Error(`${ENV_RPC_TIMEOUT_MS}="${raw}" exceeds the maximum ${MAX_RPC_TIMEOUT_MS}`)
   return ms
+}
+
+export function resolveHiddenCommands(env: NodeJS.ProcessEnv): ReadonlySet<string> {
+  const raw = env[ENV_HIDE_COMMANDS] ?? ''
+  return new Set(
+    raw
+      .split(HIDE_COMMANDS_SEPARATOR)
+      .map((name) => name.trim())
+      .filter((name) => name !== ''),
+  )
 }

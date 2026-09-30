@@ -3,13 +3,12 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import * as acp from '@agentclientprotocol/sdk'
-import type { AgentContext, StopReason } from '@agentclientprotocol/sdk'
+import type { AgentContext } from '@agentclientprotocol/sdk'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
   AGENT_NAME,
   AGENT_START_GRACE_MS,
-  EXTENSION_COMMAND_QUIET_MS,
   MESSAGE_MAP_KEY_MESSAGES,
   MESSAGE_MAP_KEY_VERSION,
   MESSAGE_MAP_VERSION,
@@ -20,14 +19,8 @@ import { PiAcpServer } from '../server/PiAcpServer.js'
 import { messageMapPathFor } from '../session/sessionDirectory.js'
 import { establishSession } from '../session/sessionSetup.js'
 import type { SessionConnection } from '../session/SessionConnection.js'
-import { type FlattenedPrompt, flattenPromptContent } from '../turn/promptContent.js'
-import {
-  DEFAULT_TURN_USAGE,
-  type FakePiSpec,
-  makeFakePiClient,
-  REVIEW_TEMPLATE_PATH,
-  UNREAD_SOURCE_INFO,
-} from './fixtures/fakePiClient.js'
+import type { FlattenedPrompt } from '../turn/promptContent.js'
+import { DEFAULT_TURN_USAGE, type FakePiSpec, makeFakePiClient } from './fixtures/fakePiClient.js'
 
 const LAUNCH = { command: 'pi', args: ['--mode', 'rpc'], source: 'test' }
 const ABS_CWD = '/tmp/pi-acp-session'
@@ -64,6 +57,7 @@ async function connect(spec: FakePiSpec): Promise<{
     notifier,
     clientSupportsNotices: false,
     mcpExtensionPath: MCP_EXTENSION_PATH,
+    hiddenCommands: new Set(),
     createPiClient: fake.createPiClient,
   })
   return { fake, connection: established.connection, notify }
@@ -71,6 +65,7 @@ async function connect(spec: FakePiSpec): Promise<{
 
 const fullTurn = (emit: Emit): void => {
   emit({ type: 'agent_start' } as never)
+  emit({ type: 'message_end', message: { role: 'user', content: 'hi' } } as never)
   emit({ type: 'message_update', usage: {}, assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: 'Hello' } } as never)
   emit({ type: 'message_end', message: { role: 'assistant', stopReason: 'stop' } } as never)
   emit({ type: 'agent_settled' } as never)
@@ -261,7 +256,7 @@ describe('breakpoint message id recording', () => {
   beforeEach(() => {
     store = mkdtempSync(join(tmpdir(), TEMP_PREFIX))
     sessionFile = join(store, SESSION_FILE_NAME)
-    // Pi has flushed the session by the time a turn settles with assistant output.
+    // Pi has written the file by the time it reports the turn's user message.
     writeFileSync(sessionFile, '')
   })
 
@@ -328,13 +323,17 @@ describe('breakpoint message id recording', () => {
     expect(fake.calls.map((call) => call['type'])).not.toContain('get_entries')
   })
 
-  it('records nothing before Pi has written the session file', async () => {
-    rmSync(sessionFile)
-    const { fake, connection } = await connect(specWithEntries([userEntry('u1', 'hi')]))
+  it('records nothing for a turn whose user message Pi never reported', async () => {
+    const withoutUserMessage = (emit: Emit): void => {
+      emit({ type: 'agent_start' } as never)
+      emit({ type: 'message_end', message: { role: 'assistant', stopReason: 'aborted' } } as never)
+      emit({ type: 'agent_settled' } as never)
+    }
+    const { fake, connection } = await connect({ ...specWithEntries([userEntry('u1', 'hi')]), onPrompt: withoutUserMessage })
 
     const outcome = await connection.runPrompt(HELLO, new AbortController().signal, MESSAGE_ID)
 
-    expect(outcome).toEqual({ stopReason: 'end_turn', usage: DEFAULT_TURN_USAGE, acknowledgedMessageId: undefined })
+    expect(outcome).toEqual({ stopReason: 'cancelled', usage: DEFAULT_TURN_USAGE, acknowledgedMessageId: undefined })
     expect(fake.calls.map((call) => call['type'])).not.toContain('get_entries')
     expect(existsSync(messageMapPathFor(sessionFile))).toBe(false)
   })
@@ -358,83 +357,62 @@ describe('breakpoint message id recording', () => {
   })
 })
 
-const EXT_COMMANDS = [
-  { name: 'extcmd', description: 'ext', source: 'extension', sourceInfo: UNREAD_SOURCE_INFO },
-  { name: 'skill:summarize', source: 'skill', sourceInfo: UNREAD_SOURCE_INFO },
-  { name: 'review', description: 'Review code', source: 'prompt', sourceInfo: { path: REVIEW_TEMPLATE_PATH } },
-]
-const QUIET_WINDOW_MS = Math.max(EXTENSION_COMMAND_QUIET_MS, AGENT_START_GRACE_MS)
-/** Pi's dispatch rule, message by message: leading `/` on the untrimmed text and
- * a name delimited by a literal space, matched against the advertised names. */
-const PARSE_TABLE: [message: string, invokesCommand: boolean][] = [
-  ['/extcmd', true],
-  ['/extcmd args', true],
-  ['/extcmd\nargs', false],
-  [' /extcmd', false],
-  ['/unknown', false],
-  ['/skill:summarize', false],
-  ['/review', false],
-  ['just text', false],
-]
+const COMMAND_PROMPT: FlattenedPrompt = { message: '/extcmd', images: [], firstText: '/extcmd' }
 
-describe('extension command prompts', () => {
-  beforeEach(() => {
-    vi.useFakeTimers()
-  })
-  afterEach(() => {
-    vi.useRealTimers()
-  })
+describe('prompt dispositions', () => {
+  it('resolves end_turn at once for a prompt Pi handled, with no title, usage or breakpoint', async () => {
+    const { fake, connection } = await connect({ ...baseSpec(), promptDisposition: 'handled' })
 
-  /** Prompts a Pi that acks and then stays silent, and waits out both windows. */
-  async function runQuiet(prompt: FlattenedPrompt, messageId?: string) {
-    const { fake, connection } = await connect({ ...baseSpec(), commands: EXT_COMMANDS })
-    const settled = connection.runPrompt(prompt, new AbortController().signal, messageId).then(
-      (outcome) => ({
-        reason: outcome.stopReason as StopReason | undefined,
-        usage: outcome.usage,
-        acknowledgedMessageId: outcome.acknowledgedMessageId,
-        error: undefined as unknown,
-      }),
-      (error: unknown) => ({ reason: undefined, usage: undefined, acknowledgedMessageId: undefined, error }),
-    )
-    // Zero first, so the ack resolves and arms the timer before the clock moves.
-    await vi.advanceTimersByTimeAsync(0)
-    await vi.advanceTimersByTimeAsync(QUIET_WINDOW_MS)
-    return { ...(await settled), fake }
-  }
+    const outcome = await connection.runPrompt(COMMAND_PROMPT, new AbortController().signal, MESSAGE_ID)
 
-  const textPrompt = (message: string): FlattenedPrompt => ({ message, images: [], firstText: message })
-
-  it.each(PARSE_TABLE)('reads %j as an advertised extension command: %s', async (message, invokesCommand) => {
-    const { reason, error } = await runQuiet(textPrompt(message))
-    if (invokesCommand) expect(reason).toBe('end_turn')
-    else expect(error).toMatchObject({ code: -32_603, message: expect.stringMatching(/no turn/) })
-  })
-
-  it('matches a multi-block prompt whose joined message begins with the command', async () => {
-    const prompt = flattenPromptContent([
-      { type: 'text', text: '/extcmd go' },
-      { type: 'text', text: 'second block' },
-    ])
-    expect(prompt.message).toBe('/extcmd go\nsecond block')
-    const { reason } = await runQuiet(prompt)
-    expect(reason).toBe('end_turn')
-  })
-
-  it('neither titles nor meters a command prompt that ran no turn', async () => {
-    const { reason, usage, fake } = await runQuiet(textPrompt('/extcmd'))
-    expect(reason).toBe('end_turn')
-    expect(usage).toBeUndefined()
-    expect(fake.calls.map((call) => call['type'])).not.toContain('set_session_name')
-    // The baseline goes out before Pi says whether a turn runs; nothing is read after.
+    expect(outcome).toEqual({ stopReason: 'end_turn', usage: undefined, acknowledgedMessageId: undefined })
+    const types = fake.calls.map((call) => call['type'])
+    expect(types).not.toContain('set_session_name')
+    expect(types).not.toContain('get_entries')
+    // The baseline goes out before Pi says whether a run starts; nothing is read after.
     expect(meteringOrder(fake)).toEqual(['get_session_stats', 'prompt'])
   })
 
-  it('records no breakpoint for a command prompt that ran no turn', async () => {
-    const { reason, acknowledgedMessageId, fake } = await runQuiet(textPrompt('/extcmd'), MESSAGE_ID)
-    expect(reason).toBe('end_turn')
-    expect(acknowledgedMessageId).toBeUndefined()
-    expect(fake.calls.map((call) => call['type'])).not.toContain('get_entries')
+  it('resolves cancelled for a handled prompt cancelled while its ack was in flight', async () => {
+    const controller = new AbortController()
+    const { fake, connection } = await connect({
+      ...baseSpec(() => controller.abort()),
+      promptDisposition: 'handled',
+    })
+
+    const outcome = await connection.runPrompt(COMMAND_PROMPT, controller.signal)
+
+    expect(outcome).toEqual({ stopReason: 'cancelled', usage: undefined, acknowledgedMessageId: undefined })
+    expect(fake.calls.map((call) => call['type'])).toContain('abort')
+  })
+
+  it('rejects a prompt Pi queued with an internal error and frees the session', async () => {
+    const { connection } = await connect({ ...baseSpec(), promptDisposition: 'queued' })
+    const queued = { code: -32_603, message: expect.stringMatching(/queued/) }
+    await expect(connection.runPrompt(HELLO, new AbortController().signal)).rejects.toMatchObject(queued)
+    // Not "a turn is already in progress" (-32600): the failed turn was released.
+    await expect(connection.runPrompt(HELLO, new AbortController().signal)).rejects.toMatchObject(queued)
+  })
+
+  describe('with a started prompt that stays silent', () => {
+    beforeEach(() => {
+      vi.useFakeTimers()
+    })
+    afterEach(() => {
+      vi.useRealTimers()
+    })
+
+    it('fails it with a protocol error once the grace window passes', async () => {
+      const { connection } = await connect(baseSpec())
+      const settled = connection.runPrompt(HELLO, new AbortController().signal).then(
+        () => undefined,
+        (error: unknown) => error,
+      )
+      // Zero first, so the ack resolves and arms the timer before the clock moves.
+      await vi.advanceTimersByTimeAsync(0)
+      await vi.advanceTimersByTimeAsync(AGENT_START_GRACE_MS)
+      expect(await settled).toMatchObject({ code: -32_603, message: expect.stringMatching(/no turn/) })
+    })
   })
 })
 
@@ -446,6 +424,7 @@ describe('session/prompt over the wire', () => {
       rpcTimeoutMs: 1_000,
       sessionDirs: { mode: 'flat', dir: '/tmp/pi-acp-sessions' },
       mcpExtensionPath: MCP_EXTENSION_PATH,
+      hiddenCommands: new Set(),
       createPiClient: fake.createPiClient,
     })
     const app = server.register(acp.agent({ name: AGENT_NAME }))
@@ -484,6 +463,7 @@ describe('session/prompt over the wire', () => {
       rpcTimeoutMs: 1_000,
       sessionDirs: { mode: 'flat', dir: store },
       mcpExtensionPath: MCP_EXTENSION_PATH,
+      hiddenCommands: new Set(),
       createPiClient: fake.createPiClient,
     })
     const app = server.register(acp.agent({ name: AGENT_NAME }))

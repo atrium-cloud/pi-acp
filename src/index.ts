@@ -4,7 +4,7 @@ import { Readable, Writable } from 'node:stream'
 
 import * as acp from '@agentclientprotocol/sdk'
 
-import { AGENT_NAME, AGENT_VERSION, resolveRpcTimeoutMs } from './constants.js'
+import { AGENT_NAME, AGENT_VERSION, resolveHiddenCommands, resolveRpcTimeoutMs } from './constants.js'
 import { materializeMcpExtension } from './mcp/extension.js'
 import { materializeGate } from './permissions/gate.js'
 import { resolvePiLaunch } from './pi/launch.js'
@@ -37,6 +37,7 @@ async function main(): Promise<void> {
     gateExtensionPath: materializeGate(),
     // Written alongside the gate; loaded only by a session that asked for MCP.
     mcpExtensionPath: materializeMcpExtension(),
+    hiddenCommands: resolveHiddenCommands(process.env),
   })
 
   // The SDK speaks Web streams; first arg is the writable (stdout).

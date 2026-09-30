@@ -27,7 +27,7 @@
     - The session directory follows Pi's own precedence: `PI_CODING_AGENT_SESSION_DIR` (one flat directory, tilde-expanded), else the `sessionDir` in `<agent-dir>/settings.json`, else `<agent-dir>/sessions/<encoded-cwd>/`, where `<agent-dir>` is `PI_CODING_AGENT_DIR` else `~/.pi/agent`. The child inherits the environment, so both sides agree on the directory. Pi's app-name override (`piConfig`, which renames the env vars and the `.pi` directory) is not honored.
     - The adapter's scanner never writes; the one file it creates is a fork (the Fork entry under Delivered), in Pi's own format. Pi's own reader repairs a missing trailing newline during a read; the adapter must not replicate that.
 - Pi behaviors the adapter accounts for
-    - Pi buffers a new session in memory and creates the file on the first assistant message, not at spawn; a session that never completed a turn has no file, is absent from `session/list`, and cannot be resumed, forked, or deleted (`resource_not_found`).
+    - Pi buffers a new session in memory and creates the file at the first user message (since 0.99.0; the first assistant message before), not at spawn; a session that never started a turn has no file, is absent from `session/list`, and cannot be resumed, forked, or deleted (`resource_not_found`). A first turn that started and was then cancelled or failed leaves a file.
     - The session name is not a header field: it is the latest `session_info` entry, and an empty name clears it.
     - Pi does not check the process `cwd` against the header `cwd` on `--session` (it adopts the header cwd); the adapter enforces the equality before spawning and refuses a mismatch with `invalid_params`.
     - Pi's RPC mode has no id resolution; only an absolute path is ever passed. A bare id on the CLI can resolve as a "global" match and trigger Pi's interactive fork confirmation on stdin, which is why the path form is used.
@@ -88,7 +88,7 @@ Pi upstream ships an ACP agent on current schemas with session resume, thought-l
 - [x] `session/new`
     - Validate an absolute `cwd`, spawn the child, read `get_state` for the session id and file.
     - Build `configOptions`; send `available_commands_update`.
-    - `mcpServers` are translated and handed to the built-in MCP extension (see the Built-in MCP entry under Delivered); only `type: "acp"`, duplicate names and unparseable urls are rejected.
+    - `mcpServers` are translated into Pi's own server configs and registered through the MCP shim (see the MCP entry under Delivered); a name outside `[A-Za-z0-9_-]`, a duplicate name, the `sse` and `acp` transports, an unknown transport and an unparseable or non-http(s) url are rejected with `invalid_params`.
     - `additionalDirectories` rejected.
     - `available_commands_update` is deferred a macrotask past the response: the SDK client only attaches its per-session update queue inside the `session/new` response callback, so an update sent before that lands is dropped.
 - [x] `session/prompt`
@@ -99,7 +99,8 @@ Pi upstream ships an ACP agent on current schemas with session resume, thought-l
     - `prompt` response `success: false` is a JSON-RPC error.
     - The turn ends on `agent_settled`, not `agent_end`; `agent_end` can be followed by retry, overflow compaction, or queued continuations.
     - A second prompt while the child is streaming is refused; ACP v1 has no steering surface.
-    - A prompt accepted (preflight passed) that starts no turn within a bounded window is a protocol error, not a silent `end_turn`.
+    - The `prompt` ack's `disposition` (Pi 0.99.0) decides what follows: `started` arms the bounded wait for `agent_start`, `handled` (an extension command or input handler consumed the prompt, no run) ends the turn as `end_turn` at once, and `queued` is an internal error, since the adapter refuses a second prompt while one streams.
+    - A prompt accepted as `started` that shows no `agent_start` within the bounded window is a protocol error, not a silent `end_turn`.
 - [x] Stop reasons
     - JSON-RPC errors carrying Pi's message
         - Assistant `stopReason: "error"` with `errorMessage`.
@@ -174,7 +175,8 @@ Pi upstream ships an ACP agent on current schemas with session resume, thought-l
         - `get_commands` drops the hint, so it is re-read from `sourceInfo.path` with Pi's own frontmatter rule.
         - A failed read or parse costs that command its hint only, with one stderr line.
         - Skills and extension commands have no hint in Pi, so they get none.
-    - Nothing in the RPC stream says whether an `extension` command starts an agent loop, so the bounded `agent_start` window decides: a quiet window resolves `end_turn` when the prompt invoked an advertised extension command, and stays a protocol error for every other prompt.
+    - Whether an `extension` command starts an agent loop is read from the `prompt` ack's `disposition`: `handled` resolves `end_turn` without a turn, and a quiet `agent_start` window after `started` stays a protocol error.
+    - Pi 0.99 loads its built-in extensions in RPC mode, so their commands (`/mcp`, `/llama`, reported with `sourceInfo.path` `builtin:<name>`) are advertised like any extension command. `PI_ACP_HIDE_COMMANDS`, a comma-separated list of names, leaves the named commands out of `available_commands_update`; the adapter's own built-ins can be hidden the same way, and a hidden command still runs if a client sends it.
     - Pi's TUI built-ins `/name`, `/session` and `/compact` run over their RPC equivalents; `get_commands` never reports them.
         - Advertised ahead of Pi's commands, with Pi's own descriptions.
         - `/name` carries the hint `<name>`, from Pi's TUI usage line.
@@ -237,7 +239,7 @@ Pi upstream ships an ACP agent on current schemas with session resume, thought-l
     - It is written rather than delegated because Pi's `--fork` copies the parent's file as it stands, in-flight turn included, and Pi's RPC `fork` replaces the session inside the parent's own subprocess and aborts its turn; neither can produce a second live session the parent survives.
     - A parent with a turn in flight in this adapter is forked from its last settled turn.
         - Pi appends a turn's user entry when it reports the user message, so from that report until the turn settles, everything from the last user message on is dropped.
-        - Before that report (a preflight compaction, an extension command's quiet window) and after the turn settles, the file holds only settled turns and is copied whole.
+        - Before that report (a preflight compaction, a prompt Pi handled without a turn) and after the turn settles, the file holds only settled turns and is copied whole.
         - Pi writes the entry before its report reaches stdout, so a reported user message is always on disk.
         - The fork reads the flag before the file, so a true flag always finds the entry in its snapshot.
         - The adapter is the only writer of its own live sessions.
@@ -245,7 +247,7 @@ Pi upstream ships an ACP agent on current schemas with session resume, thought-l
     - The copy is the whole tree (abandoned branches, summaries, labels, the `session_info` name included), so the fork inherits the parent's title until it is renamed.
     - The fork's file exists before its first turn, so unlike a `session/new` session it is immediately listable, resumable and deletable.
     - Forking into another `cwd` is supported and lands the file under that cwd's session directory; the parent's own cwd is never checked, since cross-project forking is the point of the method.
-    - A parent Pi never flushed has no file and is `resource_not_found`, the same reading `session/resume` and `session/delete` take.
+    - A parent Pi never flushed (no turn ever started) has no file and is `resource_not_found`, the same reading `session/resume` and `session/delete` take.
     - The fork is returned live and promptable (`{ sessionId, configOptions }`, commands announced after the response, as on `session/new`); history is not replayed, since replay is `session/load`'s contract.
     - `sessionCapabilities.fork` is advertised even though the ACP SDK marks the method experimental.
     - Without a breakpoint the fork starts from the parent's last file entry.
@@ -264,42 +266,32 @@ Pi upstream ships an ACP agent on current schemas with session resume, thought-l
         - Naming the session's first prompt forks to a session with no conversation.
         - A failed map write costs that prompt its echo only; the turn still resolves with its own stop reason, and one stderr line names the failure.
         - A message id that was never recorded is `invalid_params`, and so is one mapped to an entry that is not a user message.
-        - A prompt cancelled after its turn started still records and echoes its message id (the user entry is already in Pi's tree, so the fork point stands); a prompt aborted before anything was sent records nothing.
+        - A prompt cancelled after Pi reported its user message still records and echoes its message id (the user entry is already in Pi's tree, so the fork point stands); one cancelled before that report records nothing, since the last user entry would be the previous prompt's.
         - The sidecar is rewritten whole under a single adapter process; two adapter processes sharing one session store can clobber each other's maps, which is not supported.
-- [x] Built-in MCP
-    - Pi has no native MCP, so the adapter brings its own: a second pi-acp-owned Pi extension with `@modelcontextprotocol/client` 2.1 bundled self-contained by `scripts/generate-mcp-extension.mjs`, materialized to a temp file at startup and loaded with a second `-e` by a session whose request carries servers.
-    - The translated server list is handed over in `PI_ACP_MCP_SERVERS`, which the extension parses and deletes in its factory body before any tool or MCP subprocess can inherit it; the residue is the Pi process environment for its lifetime.
-    - A stdio server gets the SDK's safe-list environment (`HOME`, `LOGNAME`, `PATH`, `SHELL`, `TERM`, `USER`; the Windows equivalents there) plus the ACP `env` entries, never a `process.env` spread, so one server's secrets stay out of another's subprocess; the integration test spawns a server that reports its environment to pin this.
-    - Protocol negotiation is `auto`: a 2026-07-28 server is spoken to on its own revision via `server/discover`, an older one falls back to the `initialize` handshake.
-    - Tools are registered in the async extension factory, which Pi awaits before `session_start`, so they exist before the first prompt.
-    - `parameters` is the server's own JSON Schema (minus the root `$schema` and `additionalProperties`); Pi's validator handles raw JSON Schema natively, so the schema is not converted. At call time one layer of JSON string is unwrapped for an `object` or `array` parameter, since models emit that shape.
-    - Tool names are `mcp__<server>__<tool>` with each part sanitized to `[A-Za-z0-9_]`; a name that collides after sanitization is skipped with a stderr line.
+- [x] MCP through Pi's built-in support (Pi 0.99.0; the adapter's own bundled MCP client, shipped 2026-08-29, was dropped on 2026-09-30)
+    - A pi-acp-owned Pi extension of a few lines, built from a source string like the gate and loaded with a second `-e` by a session whose request carries servers, calls `pi.registerMcpServer(name, config)` for each server; Pi's built-in `builtin:mcp` extension connects them on `session_start` and registers their tools as `mcp__<server>__<tool>`, every call running through Pi's tool pipeline.
+    - The translated server list is handed over in `PI_ACP_MCP_SERVERS`, which the extension parses and deletes as its first action: Pi spawns every stdio server with the whole `process.env`, so an undeleted payload would hand each server every other server's headers and env.
+    - Translation to Pi's `McpServerConfig` (`src/mcp/servers.ts`)
+        - stdio: `command`, `args`, `env`; http: `url`, `headers`. The session cwd is the server cwd, as Pi resolves a missing `cwd`.
+        - `exposure: "direct"` on every server, so the tools are declared to the model like built-ins. Pi's default, `codemode`, would hide them behind a JS-sandbox tool the model scripts against, which no ACP client renders.
+        - Pi interpolates `env` and `headers` values (`${NAME}`, `$NAME`, a leading `!cmd`), and ACP values are literals, so each `$` becomes `$$` and a value starting with `!` gets a `$` in front; verified live to come out verbatim.
+        - Rejected with `invalid_params`: a name outside Pi's `^[A-Za-z0-9_-]+$`, a duplicate name, `sse` (Pi dropped the legacy transport; the message points at streamable HTTP), the experimental `acp` transport, an unknown transport, an unparseable or non-http(s) url.
+    - `mcpCapabilities { http: true, sse: false }` is advertised at `initialize`.
     - Every MCP tool goes through the permission gate: the gate asks for the mutating built-ins plus anything carrying the `mcp__` prefix, since third-party tool code cannot be classified.
-    - Results are flattened onto Pi's text/image content: text and images are kept, embedded resources, resource links and audio become text, `structuredContent` is the fallback when a result carries no content blocks, and text is bounded to 50 KiB / 2000 lines with images exempt from the byte count.
-    - `isError: true` throws, which Pi surfaces as a failed tool call.
-    - A server that fails to connect or to list its tools is skipped, and the session proceeds without its tools.
-        - The extension writes the failure to stderr with the server's stderr tail.
-        - It also calls `ctx.ui.notify(..., 'warning')` from a `session_start` handler, the first point Pi has bound its UI context.
-        - The notify carries the short error only, since it becomes a notice title.
-        - A client that advertised notices gets it as a `notice` (the Other extension UI requests entry).
-    - `mcpCapabilities { http, sse }` is advertised at `initialize`; the experimental `acp` transport is rejected with invalid_params.
-    - Client headers ride `requestInit` on both SSE legs.
-        - The SDK applies them to the stream GET too, so nothing re-adds them there.
-    - Nothing persists across sessions: each of `session/new`, `session/resume`, `session/load` and `session/fork` registers exactly what its own request carries, and an absent list means none.
-    - `tools/list_changed` is ignored: Pi has no `unregisterTool`, and ACP has no tool-list surface to push a change to.
-    - A client that can name a stdio `command` can run anything in the Pi environment; that is inherent to the ACP schema, and no env or header value is interpolated.
-    - Image blocks are passed to the model unvalidated, as Pi does for its own tools; a server returning an image the provider rejects fails that turn and every later turn of the session, since the image stays in the transcript.
+    - A server that fails to connect is reported once by Pi through `ctx.ui.notify(..., 'warning')` after the startup connections settle, and the session proceeds without its tools; a client that advertised notices gets it as a `notice` (the Other extension UI requests entry). The first prompt waits up to 10 s for servers still connecting.
+    - Pi owns what the bundled client used to: protocol negotiation, result mapping (text over 20 KB is middle-truncated with the full text in a temp file), `isError` results, `tools/list_changed`, reconnects, resources (`list_mcp_resources`, `read_mcp_resource`), and OAuth (unusable over RPC, docs/caveats.md).
+    - Nothing persists across sessions: each of `session/new`, `session/resume`, `session/load` and `session/fork` registers exactly what its own request carries, and an absent list means none. Pi's own `mcp.json` servers connect in every session besides, and an entry there with the same name overrides the client's (docs/caveats.md).
+    - A client that can name a stdio `command` can run anything in the Pi environment; that is inherent to the ACP schema.
 - [x] Extension-command slash commands
-    - Advertised alongside `prompt` and `skill` commands, with their invocation names (Pi's `name:1` / `name:2` disambiguation included) threaded to the session connection.
-    - `runPrompt` recognizes an invocation with Pi's own parse — a leading `/` on the untrimmed message and a name delimited by the first literal space — and arms the start window with that flag, so a quiet `EXTENSION_COMMAND_QUIET_MS` resolves `end_turn` instead of the protocol error; a cancel still wins, and a command that does start a turn is indistinguishable from an ordinary prompt.
-    - A prompt that ran no turn skips the title and usage round-trips: its text is a command line, not a title, and no tokens were spent.
+    - Advertised alongside `prompt` and `skill` commands, with their invocation names (Pi's `name:1` / `name:2` disambiguation included).
+    - A prompt Pi answers `handled` ran no turn and skips the title and usage round-trips: its text is a command line, not a title, and no tokens were spent. A cancel that landed during the ack window still wins as `cancelled`.
 - [x] Verified on the sprite against Pi 0.84.3 (2026-08-29): extension commands, fork (cross-cwd and mid-turn), MCP over stdio, streamable HTTP and SSE, including through a single-file build with no `node_modules`.
 
 - [x] Snapshot test harness (`src/__tests__/acpTestFixture.ts`): scripted Pi RPC events in, recorded ACP transcript out, no real Pi. New adapter tests default to this style.
 - [x] E2E harness (`src/__tests__/e2e/`): the built `dist/index.js` driven as a real ACP client against a real Pi.
     - Uses the host's own Pi credentials; only the session store is redirected to scratch (`PI_CODING_AGENT_SESSION_DIR`).
-    - `RUN_PI_E2E=true` (`bun run test:e2e`); model `openrouter/deepseek/deepseek-v4-flash-0731`.
-    - 25 cases across turns, config, lifecycle, fork, permissions, prompt content, MCP stdio, extension commands, prompt template hints, built-in commands, notices. 25/25 on the sprite against Pi 0.87.1 (2026-09-28).
+    - `RUN_PI_E2E=true` (`bun run test:e2e`); model `openrouter/deepseek/deepseek-v4.1-flash` (moved from `deepseek-v4-flash-0731` on 2026-09-30, at a third of the output price).
+    - 25 cases across turns, config, lifecycle, fork, permissions, prompt content, MCP stdio, extension commands, prompt template hints, built-in commands, notices. 25/25 on the sprite against Pi 0.99.1 (2026-09-30).
     - The three cancel cases hold the turn open with a `sleep 30` bash call and cancel on the `tool_call` update: a long streamed reply can arrive from the provider as one burst with the settle right behind it, which is how they failed on 2026-09-21.
 - [x] Distribution: one `pi-acp.zip` (the `pi-acp` executable, a hashbang bundle, plus LICENSE and NOTICE) on GitHub Releases, no npm. Needs Node 22.19+ on PATH and `PI_ACP_PI_BIN`.
 - [x] CI (`.github/workflows/ci.yml`): typecheck, unit tests, build, `--version` smoke, `bun run package`.
@@ -313,5 +305,12 @@ Pi upstream ships an ACP agent on current schemas with session resume, thought-l
         - `get_messages` can return `system` messages (the prompt and tool state); replay skips them.
         - Tool results no longer carry `addedToolNames`.
         - `rpc-types.d.ts` itself is unchanged.
+    - 0.87.1 → 0.99.1 on 2026-09-30, all three green before any adapter change; the floor moved to `>=0.99.1` because the adapter now depends on 0.99 behavior.
+        - Built-in MCP, codemode and tool search ship as `builtin:<name>` extensions that load in RPC mode; the bundled MCP client was replaced by the `registerMcpServer` shim (the MCP entry above).
+        - The `prompt` ack carries `data.disposition`; `steer` and `follow_up` acks do too.
+        - The session file is created at the first user message.
+        - `get_commands` lists `/mcp` and `/llama`; `PI_ACP_HIDE_COMMANDS` was added for that.
+        - A `bash` non-zero exit is an `isError` result rather than a throw; the model-facing text and the parsed exit line are unchanged.
+        - Nested tool calls (`ctx.executeTool`) carry `parentToolCallId` and `<parent>/<n>` ids (docs/caveats.md).
     - docs/refs.md carries the range.
-- [x] docs/caveats.md holds the gaps that stay open by design (MCP tool-list changes and startup status, the extension-command quiet window, unforwarded extension notifications, project trust, session-replacing commands), each with the reason.
+- [x] docs/caveats.md holds the gaps that stay open by design (MCP startup status, Pi's own `mcp.json` servers, MCP OAuth, the MCP server environment, unforwarded extension notifications, advertised built-in commands, project trust, session-replacing commands, nested tool calls), each with the reason.

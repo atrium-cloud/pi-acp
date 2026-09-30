@@ -1,5 +1,3 @@
-import { existsSync } from 'node:fs'
-
 import * as acp from '@agentclientprotocol/sdk'
 import type { AgentContext, AvailableCommand, SessionConfigOption, SessionUpdate, StopReason, Usage } from '@agentclientprotocol/sdk'
 
@@ -15,8 +13,6 @@ import {
   builtinTextName,
   builtinTextNameNormalized,
   builtinTextNameSet,
-  COMMAND_ARG_SEPARATOR,
-  COMMAND_PREFIX,
   COMPACT_TIMEOUT_MS,
   CONFIG_ID_MODEL,
   CONFIG_ID_THOUGHT_LEVEL,
@@ -89,7 +85,6 @@ export interface SessionConnectionInit {
   readonly state: RpcSessionState
   readonly models: readonly ModelChoice[]
   readonly levels: readonly ThinkingLevelValue[]
-  readonly extensionCommandNames: readonly string[]
 }
 
 /** Persistent per-session object, created at `session/new` and living until the
@@ -115,11 +110,6 @@ export class SessionConnection {
   private closing = false
   /** True until this session gets a name; the first prompt derives one. */
   private needsTitle = false
-  /** The extension commands advertised at establishment. The snapshot can drift
-   * either way and both directions are safe: one Pi no longer knows falls through
-   * to a normal turn (`agent_start` clears the timer), and one registered later
-   * behaves as every prompt did before it was advertised. */
-  private extensionCommandNames: ReadonlySet<string> = new Set()
   /** Pi's own file for this session, undefined when Pi persists nothing; without
    * it there is nowhere to put the sidecar, so nothing is ever recorded. */
   private sessionFile: string | undefined
@@ -143,7 +133,6 @@ export class SessionConnection {
     this.config = this.buildConfig(init.state, init.models, init.levels)
     this.needsTitle = (init.state.sessionName ?? '').trim() === ''
     this.sessionFile = init.state.sessionFile
-    this.extensionCommandNames = new Set(init.extensionCommandNames)
   }
 
   get configOptions(): SessionConfigOption[] {
@@ -361,9 +350,14 @@ export class SessionConnection {
       const before = this.readSessionTokens(client)
       try {
         // The ack returns only after preflight (which can run a compaction), so it
-        // gets a far more generous bound than a metadata round-trip.
-        await client.request({ type: 'prompt', message: prompt.message, images: prompt.images }, { timeoutMs: PROMPT_ACK_TIMEOUT_MS })
-        turn.armStartTimer(this.invokesExtensionCommand(prompt.message))
+        // gets a far more generous bound than a metadata round-trip. Its
+        // disposition says whether a run started or an extension command handled
+        // the prompt without one.
+        const ack = await client.request(
+          { type: 'prompt', message: prompt.message, images: prompt.images },
+          { timeoutMs: PROMPT_ACK_TIMEOUT_MS },
+        )
+        turn.acknowledge(ack.data.disposition)
       } catch (ackFailure) {
         // A close during preflight rejects the in-flight ack through the
         // transport. The turn was abandoned in the same breath, so it already
@@ -378,8 +372,10 @@ export class SessionConnection {
       if (this.closing || !turn.startedTurn) return { stopReason: reason, usage: undefined, acknowledgedMessageId: undefined }
       await this.maybeSetTitle(client, prompt.firstText)
       const usage = await this.reportEndOfTurnUsage(client, await before)
+      // Only a reported user message is in Pi's tree; before that report the last
+      // user entry is the previous prompt's.
       const acknowledgedMessageId =
-        messageId === undefined ? undefined : await this.recordMessageId(client, messageId)
+        messageId === undefined || !turn.reportedUserMessage ? undefined : await this.recordMessageId(client, messageId)
       return { stopReason: reason, usage, acknowledgedMessageId }
     } finally {
       signal.removeEventListener('abort', onAbort)
@@ -463,17 +459,6 @@ export class SessionConnection {
     this.emit({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } })
   }
 
-  /** Mirrors Pi's own dispatch parse so the two agree on what is a command: the
-   * untrimmed message must start with `/`, and the name runs to the first literal
-   * space (`indexOf`, never a whitespace class — Pi's newline is part of the name
-   * and so matches nothing). */
-  private invokesExtensionCommand(message: string): boolean {
-    if (!message.startsWith(COMMAND_PREFIX)) return false
-    const separatorIndex = message.indexOf(COMMAND_ARG_SEPARATOR)
-    const name = message.slice(COMMAND_PREFIX.length, separatorIndex === -1 ? undefined : separatorIndex)
-    return this.extensionCommandNames.has(name)
-  }
-
   /** Pi's session token totals, read just before the command that runs a turn,
    * with no await in between: Pi answers in arrival order, so the read predates
    * the turn, and a cancel cannot slip in before that command is sent. */
@@ -506,20 +491,17 @@ export class SessionConnection {
   }
 
   /** Binds the client's breakpoint message id to the Pi entry id of the prompt
-   * this turn just ran, so a later fork can cut the tree there. Pi appends the
-   * user entry as the turn starts, so by `agent_settled` the turn's prompt is the
-   * last user message entry in file order. Returns the id only once the sidecar
-   * holds it: an unrecorded prompt must not be echoed as forkable, so every
-   * failure here degrades to no echo rather than failing the turn. */
+   * this turn just ran, so a later fork can cut the tree there. Called once Pi
+   * has reported the turn's user message, which it appends to the file (creating
+   * it on a first turn) before the report reaches stdout, so the turn's prompt is
+   * the last user message entry in file order. Returns the id only once the
+   * sidecar holds it: an unrecorded prompt must not be echoed as forkable, so
+   * every failure here degrades to no echo rather than failing the turn. */
   private async recordMessageId(client: PiClientLike, messageId: string): Promise<string | undefined> {
     const sessionFile = this.sessionFile
     if (sessionFile === undefined) return undefined
     const sidecarPath = messageMapPathFor(sessionFile)
     try {
-      // Pi creates the file on the first assistant message, so a first turn that
-      // ended before one holds nothing a fork could cut, and a sidecar beside a
-      // file that may never appear would be an orphan in the store.
-      if (!existsSync(sessionFile)) throw new Error('Pi has not written the session file yet')
       const entries = await client.request({ type: 'get_entries' })
       const entryId = lastUserEntryId(entries.data.entries)
       if (entryId === undefined) throw new Error('the session tree holds no user message entry')

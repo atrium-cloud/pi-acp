@@ -252,7 +252,7 @@ describeE2E('pi live session lifecycle', () => {
     async () => {
       const agent = live()
       const sessionId = await openPinnedSession(agent)
-      // Pi creates the file on the first assistant message, so the turn is what
+      // Pi creates the file at the first user message, so the prompt is what
       // makes this session deletable at all.
       expect((await promptOn(sessionId, ECHO_PROMPT)).stopReason).toBe('end_turn')
 

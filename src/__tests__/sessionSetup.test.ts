@@ -105,6 +105,7 @@ function makeDeps(fake: ReturnType<typeof makeFakePiClient>) {
     notifier: stubNotifier,
     clientSupportsNotices: false,
     mcpExtensionPath: MCP_EXTENSION_PATH,
+    hiddenCommands: new Set<string>(),
     createPiClient: fake.createPiClient,
   }
 }
@@ -121,11 +122,8 @@ const STDIO_SERVER: McpServer = {
   env: [{ name: 'TOKEN', value: 's3cret' }],
 }
 const STDIO_SPEC = {
-  kind: 'stdio',
   name: 'probe',
-  command: '/usr/bin/probe',
-  args: ['--serve'],
-  env: { TOKEN: 's3cret' },
+  config: { type: 'stdio', command: '/usr/bin/probe', args: ['--serve'], env: { TOKEN: 's3cret' }, exposure: 'direct' },
 }
 
 describe('establishSession', () => {
@@ -164,14 +162,20 @@ describe('establishSession', () => {
       { name: 'compact:1', description: 'first' },
       { name: 'compact:2', description: '' },
     ])
-    // `/session args` is no built-in, so it still reaches the extension through Pi.
-    expect(established.extensionCommandNames).toEqual(['session', 'compact:1', 'compact:2'])
   })
 
-  it('threads the extension invocation names through verbatim', async () => {
+  it('hides a listed Pi command and a listed adapter built-in by exact name', async () => {
     const fake = makeFakePiClient(makeSpec())
-    const established = await establishSession({ cwd: ABS_CWD, mcpServers: [] }, makeDeps(fake))
-    expect(established.extensionCommandNames).toEqual(['extcmd', 'review:1', 'review:2'])
+    const established = await establishSession(
+      { cwd: ABS_CWD, mcpServers: [] },
+      { ...makeDeps(fake), hiddenCommands: new Set(['extcmd', 'compact', 'review:1']) },
+    )
+    expect(established.availableCommands).toStrictEqual([
+      ...BUILTIN_COMMANDS.filter((command) => command.name !== 'compact'),
+      { name: 'review', description: 'Review code' },
+      { name: 'skill:summarize', description: '' },
+      { name: 'review:2', description: '' },
+    ])
   })
 
   it('rejects a relative cwd with invalid params', async () => {
@@ -414,6 +418,20 @@ describe('prompt template argument hints', () => {
     expect(await advertise([shadowed])).toStrictEqual([])
     expect(errorSpy).not.toHaveBeenCalled()
   })
+
+  it('never reads the template of a hidden command', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const hidden = reviewCommand(join(templateDir, MISSING_FILE_NAME))
+    const fake = makeFakePiClient({ ...makeSpec(), commands: [hidden] })
+
+    const established = await establishSession(
+      { cwd: ABS_CWD, mcpServers: [] },
+      { ...makeDeps(fake), hiddenCommands: new Set([hidden.name]) },
+    )
+
+    expect(established.availableCommands).toStrictEqual(BUILTIN_COMMANDS)
+    expect(errorSpy).not.toHaveBeenCalled()
+  })
 })
 
 describe('parseArgumentHint', () => {
@@ -445,13 +463,14 @@ describe('parseArgumentHint', () => {
 })
 
 describe('session/new over the wire', () => {
-  function connectOnce(spec: FakePiSpec): Promise<unknown> {
+  function connectOnce(spec: FakePiSpec, hiddenCommands: ReadonlySet<string> = new Set()): Promise<unknown> {
     const fake = makeFakePiClient(spec)
     const server = new PiAcpServer({
       launch: LAUNCH,
       rpcTimeoutMs: 1_000,
       sessionDirs: SESSION_DIRS,
       mcpExtensionPath: MCP_EXTENSION_PATH,
+      hiddenCommands,
       createPiClient: fake.createPiClient,
     })
     const app = server.register(acp.agent({ name: AGENT_NAME }))
@@ -470,6 +489,18 @@ describe('session/new over the wire', () => {
     expect(message).toMatchObject({
       kind: 'session_update',
       update: { sessionUpdate: 'available_commands_update', availableCommands: EXPECTED_COMMANDS },
+    })
+  })
+
+  it('leaves the server-wide hidden commands out of available_commands_update', async () => {
+    const message = await connectOnce(makeSpec(), new Set(['session', 'extcmd']))
+
+    expect(message).toMatchObject({
+      kind: 'session_update',
+      update: {
+        sessionUpdate: 'available_commands_update',
+        availableCommands: EXPECTED_COMMANDS.filter((command) => command.name !== 'session' && command.name !== 'extcmd'),
+      },
     })
   })
 

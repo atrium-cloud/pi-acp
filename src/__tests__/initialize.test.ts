@@ -18,6 +18,7 @@ function makeServer(): PiAcpServer {
     rpcTimeoutMs: 30_000,
     sessionDirs: { mode: 'flat', dir: '/tmp/pi-acp-sessions' },
     mcpExtensionPath: '/tmp/mcp-extension.mjs',
+    hiddenCommands: new Set(),
   })
 }
 
@@ -39,7 +40,7 @@ describe('initialize (over an ACP connection)', () => {
       agentCapabilities: {
         loadSession: true,
         promptCapabilities: { image: true, audio: false, embeddedContext: true },
-        mcpCapabilities: { http: true, sse: true },
+        mcpCapabilities: { http: true, sse: false },
         sessionCapabilities: {
           list: {},
           resume: {},
