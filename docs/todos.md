@@ -168,10 +168,18 @@ Pi upstream ships an ACP agent on current schemas with session resume, thought-l
 - [x] Slash commands
     - `get_commands` snapshot sent as `available_commands_update`; invoked as `/name args` prompt text.
     - Command metadata comes from `sourceInfo` (`{ path, source, scope, origin }`).
-    - All three sources are advertised (`prompt`, `skill`, `extension`); no `input` hint is emitted, since the snapshot carries no argument hint to map onto it.
+    - All three sources are advertised (`prompt`, `skill`, `extension`).
+    - Argument hints (`input.hint`)
+        - A prompt template carries its frontmatter `argument-hint`.
+        - `get_commands` drops the hint, so it is re-read from `sourceInfo.path` with Pi's own frontmatter rule.
+        - A failed read or parse costs that command its hint only, with one stderr line.
+        - Skills and extension commands have no hint in Pi, so they get none.
     - Nothing in the RPC stream says whether an `extension` command starts an agent loop, so the bounded `agent_start` window decides: a quiet window resolves `end_turn` when the prompt invoked an advertised extension command, and stays a protocol error for every other prompt.
     - Pi's TUI built-ins `/name`, `/session` and `/compact` run over their RPC equivalents; `get_commands` never reports them.
-        - Advertised ahead of Pi's commands, with Pi's own descriptions and no `input`, like Pi's commands.
+        - Advertised ahead of Pi's commands, with Pi's own descriptions.
+        - `/name` carries the hint `<name>`, from Pi's TUI usage line.
+        - `/session` and `/compact` carry none.
+        - `/compact` normally runs bare, and a client does not send a command with `input` straight from its menu.
         - A Pi command of the same name is not advertised; the built-in shadows it on submit, as in the TUI.
         - Recognized with the TUI's own parse of the trimmed prompt text.
         - A running built-in holds the session like a turn, so a second prompt is refused.
@@ -291,7 +299,7 @@ Pi upstream ships an ACP agent on current schemas with session resume, thought-l
 - [x] E2E harness (`src/__tests__/e2e/`): the built `dist/index.js` driven as a real ACP client against a real Pi.
     - Uses the host's own Pi credentials; only the session store is redirected to scratch (`PI_CODING_AGENT_SESSION_DIR`).
     - `RUN_PI_E2E=true` (`bun run test:e2e`); model `openrouter/deepseek/deepseek-v4-flash-0731`.
-    - 24 cases across turns, config, lifecycle, fork, permissions, prompt content, MCP stdio, extension commands, built-in commands, notices. 24/24 on the sprite against Pi 0.87.1 (2026-09-25).
+    - 25 cases across turns, config, lifecycle, fork, permissions, prompt content, MCP stdio, extension commands, prompt template hints, built-in commands, notices. 25/25 on the sprite against Pi 0.87.1 (2026-09-28).
     - The three cancel cases hold the turn open with a `sleep 30` bash call and cancel on the `tool_call` update: a long streamed reply can arrive from the provider as one burst with the settle right behind it, which is how they failed on 2026-09-21.
 - [x] Distribution: one `pi-acp.zip` (the `pi-acp` executable, a hashbang bundle, plus LICENSE and NOTICE) on GitHub Releases, no npm. Needs Node 22.19+ on PATH and `PI_ACP_PI_BIN`.
 - [x] CI (`.github/workflows/ci.yml`): typecheck, unit tests, build, `--version` smoke, `bun run package`.

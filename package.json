@@ -24,6 +24,7 @@
     "@agentclientprotocol/sdk": "^1.5.0",
     "@earendil-works/pi-coding-agent": ">=0.87.1",
     "@modelcontextprotocol/client": "2.1.0",
+    "yaml": "^2.9.1",
     "zod": "^4.6.5"
   },
   "devDependencies": {

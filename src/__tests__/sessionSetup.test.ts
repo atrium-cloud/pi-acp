@@ -1,6 +1,10 @@
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
 import * as acp from '@agentclientprotocol/sdk'
-import type { AgentContext, McpServer } from '@agentclientprotocol/sdk'
-import { describe, expect, it, vi } from 'vitest'
+import type { AgentContext, AvailableCommand, McpServer } from '@agentclientprotocol/sdk'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
   AGENT_NAME,
@@ -14,10 +18,21 @@ import {
 } from '../constants.js'
 import { PiAcpServer } from '../server/PiAcpServer.js'
 import type { SessionDirs } from '../session/sessionDirectory.js'
-import { establishSession } from '../session/sessionSetup.js'
-import { type FakePiSpec, makeFakePiClient } from './fixtures/fakePiClient.js'
+import { establishSession, parseArgumentHint } from '../session/sessionSetup.js'
+import {
+  type FakeCommand,
+  type FakePiSpec,
+  makeFakePiClient,
+  REVIEW_TEMPLATE_PATH,
+  UNREAD_SOURCE_INFO,
+} from './fixtures/fakePiClient.js'
 
 const LAUNCH = { command: 'pi', args: ['--mode', 'rpc'], source: 'test' }
+const TEMPLATE_DIR_PREFIX = 'pi-acp-templates-'
+const TEMPLATE_FILE_NAME = 'review.md'
+const MISSING_FILE_NAME = 'missing.md'
+const HINTED_TEMPLATE = '---\ndescription: Review code\nargument-hint: "[focus]"\n---\nReview $1\n'
+const BOM = String.fromCodePoint(0xfe_ff)
 
 function makeSpec(): FakePiSpec {
   return {
@@ -28,12 +43,12 @@ function makeSpec(): FakePiSpec {
     ],
     levels: ['off', 'low', 'high'],
     commands: [
-      { name: 'review', description: 'Review code', source: 'prompt' },
-      { name: 'skill:summarize', source: 'skill' },
-      { name: 'extcmd', description: 'ext', source: 'extension' },
+      { name: 'review', description: 'Review code', source: 'prompt', sourceInfo: { path: REVIEW_TEMPLATE_PATH } },
+      { name: 'skill:summarize', source: 'skill', sourceInfo: UNREAD_SOURCE_INFO },
+      { name: 'extcmd', description: 'ext', source: 'extension', sourceInfo: UNREAD_SOURCE_INFO },
       // Two extensions registering one name; Pi dispatches on the disambiguated form.
-      { name: 'review:1', description: 'first', source: 'extension' },
-      { name: 'review:2', source: 'extension' },
+      { name: 'review:1', description: 'first', source: 'extension', sourceInfo: UNREAD_SOURCE_INFO },
+      { name: 'review:2', source: 'extension', sourceInfo: UNREAD_SOURCE_INFO },
     ],
   }
 }
@@ -123,20 +138,24 @@ describe('establishSession', () => {
     expect(established.sessionId).toBe('sess-1')
     expect(established.configOptions).toEqual(EXPECTED_OPTIONS)
     // Extension commands are advertised too; a missing description becomes empty.
-    expect(established.availableCommands).toEqual(EXPECTED_COMMANDS)
-    // Pi's snapshot carries no argument hint, so none of its commands gets an `input`.
-    const piCommands = established.availableCommands.slice(BUILTIN_COMMANDS.length)
-    expect(piCommands.some((command) => 'input' in command)).toBe(false)
+    // Strict, so an `input: undefined` fails too: `review`'s template declares no
+    // hint, and Pi gives a skill or extension command none.
+    expect(established.availableCommands).toStrictEqual(EXPECTED_COMMANDS)
+    expect(established.availableCommands.slice(0, BUILTIN_COMMANDS.length)).toStrictEqual([
+      { name: 'name', description: 'Set session display name', input: { hint: '<name>' } },
+      { name: 'session', description: 'Show session info and stats' },
+      { name: 'compact', description: 'Manually compact the session context' },
+    ])
   })
 
   it('drops a Pi command a built-in shadows, from any source, but keeps its disambiguated form', async () => {
     const fake = makeFakePiClient({
       ...makeSpec(),
       commands: [
-        { name: 'name', description: 'template', source: 'prompt' },
-        { name: 'session', description: 'ext', source: 'extension' },
-        { name: 'compact:1', description: 'first', source: 'extension' },
-        { name: 'compact:2', source: 'extension' },
+        { name: 'name', description: 'template', source: 'prompt', sourceInfo: UNREAD_SOURCE_INFO },
+        { name: 'session', description: 'ext', source: 'extension', sourceInfo: UNREAD_SOURCE_INFO },
+        { name: 'compact:1', description: 'first', source: 'extension', sourceInfo: UNREAD_SOURCE_INFO },
+        { name: 'compact:2', source: 'extension', sourceInfo: UNREAD_SOURCE_INFO },
       ],
     })
     const established = await establishSession({ cwd: ABS_CWD, mcpServers: [] }, makeDeps(fake))
@@ -288,9 +307,146 @@ describe('establishSession', () => {
   })
 })
 
+describe('prompt template argument hints', () => {
+  let templateDir: string
+
+  beforeEach(() => {
+    templateDir = mkdtempSync(join(tmpdir(), TEMPLATE_DIR_PREFIX))
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+    rmSync(templateDir, { recursive: true, force: true })
+  })
+
+  function writeTemplate(content: string): string {
+    const path = join(templateDir, TEMPLATE_FILE_NAME)
+    writeFileSync(path, content, 'utf8')
+    return path
+  }
+
+  function reviewCommand(path: string, source = 'prompt'): FakeCommand {
+    return { name: 'review', description: 'Review code', source, sourceInfo: { path } }
+  }
+
+  /** Pi's commands as advertised, past the built-ins. */
+  async function advertise(commands: FakeCommand[]): Promise<AvailableCommand[]> {
+    const fake = makeFakePiClient({ ...makeSpec(), commands })
+    const established = await establishSession({ cwd: ABS_CWD, mcpServers: [] }, makeDeps(fake))
+    return established.availableCommands.slice(BUILTIN_COMMANDS.length)
+  }
+
+  it('advertises a quoted argument-hint as the input hint', async () => {
+    const path = writeTemplate(HINTED_TEMPLATE)
+    expect(await advertise([reviewCommand(path)])).toStrictEqual([
+      { name: 'review', description: 'Review code', input: { hint: '[focus]' } },
+    ])
+  })
+
+  it('advertises an unquoted argument-hint verbatim', async () => {
+    const path = writeTemplate('---\nargument-hint: <file> [focus]\n---\nReview $1\n')
+    expect(await advertise([reviewCommand(path)])).toStrictEqual([
+      { name: 'review', description: 'Review code', input: { hint: '<file> [focus]' } },
+    ])
+  })
+
+  it('reads the hint through a BOM and CRLF line endings', async () => {
+    const path = writeTemplate(`${BOM}---\r\nargument-hint: <file>\r\n---\r\nReview $1\r\n`)
+    expect(await advertise([reviewCommand(path)])).toStrictEqual([
+      { name: 'review', description: 'Review code', input: { hint: '<file>' } },
+    ])
+  })
+
+  it.each([
+    ['no frontmatter', 'Review $1\n'],
+    ['an empty argument-hint', '---\nargument-hint: ""\n---\nReview $1\n'],
+    ['a non-string argument-hint', '---\nargument-hint: 3\n---\nReview $1\n'],
+  ])('advertises no input for a template with %s', async (_case, content) => {
+    const path = writeTemplate(content)
+    expect(await advertise([reviewCommand(path)])).toStrictEqual([{ name: 'review', description: 'Review code' }])
+  })
+
+  it.each(['skill', 'extension'])('never gives %s commands an input, even over a hinted file', async (source) => {
+    const path = writeTemplate(HINTED_TEMPLATE)
+    expect(await advertise([reviewCommand(path, source)])).toStrictEqual([
+      { name: 'review', description: 'Review code' },
+    ])
+  })
+
+  it('establishes the session when a template cannot be read, logging one line that names it', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const missing = join(templateDir, MISSING_FILE_NAME)
+
+    expect(await advertise([reviewCommand(missing)])).toStrictEqual([{ name: 'review', description: 'Review code' }])
+
+    expect(errorSpy).toHaveBeenCalledOnce()
+    const [line] = errorSpy.mock.calls[0] ?? []
+    expect(line).toMatch(new RegExp(`^\\[${AGENT_NAME}\\] command mapping: `))
+    expect(line).toContain(missing)
+  })
+
+  it('logs frontmatter that does not parse without echoing the template', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const path = writeTemplate('---\nargument-hint: <file>: [focus]\n---\nReview $1\n')
+
+    expect(await advertise([reviewCommand(path)])).toStrictEqual([{ name: 'review', description: 'Review code' }])
+
+    expect(errorSpy).toHaveBeenCalledOnce()
+    const [line] = errorSpy.mock.calls[0] ?? []
+    expect(line).toContain(path)
+    expect(line).not.toContain('<file>')
+  })
+
+  it('keeps a YAML warning off stderr and reads the hint as Pi does', async () => {
+    const warningSpy = vi.spyOn(process, 'emitWarning').mockImplementation(() => undefined)
+    const path = writeTemplate('---\nargument-hint: !unknown-tag <file>\n---\nReview $1\n')
+
+    expect(await advertise([reviewCommand(path)])).toStrictEqual([
+      { name: 'review', description: 'Review code', input: { hint: '<file>' } },
+    ])
+    expect(warningSpy).not.toHaveBeenCalled()
+  })
+
+  it('never reads the template of a command a built-in shadows', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const shadowed = { name: 'name', source: 'prompt', sourceInfo: { path: join(templateDir, MISSING_FILE_NAME) } }
+
+    expect(await advertise([shadowed])).toStrictEqual([])
+    expect(errorSpy).not.toHaveBeenCalled()
+  })
+})
+
+describe('parseArgumentHint', () => {
+  const PARSE_TABLE: [content: string, hint: string | undefined][] = [
+    ['---\nargument-hint: <file>\n---\nReview $1', '<file>'],
+    ['---\nargument-hint: <file>\n---', '<file>'],
+    [`${BOM}---\r\nargument-hint: <file>\r\n---\r\n`, '<file>'],
+    ['---\rargument-hint: <file>\r---\r', '<file>'],
+    ['Review $1', undefined],
+    [' ---\nargument-hint: <file>\n---\n', undefined],
+    ['---\nargument-hint: <file>\n', undefined],
+    ['---\n---\nReview $1', undefined],
+    ['---\nargument-hint: ""\n---\n', undefined],
+    ['---\nargument-hint: 3\n---\n', undefined],
+    ['---\nargument-hint: [file, focus]\n---\n', undefined],
+    ['---\njust a scalar\n---\n', undefined],
+    ['---\n- file\n- focus\n---\n', undefined],
+    ['---\n~\n---\n', undefined],
+    ['---\ndescription: Review code\n---\nargument-hint: <file>\n', undefined],
+  ]
+
+  it.each(PARSE_TABLE)('parses %j as %j', (content, hint) => {
+    expect(parseArgumentHint(content)).toBe(hint)
+  })
+
+  it('throws on frontmatter that is not valid YAML', () => {
+    expect(() => parseArgumentHint('---\nargument-hint: <file>: [focus]\n---\n')).toThrow()
+  })
+})
+
 describe('session/new over the wire', () => {
-  it('delivers available_commands_update after the response so the SDK client routes it', async () => {
-    const fake = makeFakePiClient(makeSpec())
+  function connectOnce(spec: FakePiSpec): Promise<unknown> {
+    const fake = makeFakePiClient(spec)
     const server = new PiAcpServer({
       launch: LAUNCH,
       rpcTimeoutMs: 1_000,
@@ -300,16 +456,44 @@ describe('session/new over the wire', () => {
     })
     const app = server.register(acp.agent({ name: AGENT_NAME }))
 
-    const message = await acp
+    return acp
       .client({ name: 'test-client' })
       .connectWith(app, async (context) => {
         const session = await context.buildSession(ABS_CWD).start()
         return session.nextUpdate()
       })
+  }
+
+  it('delivers available_commands_update after the response so the SDK client routes it', async () => {
+    const message = await connectOnce(makeSpec())
 
     expect(message).toMatchObject({
       kind: 'session_update',
       update: { sessionUpdate: 'available_commands_update', availableCommands: EXPECTED_COMMANDS },
     })
+  })
+
+  it('carries a template argument hint through to the client', async () => {
+    const templateDir = mkdtempSync(join(tmpdir(), TEMPLATE_DIR_PREFIX))
+    try {
+      const path = join(templateDir, TEMPLATE_FILE_NAME)
+      writeFileSync(path, HINTED_TEMPLATE, 'utf8')
+      const commands = [{ name: 'review', description: 'Review code', source: 'prompt', sourceInfo: { path } }]
+
+      const message = await connectOnce({ ...makeSpec(), commands })
+
+      expect(message).toMatchObject({
+        kind: 'session_update',
+        update: {
+          sessionUpdate: 'available_commands_update',
+          availableCommands: [
+            ...BUILTIN_COMMANDS,
+            { name: 'review', description: 'Review code', input: { hint: '[focus]' } },
+          ],
+        },
+      })
+    } finally {
+      rmSync(templateDir, { recursive: true, force: true })
+    }
   })
 })

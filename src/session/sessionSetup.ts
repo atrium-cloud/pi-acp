@@ -1,22 +1,33 @@
+import { readFile } from 'node:fs/promises'
 import { isAbsolute } from 'node:path'
 
 import * as acp from '@agentclientprotocol/sdk'
 import type { AgentContext, AvailableCommand, McpServer } from '@agentclientprotocol/sdk'
+import { parse as parseYaml } from 'yaml'
 
 import {
+  AGENT_NAME,
   BUILTIN_COMMANDS,
+  CARRIAGE_RETURN_LINE_BREAK,
   COMMAND_SOURCE_EXTENSION,
+  COMMAND_SOURCE_PROMPT,
   ENV_MCP_SERVERS,
+  FRONTMATTER_DELIMITER,
+  FRONTMATTER_KEY_ARGUMENT_HINT,
+  FRONTMATTER_YAML_OPTIONS,
   JSONRPC_INTERNAL_ERROR,
   JSONRPC_INVALID_PARAMS,
+  LINE_FEED,
   PI_SESSION_ARG,
 } from '../constants.js'
 import type { McpServerSpec } from '../mcp/servers.js'
 import { translateMcpServers } from '../mcp/servers.js'
 import type { PiLaunch } from '../pi/errors.js'
 import { PiRpcClient } from '../pi/PiRpcClient.js'
+import { asMessage } from '../server/errors.js'
 import type { ModelChoice } from '../turn/configOptions.js'
 import { type CreatePiClient, SessionConnection } from './SessionConnection.js'
+import { stripBom } from './sessionDirectory.js'
 
 const defaultCreatePiClient: CreatePiClient = (options) => new PiRpcClient(options)
 
@@ -122,6 +133,7 @@ export async function establishSession(
       name: model.name,
     }))
     const extensionCommandNames = extensionNames(commands.data.commands)
+    const availableCommands = await mapCommands(commands.data.commands)
     connection.attach({
       piClient,
       sessionId: state.sessionId,
@@ -134,7 +146,7 @@ export async function establishSession(
       connection,
       sessionId: state.sessionId,
       configOptions: connection.configOptions,
-      availableCommands: mapCommands(commands.data.commands),
+      availableCommands,
       extensionCommandNames,
     }
   } catch (error) {
@@ -159,19 +171,45 @@ interface PiCommand {
   readonly name: string
   readonly description?: string | undefined
   readonly source: string
+  readonly sourceInfo: { readonly path: string }
 }
 
-// No `input`: Pi's command snapshot carries no argument hint to map onto it. A
-// command named like a built-in is dropped: the built-in runs in its place on
-// submit, so advertising both would offer one name twice.
-function mapCommands(commands: readonly PiCommand[]): AvailableCommand[] {
+// A command named like a built-in is dropped, before any template is read: the
+// built-in runs in its place on submit, so advertising both would offer one name twice.
+async function mapCommands(commands: readonly PiCommand[]): Promise<AvailableCommand[]> {
   const builtinNames = new Set(BUILTIN_COMMANDS.map((command) => command.name))
-  return [
-    ...BUILTIN_COMMANDS,
-    ...commands
-      .filter((command) => !builtinNames.has(command.name))
-      .map((command) => ({ name: command.name, description: command.description ?? '' })),
-  ]
+  const mapped = await Promise.all(commands.filter((command) => !builtinNames.has(command.name)).map(mapCommand))
+  return [...BUILTIN_COMMANDS, ...mapped]
+}
+
+async function mapCommand(command: PiCommand): Promise<AvailableCommand> {
+  const hint = command.source === COMMAND_SOURCE_PROMPT ? await readArgumentHint(command.sourceInfo.path) : undefined
+  return { name: command.name, description: command.description ?? '', ...(hint === undefined ? {} : { input: { hint } }) }
+}
+
+// Pi's `get_commands` drops a template's `argument-hint`, so it is re-read from
+// the file Pi loaded. A failed read costs the command its hint, never the session.
+async function readArgumentHint(path: string): Promise<string | undefined> {
+  try {
+    return parseArgumentHint(await readFile(path, 'utf8'))
+  } catch (error) {
+    console.error(`[${AGENT_NAME}] command mapping: failed to read the argument hint of prompt template ${path}: ${asMessage(error)}`)
+    return undefined
+  }
+}
+
+/** Pi's own frontmatter parse of a template's `argument-hint`; throws on malformed YAML. */
+export function parseArgumentHint(content: string): string | undefined {
+  const text = stripBom(content).replace(CARRIAGE_RETURN_LINE_BREAK, LINE_FEED)
+  if (!text.startsWith(FRONTMATTER_DELIMITER)) return undefined
+  const endIndex = text.indexOf(`${LINE_FEED}${FRONTMATTER_DELIMITER}`, FRONTMATTER_DELIMITER.length)
+  if (endIndex === -1) return undefined
+  const yamlText = text.slice(FRONTMATTER_DELIMITER.length + LINE_FEED.length, endIndex)
+  if (yamlText === '') return undefined
+  const frontmatter: unknown = parseYaml(yamlText, FRONTMATTER_YAML_OPTIONS)
+  if (typeof frontmatter !== 'object' || frontmatter === null) return undefined
+  const hint = (frontmatter as Record<string, unknown>)[FRONTMATTER_KEY_ARGUMENT_HINT]
+  return typeof hint === 'string' && hint !== '' ? hint : undefined
 }
 
 // An extension command is the only kind that can be handled without a turn, so

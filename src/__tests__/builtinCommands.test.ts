@@ -36,6 +36,7 @@ import {
   type FakeCompaction,
   type FakePiSpec,
   makeFakePiClient,
+  UNREAD_SOURCE_INFO,
 } from './fixtures/fakePiClient.js'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -218,7 +219,7 @@ function heldCompaction(): {
 describe('built-in commands over the wire', () => {
   it('advertises the built-ins ahead of Pi commands, dropping a same-named extension command', async () => {
     const scenario = createAcpTestFixture({
-      commands: [...TEST_COMMANDS, { name: 'compact', description: 'ext', source: 'extension' }],
+      commands: [...TEST_COMMANDS, { name: 'compact', description: 'ext', source: 'extension', sourceInfo: UNREAD_SOURCE_INFO }],
     })
     fixture = scenario
     await scenario.client.request(acp.methods.agent.initialize, INIT_REQUEST)

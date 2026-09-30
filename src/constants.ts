@@ -88,16 +88,28 @@ export const PROMPT_BLOCK_SEPARATOR = '\n'
 export const COMMAND_PREFIX = '/'
 export const COMMAND_ARG_SEPARATOR = ' '
 export const COMMAND_SOURCE_EXTENSION = 'extension'
+export const COMMAND_SOURCE_PROMPT = 'prompt'
+
+// A prompt template's `argument-hint`, read by Pi's own frontmatter rule.
+export const FRONTMATTER_DELIMITER = '---'
+export const FRONTMATTER_KEY_ARGUMENT_HINT = 'argument-hint'
+export const LINE_FEED = '\n'
+export const CARRIAGE_RETURN_LINE_BREAK = /\r\n?/g
+// Pi parses with default options; these change only the error text and warning
+// output, which would otherwise carry template lines onto stderr.
+export const FRONTMATTER_YAML_OPTIONS = { prettyErrors: false, logLevel: 'error' } as const
 
 // Pi's TUI built-ins that have an RPC equivalent. `get_commands` never reports
 // them, since only the TUI's own submit handler dispatches them, so the adapter
-// advertises and runs them itself. Descriptions are Pi's own; Pi has no argument
-// hint for any of them, so `input` is left out, as for Pi's own commands.
+// advertises and runs them itself. Descriptions are Pi's own, and `/name`'s hint
+// is its TUI usage line's. `/compact` has none: a client does not send a command
+// with `input` straight from its menu, and `/compact` normally runs bare.
 export const BUILTIN_COMMAND_NAME = 'name'
 export const BUILTIN_COMMAND_SESSION = 'session'
 export const BUILTIN_COMMAND_COMPACT = 'compact'
+export const BUILTIN_HINT_NAME = '<name>'
 export const BUILTIN_COMMANDS: readonly AvailableCommand[] = [
-  { name: BUILTIN_COMMAND_NAME, description: 'Set session display name' },
+  { name: BUILTIN_COMMAND_NAME, description: 'Set session display name', input: { hint: BUILTIN_HINT_NAME } },
   { name: BUILTIN_COMMAND_SESSION, description: 'Show session info and stats' },
   { name: BUILTIN_COMMAND_COMPACT, description: 'Manually compact the session context' },
 ]
@@ -111,7 +123,7 @@ export const COMPACT_TIMEOUT_MS: number | null = null
 // markdown, so session info lines end in a hard break and paragraphs are
 // separated by a blank line.
 // In a code span so a markdown renderer does not swallow `<name>` as a tag.
-export const BUILTIN_TEXT_NAME_USAGE = 'Usage: `/name <name>`'
+export const BUILTIN_TEXT_NAME_USAGE = `Usage: \`/name ${BUILTIN_HINT_NAME}\``
 export const builtinTextName = (name: string): string => `Session name: ${name}`
 export const builtinTextNameSet = (name: string): string => `Session name set: ${name}`
 export const builtinTextNameNormalized = (typed: string, stored: string | undefined): string =>
