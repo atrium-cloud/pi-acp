@@ -1,4 +1,6 @@
 import { readFileSync } from 'node:fs'
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import type { Usage } from '@agentclientprotocol/sdk'
 
@@ -65,11 +67,23 @@ export interface FakeCompaction {
 
 export const DEFAULT_COMPACTION: FakeCompaction = { summary: 'summary', firstKeptEntryId: 'entry-1', tokensBefore: 12_345 }
 
+/** A real template with no `argument-hint`, so a `review` fixture advertises no `input`. */
+export const REVIEW_TEMPLATE_PATH = resolve(dirname(fileURLToPath(import.meta.url)), 'prompts/review.md')
+/** For a skill or extension command, whose file the adapter never opens. */
+export const UNREAD_SOURCE_INFO = { path: '/pi-acp-fixture/unread-source' }
+
+export interface FakeCommand {
+  name: string
+  description?: string
+  source: string
+  sourceInfo: { path: string }
+}
+
 export interface FakePiSpec {
   state: FakeState
   models: { provider: string; id: string; name: string }[]
   levels: string[]
-  commands: { name: string; description?: string; source: string }[]
+  commands: FakeCommand[]
   /** `get_session_stats` fields laid over DEFAULT_STATS and the running token
    * totals; a function is called with the 0-based index among the reads the fake
    * answers, so a test can script the totals before and after a turn. */

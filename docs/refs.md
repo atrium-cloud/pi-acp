@@ -39,6 +39,7 @@ Shell tools (`bash`, `powershell`) render as terminal entries via the Zed `_meta
     - RPC mode
         - `src/modes/rpc/rpc-types.ts`: `RpcCommand`, `RpcResponse`, `RpcSessionState`, `RpcExtensionUIRequest`, `RpcExtensionUIResponse`; all exported from the package root
         - `src/modes/rpc/rpc-mode.ts`, `src/modes/rpc/jsonl.ts`: server side and the strict LF-only JSONL framing
+        - `rpc-mode.ts` `get_commands`: omits a prompt template's `argument-hint`
         - `src/modes/rpc/rpc-client.ts`: Pi's typed subprocess client
         - `src/modes/json-event.ts`: `JsonAgentSessionEvent`, the event union streamed on stdout
         - `src/core/agent-session.ts`: `AgentSessionEvent`, the session-level members the RPC docs' event table omits
@@ -51,8 +52,11 @@ Shell tools (`bash`, `powershell`) render as terminal entries via the Zed `_meta
     - CLI
         - `src/cli/args.ts`: flags consumed at spawn: `--mode rpc`, `--session`, `--session-dir`, `--extension` / `-e`, `--no-extensions`, `--model`, `--thinking`, `--name`
         - `src/cli/auth-command.ts`: `pi auth check --provider`, the only non-interactive credential check
+    - Prompt templates
+        - `src/core/prompt-templates.ts`, `src/utils/frontmatter.ts`: the `argument-hint` parse the adapter mirrors
     - Tools
         - `src/core/tools/edit.ts`: `EditToolDetails` (`diff`, `patch`, `firstChangedLine`) behind the ACP `diff` content block
+- `yaml` 2.9.1: parses a prompt template's frontmatter, as Pi does (Pi pins 2.9.0)
 
 ## MCP
 

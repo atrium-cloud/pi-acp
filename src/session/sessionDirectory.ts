@@ -158,7 +158,7 @@ function readSettingsSessionDir(agentDir: string): string | undefined {
   return typeof sessionDir === 'string' && sessionDir !== '' ? sessionDir : undefined
 }
 
-function stripBom(text: string): string {
+export function stripBom(text: string): string {
   return text.charCodeAt(0) === BOM_CODE_POINT ? text.slice(1) : text
 }
 

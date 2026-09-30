@@ -7,7 +7,10 @@ import { build } from 'esbuild'
 // is checked for one. The bare specifier string is allowed: `src/pi/launch.ts`
 // resolves it to the entry path without importing it.
 const OUTFILE = 'dist/index.js'
-const PI_VALUE_IMPORT = /\b(?:from\s*|import\s*\(\s*|require\s*\(\s*)["']@earendil-works\/pi-coding-agent/
+const PI_VALUE_IMPORT = /\b(?:from\s*|import\s*\(\s*|(?:__)?require\s*\(\s*)["']@earendil-works\/pi-coding-agent/
+// yaml's node build is CJS and requires `process` and `buffer`; esbuild's ESM
+// output stubs `require` with a thrower without this shim.
+const BANNER = 'import{createRequire as __cr}from"node:module";const require=__cr(import.meta.url);'
 
 await build({
   entryPoints: ['src/index.ts'],
@@ -16,6 +19,7 @@ await build({
   platform: 'node',
   format: 'esm',
   external: ['@earendil-works/pi-coding-agent'],
+  banner: { js: BANNER },
 })
 
 if (PI_VALUE_IMPORT.test(await readFile(OUTFILE, 'utf8'))) {

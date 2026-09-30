@@ -27,7 +27,13 @@ import {
   sessionDirForCwd,
   writeMessageMap,
 } from '../session/sessionDirectory.js'
-import { DEFAULT_TURN_USAGE, type FakePiSpec, makeFakePiClient } from './fixtures/fakePiClient.js'
+import {
+  DEFAULT_TURN_USAGE,
+  type FakePiSpec,
+  makeFakePiClient,
+  REVIEW_TEMPLATE_PATH,
+  UNREAD_SOURCE_INFO,
+} from './fixtures/fakePiClient.js'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -40,7 +46,7 @@ const CWD = '/workspace/project'
 const OTHER_CWD = '/workspace/other'
 const SESSION_ID = 'sess-1'
 const MODEL = { provider: 'anthropic', id: 'claude-sonnet-5', name: 'Claude Sonnet 5' }
-const COMMANDS = [{ name: 'review', description: 'Review code', source: 'prompt' }]
+const COMMANDS = [{ name: 'review', description: 'Review code', source: 'prompt', sourceInfo: { path: REVIEW_TEMPLATE_PATH } }]
 const HELLO_PROMPT = [{ type: 'text' as const, text: 'hi' }]
 const INIT_REQUEST = { protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} }
 /** `acp.RequestError.resourceNotFound`; the SDK exports no code constant. */
@@ -377,7 +383,7 @@ describe('session/fork', () => {
   const MINTED_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
   const TOOL_CALL = { type: 'toolCall', id: 'call', parentId: null, timestamp: HEADER_TIME, toolName: 'bash' }
   const SETTLED_TURN = [message('user', 'settled', 1_000), message('assistant', 'answered', 2_000)]
-  const EXTENSION_COMMAND = { name: 'extcmd', description: 'ext', source: 'extension' }
+  const EXTENSION_COMMAND = { name: 'extcmd', description: 'ext', source: 'extension', sourceInfo: UNREAD_SOURCE_INFO }
 
   /** Pi's report of the in-flight prompt, the point at which its user entry lands. */
   const reportPrompt: NonNullable<FakePiSpec['onPrompt']> = (emit) =>

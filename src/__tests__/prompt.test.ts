@@ -21,7 +21,13 @@ import { messageMapPathFor } from '../session/sessionDirectory.js'
 import { establishSession } from '../session/sessionSetup.js'
 import type { SessionConnection } from '../session/SessionConnection.js'
 import { type FlattenedPrompt, flattenPromptContent } from '../turn/promptContent.js'
-import { DEFAULT_TURN_USAGE, type FakePiSpec, makeFakePiClient } from './fixtures/fakePiClient.js'
+import {
+  DEFAULT_TURN_USAGE,
+  type FakePiSpec,
+  makeFakePiClient,
+  REVIEW_TEMPLATE_PATH,
+  UNREAD_SOURCE_INFO,
+} from './fixtures/fakePiClient.js'
 
 const LAUNCH = { command: 'pi', args: ['--mode', 'rpc'], source: 'test' }
 const ABS_CWD = '/tmp/pi-acp-session'
@@ -353,9 +359,9 @@ describe('breakpoint message id recording', () => {
 })
 
 const EXT_COMMANDS = [
-  { name: 'extcmd', description: 'ext', source: 'extension' },
-  { name: 'skill:summarize', source: 'skill' },
-  { name: 'review', description: 'Review code', source: 'prompt' },
+  { name: 'extcmd', description: 'ext', source: 'extension', sourceInfo: UNREAD_SOURCE_INFO },
+  { name: 'skill:summarize', source: 'skill', sourceInfo: UNREAD_SOURCE_INFO },
+  { name: 'review', description: 'Review code', source: 'prompt', sourceInfo: { path: REVIEW_TEMPLATE_PATH } },
 ]
 const QUIET_WINDOW_MS = Math.max(EXTENSION_COMMAND_QUIET_MS, AGENT_START_GRACE_MS)
 /** Pi's dispatch rule, message by message: leading `/` on the untrimmed text and

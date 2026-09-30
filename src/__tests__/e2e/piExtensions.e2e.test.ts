@@ -1,7 +1,7 @@
 /**
  * Live-Pi extension seams: the permission gate's three outcomes, prompt content
  * that is not plain text, the built-in MCP client over stdio and its startup
- * notice, and extension commands.
+ * notice, a prompt template's argument hint, and extension commands.
  *
  * One adapter boot serves every case but the notice one, which needs a client
  * that advertises notices; every case opens its own session, so
@@ -21,6 +21,11 @@ import type { ClientCapabilities, McpServer, PromptResponse, RequestPermissionRe
 import { afterAll, afterEach, beforeAll, expect, it } from 'vitest'
 
 import {
+  BUILTIN_COMMAND_COMPACT,
+  BUILTIN_COMMAND_NAME,
+  BUILTIN_COMMAND_SESSION,
+  BUILTIN_COMMANDS,
+  BUILTIN_HINT_NAME,
   DEFAULT_PI_AGENT_DIR_SEGMENTS,
   ENV_PI_AGENT_DIR,
   EXTENSION_COMMAND_QUIET_MS,
@@ -86,6 +91,20 @@ const EXTENSION_SOURCE = [
   `    handler: async () => {},`,
   `  })`,
   `}`,
+  '',
+].join('\n')
+/** A global prompt template, which, like a global extension, loads without
+ * project trust. Pi names the command after the file. */
+const PI_PROMPTS_DIR_NAME = 'prompts'
+const PROMPT_COMMAND_NAME = `pi-acp-e2e-probe-${process.pid}`
+const PROMPT_FILE_NAME = `${PROMPT_COMMAND_NAME}.md`
+const PROMPT_ARGUMENT_HINT = '<file> [focus]'
+const PROMPT_SOURCE = [
+  '---',
+  'description: pi-acp e2e probe template',
+  `argument-hint: ${JSON.stringify(PROMPT_ARGUMENT_HINT)}`,
+  '---',
+  'Reply with the word ready.',
   '',
 ].join('\n')
 /** A slash command Pi does not know runs as an ordinary prompt, so it carries
@@ -296,6 +315,41 @@ describeE2E('pi live extension seams', () => {
     E2E_SETUP_TIMEOUT_MS + NOTICE_WAIT_MS,
   )
 
+  it(
+    'advertises a global prompt template with its argument hint, beside the built-ins',
+    async () => {
+      const agent = live()
+      const promptsDir = join(hostAgentDir(), PI_PROMPTS_DIR_NAME)
+      // A transient write into the developer's Pi install: only the file is
+      // removed afterwards, and a prompts dir created here is left in place.
+      mkdirSync(promptsDir, { recursive: true })
+      const promptPath = join(promptsDir, PROMPT_FILE_NAME)
+      writeFileSync(promptPath, PROMPT_SOURCE, 'utf8')
+
+      try {
+        const sessionId = await openPinnedSession(agent)
+        const update = await agent.waitForUpdate(
+          sessionId,
+          (update) =>
+            update.sessionUpdate === 'available_commands_update' &&
+            update.availableCommands.some((command) => command.name === PROMPT_COMMAND_NAME),
+          E2E_TURN_TIMEOUT_MS,
+        )
+
+        const commands = update.sessionUpdate === 'available_commands_update' ? update.availableCommands : []
+        const inputOf = (name: string): unknown => commands.find((command) => command.name === name)?.input
+        expect(inputOf(PROMPT_COMMAND_NAME)).toEqual({ hint: PROMPT_ARGUMENT_HINT })
+        expect(inputOf(BUILTIN_COMMAND_NAME)).toEqual({ hint: BUILTIN_HINT_NAME })
+        expect(inputOf(BUILTIN_COMMAND_SESSION)).toBeUndefined()
+        expect(inputOf(BUILTIN_COMMAND_COMPACT)).toBeUndefined()
+        expect(commands.slice(0, BUILTIN_COMMANDS.length)).toEqual(BUILTIN_COMMANDS)
+      } finally {
+        rmSync(promptPath, { force: true })
+      }
+    },
+    E2E_TURN_TIMEOUT_MS,
+  )
+
   // Last in the file: while this case runs, the probe command is advertised to
   // every session Pi starts on this machine.
   it(
@@ -338,15 +392,17 @@ describeE2E('pi live extension seams', () => {
   )
 })
 
-/** Pi's global extension directory, under the same agent dir the tier's Pi
- * resolves its credentials from. */
+/** Pi's global extension directory. */
 function hostExtensionsDir(): string {
+  return join(hostAgentDir(), PI_EXTENSIONS_DIR_NAME)
+}
+
+/** The same agent dir the tier's Pi resolves its credentials from. */
+function hostAgentDir(): string {
   const configured = process.env[ENV_PI_AGENT_DIR]
-  const agentDir =
-    configured === undefined || configured === ''
-      ? join(homedir(), ...DEFAULT_PI_AGENT_DIR_SEGMENTS)
-      : expandHome(configured)
-  return join(agentDir, PI_EXTENSIONS_DIR_NAME)
+  return configured === undefined || configured === ''
+    ? join(homedir(), ...DEFAULT_PI_AGENT_DIR_SEGMENTS)
+    : expandHome(configured)
 }
 
 /** Pi expands a leading `~` in this variable, so a literal `~` directory must

@@ -20,7 +20,13 @@ import type { RequestPermissionResponse } from '@agentclientprotocol/sdk'
 import { AGENT_NAME } from '../constants.js'
 import { PiAcpServer } from '../server/PiAcpServer.js'
 import type { SessionDirs } from '../session/sessionDirectory.js'
-import { type FakePiClient, type FakePiSpec, makeFakePiClient } from './fixtures/fakePiClient.js'
+import {
+  type FakeCommand,
+  type FakePiClient,
+  type FakePiSpec,
+  makeFakePiClient,
+  REVIEW_TEMPLATE_PATH,
+} from './fixtures/fakePiClient.js'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -34,7 +40,9 @@ const RPC_TIMEOUT_MS = 1_000
 export const TEST_SESSION_ID = 'sess-1'
 export const TEST_MODEL = { provider: 'anthropic', id: 'claude-sonnet-5', name: 'Claude Sonnet 5' }
 export const TEST_THINKING_LEVEL = 'low'
-export const TEST_COMMANDS = [{ name: 'review', description: 'Review code', source: 'prompt' }]
+export const TEST_COMMANDS: FakeCommand[] = [
+  { name: 'review', description: 'Review code', source: 'prompt', sourceInfo: { path: REVIEW_TEMPLATE_PATH } },
+]
 
 /** Permission round-trips fail closed, so a test that scripts no answer gets a
  * denial rather than an allow. */
