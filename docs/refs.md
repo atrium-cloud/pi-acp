@@ -29,8 +29,8 @@ Shell tools (`bash`, `powershell`) render as terminal entries via the Zed `_meta
 
 - Repo: https://github.com/earendil-works/pi
 - Package: `@earendil-works/pi-coding-agent` (bin `pi`, Node >= 22.19.0)
-- Dependency: `>=0.99.1`, a floor at the last verified version; `bun.lock` carries the exact one.
-    - Moved from `>=0.87.1` on 2026-09-30 (0.99.0 is the first release with built-in MCP and the `prompt` disposition, both of which the adapter relies on), and from `^0.84.4` on 2026-09-24.
+- Dependency: `>=1.0.1`, a floor at the last verified version; `bun.lock` carries the exact one.
+    - Moved from `>=0.99.1` on 2026-10-03, from `>=0.87.1` on 2026-09-30 (0.99.0 is the first release with built-in MCP and the `prompt` disposition, both of which the adapter relies on), and from `^0.84.4` on 2026-09-24.
     - A caret on a 0.x version caps at its minor: the lockfile sat on 0.84.x while Pi shipped 0.85.0 through 0.87.1.
     - The adapter launches the installed package's `./rpc-entry` export by default (`src/pi/launch.ts`).
     - The drift check is the Upstream drift entry in docs/todos.md: typecheck, unit tests, and the live tier.
@@ -56,7 +56,7 @@ Shell tools (`bash`, `powershell`) render as terminal entries via the Zed `_meta
         - `docs/mcp.md`: configuration (`mcp.json`), exposure (`codemode` default, `direct`, `deferred`, `hidden`), OAuth, resources, permissions
         - `src/core/mcp-servers.ts`: `McpServerConfig` (the shape `pi.registerMcpServer` takes), the `^[A-Za-z0-9_-]+$` server-name rule
         - `src/core/resolve-config-value.ts`: `${NAME}` / `$NAME` / leading `!cmd` interpolation of `env` and `headers` values, with `$$` and `$!` as the literal escapes
-        - `src/extensions/mcp/`: the built-in extension (`index.ts` connects on `session_start`, `runtime.ts` spawns stdio servers with the full `process.env`, `tools.ts` names tools `mcp__<server>__<tool>`)
+        - `src/extensions/mcp/`: the built-in extension (`index.ts` connects on `session_start`, `runtime.ts` spawns stdio servers with the full `process.env`, `tools.ts` names tools `mcp__<server>__<tool>`, with every character outside `[A-Za-z0-9_]` replaced by `_` since 0.99.2)
         - `packages/mcp`: Pi's own MCP client (stdio and streamable HTTP; no SSE)
     - CLI
         - `src/cli/args.ts`: flags consumed at spawn: `--mode rpc`, `--session`, `--session-dir`, `--extension` / `-e`, `--no-extensions`, `--model`, `--thinking`, `--name`
