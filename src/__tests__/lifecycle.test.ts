@@ -548,7 +548,7 @@ describe('session/fork', () => {
           emit({ type: 'agent_start' } as never)
           reportPrompt(emit)
           emit({ type: 'message_end', message: { role: 'assistant', stopReason: 'stop' } } as never)
-          emit({ type: 'agent_settled' } as never)
+          emit({ type: 'agent_settled', aborted: false } as never)
         },
         // Read 0 is the turn's baseline; only the end-of-turn read is held.
         onSessionStats: (read) => {

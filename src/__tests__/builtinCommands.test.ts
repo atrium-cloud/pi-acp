@@ -290,7 +290,7 @@ describe('built-in commands over the wire', () => {
       onPrompt: (emit) => {
         emit({ type: 'agent_start' } as never)
         emit({ type: 'message_end', message: { role: 'assistant', stopReason: 'stop' } } as never)
-        emit({ type: 'agent_settled' } as never)
+        emit({ type: 'agent_settled', aborted: false } as never)
       },
     })
 

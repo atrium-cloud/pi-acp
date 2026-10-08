@@ -46,9 +46,10 @@ export interface TurnHandlerOptions {
 }
 
 /** Translates one Pi turn into ACP `session/update`s and a final `StopReason`.
- * Text/thinking deltas stream as chunks; the turn settles on `agent_settled`
- * (bare), resolving the stop reason captured from the last assistant message —
- * or throwing a `RequestError`, since ACP has no errored `StopReason`. */
+ * Text/thinking deltas stream as chunks; the turn settles on `agent_settled`,
+ * whose `aborted` flag (since Pi 1.1.0) reports any abort that ran while the
+ * run was active. Otherwise the stop reason captured from the last assistant
+ * message decides — or a `RequestError`, since ACP has no errored `StopReason`. */
 export class TurnHandler implements TurnEventSink {
   readonly settled: Promise<StopReason>
   private resolve!: (reason: StopReason) => void
@@ -217,7 +218,7 @@ export class TurnHandler implements TurnEventSink {
         if (event.errorMessage !== undefined) this.lastErrorMessage = event.errorMessage
         return
       case 'agent_settled':
-        this.settle()
+        this.settle(event.aborted)
         return
       default:
         return
@@ -288,9 +289,12 @@ export class TurnHandler implements TurnEventSink {
     if (errorMessage !== undefined) this.lastErrorMessage = errorMessage
   }
 
-  private settle(): void {
+  private settle(aborted: boolean): void {
     if (this.done) return
-    if (this.cancelled) {
+    // Pi's own `aborted` outranks every inferred signal: it is set whenever an
+    // abort ran while the run was active, including one this adapter did not
+    // send.
+    if (this.cancelled || aborted) {
       this.finish(() => this.resolve('cancelled'))
       return
     }

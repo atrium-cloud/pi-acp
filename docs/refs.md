@@ -29,8 +29,8 @@ Shell tools (`bash`, `powershell`) render as terminal entries via the Zed `_meta
 
 - Repo: https://github.com/earendil-works/pi
 - Package: `@earendil-works/pi-coding-agent` (bin `pi`, Node >= 22.19.0)
-- Dependency: `>=1.0.1`, a floor at the last verified version; `bun.lock` carries the exact one.
-    - Moved from `>=0.99.1` on 2026-10-03, from `>=0.87.1` on 2026-09-30 (0.99.0 is the first release with built-in MCP and the `prompt` disposition, both of which the adapter relies on), and from `^0.84.4` on 2026-09-24.
+- Dependency: `>=1.1.0`, a floor at the last verified version; `bun.lock` carries the exact one.
+    - Moved from `>=1.0.1` on 2026-10-08 (1.1.0 adds `agent_settled.aborted`, which the turn settlement now reads), from `>=0.99.1` on 2026-10-03, from `>=0.87.1` on 2026-09-30 (0.99.0 is the first release with built-in MCP and the `prompt` disposition, both of which the adapter relies on), and from `^0.84.4` on 2026-09-24.
     - A caret on a 0.x version caps at its minor: the lockfile sat on 0.84.x while Pi shipped 0.85.0 through 0.87.1.
     - The adapter launches the installed package's `./rpc-entry` export by default (`src/pi/launch.ts`).
     - The drift check is the Upstream drift entry in docs/todos.md: typecheck, unit tests, and the live tier.

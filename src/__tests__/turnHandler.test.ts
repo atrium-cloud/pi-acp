@@ -65,6 +65,23 @@ describe('TurnHandler', () => {
     await expect(turn.settled).resolves.toBe('max_tokens')
   })
 
+  it('resolves cancelled when Pi reports the settled run as aborted without a client cancel', async () => {
+    const { turn } = makeTurn()
+    turn.handleEvent(evt({ type: 'agent_start' }))
+    // An abort that ran before the first assistant message_end leaves no stop
+    // reason on the wire; only the flag says the run was cancelled.
+    turn.handleEvent(evt({ type: 'agent_settled', aborted: true }))
+    await expect(turn.settled).resolves.toBe('cancelled')
+  })
+
+  it('lets an aborted agent_settled outrank a recorded clean stop reason', async () => {
+    const { turn } = makeTurn()
+    turn.handleEvent(evt({ type: 'agent_start' }))
+    turn.handleEvent(evt({ type: 'message_end', message: { role: 'assistant', stopReason: 'stop' } }))
+    turn.handleEvent(evt({ type: 'agent_settled', aborted: true }))
+    await expect(turn.settled).resolves.toBe('cancelled')
+  })
+
   it('resolves cancelled when cancel precedes settlement', async () => {
     const { turn } = makeTurn()
     turn.handleEvent(evt({ type: 'agent_start' }))

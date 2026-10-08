@@ -68,7 +68,7 @@ const fullTurn = (emit: Emit): void => {
   emit({ type: 'message_end', message: { role: 'user', content: 'hi' } } as never)
   emit({ type: 'message_update', usage: {}, assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: 'Hello' } } as never)
   emit({ type: 'message_end', message: { role: 'assistant', stopReason: 'stop' } } as never)
-  emit({ type: 'agent_settled' } as never)
+  emit({ type: 'agent_settled', aborted: false } as never)
 }
 
 const ANY_USAGE_UPDATE = expect.objectContaining({ update: expect.objectContaining({ sessionUpdate: 'usage_update' }) })
@@ -180,7 +180,7 @@ describe('SessionConnection.runPrompt', () => {
     await Promise.resolve()
     await expect(connection.runPrompt(HELLO, new AbortController().signal)).rejects.toMatchObject({ code: -32_600 })
     fake.emit({ type: 'message_end', message: { role: 'assistant', stopReason: 'stop' } } as never)
-    fake.emit({ type: 'agent_settled' } as never)
+    fake.emit({ type: 'agent_settled', aborted: false } as never)
     await expect(first).resolves.toMatchObject({ stopReason: 'end_turn' })
   })
 
@@ -190,7 +190,7 @@ describe('SessionConnection.runPrompt', () => {
     const turn = connection.runPrompt(HELLO, controller.signal)
     await Promise.resolve()
     controller.abort()
-    fake.emit({ type: 'agent_settled' } as never)
+    fake.emit({ type: 'agent_settled', aborted: false } as never)
     await expect(turn).resolves.toEqual({ stopReason: 'cancelled', usage: DEFAULT_TURN_USAGE, acknowledgedMessageId: undefined })
     expect(fake.calls.map((call) => call['type'])).toContain('abort')
   })
@@ -327,7 +327,7 @@ describe('breakpoint message id recording', () => {
     const withoutUserMessage = (emit: Emit): void => {
       emit({ type: 'agent_start' } as never)
       emit({ type: 'message_end', message: { role: 'assistant', stopReason: 'aborted' } } as never)
-      emit({ type: 'agent_settled' } as never)
+      emit({ type: 'agent_settled', aborted: false } as never)
     }
     const { fake, connection } = await connect({ ...specWithEntries([userEntry('u1', 'hi')]), onPrompt: withoutUserMessage })
 

@@ -62,7 +62,7 @@ async function connectMidTool(
   fake.emit({ type: 'tool_execution_start', ...tool } as never)
   const finishTurn = async (): Promise<void> => {
     fake.emit({ type: 'message_end', message: { role: 'assistant', stopReason: 'stop' } } as never)
-    fake.emit({ type: 'agent_settled' } as never)
+    fake.emit({ type: 'agent_settled', aborted: false } as never)
     await turn
   }
   return { ...connected, finishTurn }

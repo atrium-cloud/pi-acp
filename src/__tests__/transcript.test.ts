@@ -137,7 +137,7 @@ const readTurn = (emit: Emit): void => {
     isError: false,
   } as never)
   emit({ type: 'message_end', message: { role: 'assistant', stopReason: 'stop' } } as never)
-  emit({ type: 'agent_settled' } as never)
+  emit({ type: 'agent_settled', aborted: false } as never)
 }
 
 describe('a streamed turn', () => {
@@ -232,7 +232,7 @@ function finishTurn(scenario: AcpTestFixture, result: unknown, isError: boolean)
     isError,
   } as never)
   scenario.fake.emit({ type: 'message_end', message: { role: 'assistant', stopReason: 'stop' } } as never)
-  scenario.fake.emit({ type: 'agent_settled' } as never)
+  scenario.fake.emit({ type: 'agent_settled', aborted: false } as never)
 }
 
 describe('a gated mutating turn', () => {
@@ -306,7 +306,7 @@ describe('session/cancel mid-turn', () => {
     await waitFor(() => sentAnyOf(scenario, 'prompt'), 'the prompt to reach Pi')
     await scenario.client.notify(acp.methods.agent.session.cancel, { sessionId: TEST_SESSION_ID })
     await waitFor(() => sentAnyOf(scenario, 'abort'), 'the abort to reach Pi')
-    scenario.fake.emit({ type: 'agent_settled' } as never)
+    scenario.fake.emit({ type: 'agent_settled', aborted: false } as never)
 
     await expect(turn).resolves.toEqual({ stopReason: 'cancelled', usage: DEFAULT_TURN_USAGE })
     await scenario.flushAnnouncements()
