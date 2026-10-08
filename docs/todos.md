@@ -291,7 +291,7 @@ Pi upstream ships an ACP agent on current schemas with session resume, thought-l
 - [x] E2E harness (`src/__tests__/e2e/`): the built `dist/index.js` driven as a real ACP client against a real Pi.
     - Uses the host's own Pi credentials; only the session store is redirected to scratch (`PI_CODING_AGENT_SESSION_DIR`).
     - `RUN_PI_E2E=true` (`bun run test:e2e`); model `openrouter/deepseek/deepseek-v4.1-flash` (moved from `deepseek-v4-flash-0731` on 2026-09-30, at a third of the output price).
-    - 25 cases across turns, config, lifecycle, fork, permissions, prompt content, MCP stdio, extension commands, prompt template hints, built-in commands, notices. 25/25 live against Pi 1.0.1 (2026-10-03).
+    - 25 cases across turns, config, lifecycle, fork, permissions, prompt content, MCP stdio, extension commands, prompt template hints, built-in commands, notices. 25/25 live against Pi 1.1.0 (2026-10-08).
     - The three cancel cases hold the turn open with a `sleep 30` bash call and cancel on the `tool_call` update: a long streamed reply can arrive from the provider as one burst with the settle right behind it, which is how they failed on 2026-09-21.
 - [x] Distribution: one `pi-acp.zip` (the `pi-acp` executable, a hashbang bundle, plus LICENSE and NOTICE) on GitHub Releases, no npm. Needs Node 22.19+ on PATH and `PI_ACP_PI_BIN`.
 - [x] CI (`.github/workflows/ci.yml`): typecheck, unit tests, build, `--version` smoke, `bun run package`.
@@ -316,5 +316,11 @@ Pi upstream ships an ACP agent on current schemas with session resume, thought-l
         - `bun update` left minimatch on `brace-expansion` 5.0.9 through a new nested `bun.lock` entry beside Pi's 5.0.12 pin; the entry was removed by hand so minimatch resolves to 5.0.12.
         - A `bash` non-zero exit is an `isError` result rather than a throw; the model-facing text and the parsed exit line are unchanged.
         - Nested tool calls (`ctx.executeTool`) carry `parentToolCallId` and `<parent>/<n>` ids (docs/caveats.md).
+    - 1.0.1 → 1.1.0 on 2026-10-08, all three green on a clean checkout (typecheck, 427 unit, 25/25 live).
+        - `agent_settled` gains `aborted: boolean`; the turn settlement reads it, so a Pi-side abort that emits no `aborted` stop reason (for example one landing mid-compaction) still reports `cancelled`. The floor moved to `>=1.1.0` for it.
+        - `tool_execution_end` gains `durationMs`; the adapter drops it.
+        - RPC `bash` output no longer leaks ANSI fragments split across chunks.
+        - The Azure provider is renamed `azure-openai-responses` → `azure` (1.0.3); model values pass through from `get_available_models`, so only a user-pinned value naming the old provider breaks.
+        - The exhaustive event switch in `SessionConnection.routeEvent` still compiles: no event types were added or renamed.
     - docs/refs.md carries the range.
 - [x] docs/caveats.md holds the gaps that stay open by design (MCP startup status, Pi's own `mcp.json` servers, MCP OAuth, the MCP server environment, unforwarded extension notifications, advertised built-in commands, project trust, session-replacing commands, nested tool calls), each with the reason.
