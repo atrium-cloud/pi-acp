@@ -29,13 +29,11 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: current
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: 1.4.2
-      - run: bun install --frozen-lockfile
+      - uses: pnpm/action-setup@v6
+      - run: pnpm install --frozen-lockfile
       # Gate the release on a green tree so a bad tag never ships.
-      - run: bun run typecheck
-      - run: bun run test
+      - run: pnpm run typecheck
+      - run: pnpm run test
       # Every tag is paired with its curated changelog committed at the tag; a
       # missing file fails the release rather than shipping generic notes.
       - name: Check the changelog exists
@@ -43,7 +41,7 @@ jobs:
           RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
         run: test -f "docs/changelogs/${RELEASE_TAG}.md"
       - name: Build and zip the bundle
-        run: bun run package
+        run: pnpm run package
       # Called directly: the hashbang and the executable bit are part of the artifact.
       - name: Smoke the packaged executable
         run: ./dist/pi-acp --version

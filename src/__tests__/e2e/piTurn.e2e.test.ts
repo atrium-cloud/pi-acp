@@ -3,7 +3,7 @@
  * subprocess because they depend on a real model, a real provider endpoint, and
  * a real session file on disk.
  *
- * Skipped unless RUN_PI_E2E=true (see e2eGate.ts); `bun run test:e2e` builds
+ * Skipped unless RUN_PI_E2E=true (see e2eGate.ts); `pnpm run test:e2e` builds
  * first and sets it.
  */
 

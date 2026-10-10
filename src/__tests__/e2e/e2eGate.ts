@@ -1,7 +1,7 @@
 /**
  * The env gate for the live-Pi tier. These suites spawn the BUILT adapter
  * against the host's real Pi and spend real provider tokens, so they never run
- * under the default `bun run test`: every suite registers through `describeE2E`,
+ * under the default `pnpm run test`: every suite registers through `describeE2E`,
  * which skips unless `RUN_PI_E2E=true` (the `test:e2e` script sets it).
  *
  * The tier carries no credential of its own. Pi has no non-interactive way to

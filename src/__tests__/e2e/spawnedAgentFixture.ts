@@ -55,9 +55,9 @@ const WORKSPACE_DIRNAME = 'workspace'
 /** dist/index.js, relative to this file (src/__tests__/e2e). */
 const DIST_ENTRY = resolve(dirname(fileURLToPath(import.meta.url)), '../../../dist/index.js')
 
-/** An explicit `node`, never `process.execPath`: vitest may run under bun, and
- * the adapter launches Pi with its own `process.execPath`, which under bun dies
- * at startup. */
+/** An explicit `node`, never `process.execPath`: the adapter launches Pi with
+ * its own `process.execPath`, so it must run under the Node the bundle ships
+ * for, whatever runtime hosts vitest. */
 const NODE_COMMAND = 'node'
 
 /** The adapter's own variables and Pi's agent and session directories, dropped
