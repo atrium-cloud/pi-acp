@@ -19,6 +19,7 @@ function makeServer(): PiAcpServer {
     sessionDirs: { mode: 'flat', dir: '/tmp/pi-acp-sessions' },
     mcpExtensionPath: '/tmp/mcp-extension.mjs',
     hiddenCommands: new Set(),
+    logStartupTiming: false,
   })
 }
 

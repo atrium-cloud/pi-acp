@@ -4,10 +4,16 @@ import { Readable, Writable } from 'node:stream'
 
 import * as acp from '@agentclientprotocol/sdk'
 
-import { AGENT_NAME, AGENT_VERSION, resolveHiddenCommands, resolveRpcTimeoutMs } from './constants.js'
+import {
+  AGENT_NAME,
+  AGENT_VERSION,
+  resolveHiddenCommands,
+  resolveRpcTimeoutMs,
+  resolveStartupTiming,
+} from './constants.js'
 import { materializeMcpExtension } from './mcp/extension.js'
 import { materializeGate } from './permissions/gate.js'
-import { resolvePiLaunch } from './pi/launch.js'
+import { piLaunchLogLine, resolvePiLaunch } from './pi/launch.js'
 import { PiAcpServer } from './server/PiAcpServer.js'
 import { resolveSessionDirs } from './session/sessionDirectory.js'
 
@@ -27,8 +33,12 @@ async function main(): Promise<void> {
     return
   }
 
+  const launch = resolvePiLaunch(process.env)
+  const logStartupTiming = resolveStartupTiming(process.env)
+  if (logStartupTiming) console.error(piLaunchLogLine(launch))
+
   const server = new PiAcpServer({
-    launch: resolvePiLaunch(process.env),
+    launch,
     rpcTimeoutMs: resolveRpcTimeoutMs(process.env),
     // The subprocess inherits this environment, so both sides resolve the same
     // store; a later env change does not move it under a running adapter.
@@ -38,6 +48,7 @@ async function main(): Promise<void> {
     // Written alongside the gate; loaded only by a session that asked for MCP.
     mcpExtensionPath: materializeMcpExtension(),
     hiddenCommands: resolveHiddenCommands(process.env),
+    logStartupTiming,
   })
 
   // The SDK speaks Web streams; first arg is the writable (stdout).

@@ -58,6 +58,7 @@ async function connect(spec: FakePiSpec): Promise<{
     clientSupportsNotices: false,
     mcpExtensionPath: MCP_EXTENSION_PATH,
     hiddenCommands: new Set(),
+    logStartupTiming: false,
     createPiClient: fake.createPiClient,
   })
   return { fake, connection: established.connection, notify }
@@ -425,6 +426,7 @@ describe('session/prompt over the wire', () => {
       sessionDirs: { mode: 'flat', dir: '/tmp/pi-acp-sessions' },
       mcpExtensionPath: MCP_EXTENSION_PATH,
       hiddenCommands: new Set(),
+      logStartupTiming: false,
       createPiClient: fake.createPiClient,
     })
     const app = server.register(acp.agent({ name: AGENT_NAME }))
@@ -464,6 +466,7 @@ describe('session/prompt over the wire', () => {
       sessionDirs: { mode: 'flat', dir: store },
       mcpExtensionPath: MCP_EXTENSION_PATH,
       hiddenCommands: new Set(),
+      logStartupTiming: false,
       createPiClient: fake.createPiClient,
     })
     const app = server.register(acp.agent({ name: AGENT_NAME }))

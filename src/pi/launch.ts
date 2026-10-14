@@ -1,9 +1,12 @@
 import { fileURLToPath } from 'node:url'
 
-import { ENV_PI_BIN, PI_RPC_ENTRY_SPECIFIER, PI_RPC_MODE_ARGS } from '../constants.js'
+import { AGENT_NAME, ENV_PI_BIN, PI_RPC_ENTRY_SPECIFIER, PI_RPC_MODE_ARGS } from '../constants.js'
 import type { PiLaunch } from './errors.js'
 
 export const BUNDLED_PI_SOURCE = `bundled ${PI_RPC_ENTRY_SPECIFIER}`
+
+export const piLaunchLogLine = ({ source, command, args }: PiLaunch): string =>
+  `[${AGENT_NAME}] Pi launch ${JSON.stringify({ source, command, args })}`
 
 /** `PI_ACP_PI_BIN` runs a user-supplied `pi`; otherwise the Pi package this
  * adapter depends on is launched through its RPC entry under the current

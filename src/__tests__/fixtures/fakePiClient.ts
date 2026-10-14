@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url'
 import type { Usage } from '@agentclientprotocol/sdk'
 
 import { PI_SESSION_ARG } from '../../constants.js'
-import type { RpcNotifyRequest } from '../../pi/PiRpcClient.js'
+import type { RpcNotifyRequest, StartupTiming } from '../../pi/PiRpcClient.js'
 import type { PromptDisposition, RpcExtensionUIRequest, RpcExtensionUIResponse } from '../../pi/types.js'
 import type { CreatePiClient, PiClientLike } from '../../session/SessionConnection.js'
 import type { JsonAgentSessionEvent } from '../../pi/types.js'
@@ -119,6 +119,9 @@ export interface FakePiSpec {
   /** Runs inside `start()`, before the readiness answer, the way an extension's
    * `session_start` handler notifies while Pi starts. */
   onStart?: (notify: (request: RpcNotifyRequest) => void) => void
+  startupTiming?: StartupTiming
+  /** What the subprocess wrote to stderr; empty when unset. */
+  stderr?: string
 }
 
 export interface FakePiClient {
@@ -250,6 +253,8 @@ export function makeFakePiClient(spec: FakePiSpec): FakePiClient {
     stop: async () => {
       stopped = true
     },
+    startupTiming: spec.startupTiming,
+    stderrTail: () => spec.stderr ?? '',
   }
 
   const spawns: Array<{ cwd: string; args: readonly string[]; env?: NodeJS.ProcessEnv | undefined }> = []

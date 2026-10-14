@@ -106,6 +106,7 @@ function makeDeps(fake: ReturnType<typeof makeFakePiClient>) {
     clientSupportsNotices: false,
     mcpExtensionPath: MCP_EXTENSION_PATH,
     hiddenCommands: new Set<string>(),
+    logStartupTiming: false,
     createPiClient: fake.createPiClient,
   }
 }
@@ -311,6 +312,72 @@ describe('establishSession', () => {
   })
 })
 
+describe('startup timing line', () => {
+  const PI_MAIN_HEADER = '--- Startup Timings: main ---'
+  const PI_STDERR = ['Warning: noise', '', PI_MAIN_HEADER, '  parseArgs: 2ms', '  TOTAL: 2ms', '-'.repeat(PI_MAIN_HEADER.length), '', ''].join('\n')
+  const LINE_PATTERN = new RegExp(`^\\[${AGENT_NAME}\\] \\[sess-1\\] startup timing (\\{.*\\})$`)
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  function loggedTiming(errorSpy: ReturnType<typeof vi.spyOn>): { raw: string; parsed: Record<string, unknown> } {
+    expect(errorSpy).toHaveBeenCalledOnce()
+    const [line] = errorSpy.mock.calls[0] ?? []
+    const raw = LINE_PATTERN.exec(String(line))?.[1]
+    if (raw === undefined) throw new Error(`not a startup timing line: ${String(line)}`)
+    return { raw, parsed: JSON.parse(raw) as Record<string, unknown> }
+  }
+
+  it('logs one line for a new session with the client marks and Pi blocks, keys in order', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const fake = makeFakePiClient({ ...makeSpec(), startupTiming: { spawnMs: 12, readyMs: 340 }, stderr: PI_STDERR })
+
+    await establishSession({ cwd: ABS_CWD, mcpServers: [] }, { ...makeDeps(fake), logStartupTiming: true })
+
+    const { raw, parsed } = loggedTiming(errorSpy)
+    expect(raw).toMatch(/^\{"mode":"new","spawnMs":12,"readyMs":340,"metadataMs":\d+,"totalMs":\d+,"pi":\{/)
+    expect(parsed).toStrictEqual({
+      mode: 'new',
+      spawnMs: 12,
+      readyMs: 340,
+      metadataMs: expect.any(Number),
+      totalMs: expect.any(Number),
+      pi: { main: { parseArgs: 2, TOTAL: 2 } },
+    })
+    expect(parsed['totalMs']).toBeGreaterThanOrEqual(parsed['metadataMs'] as number)
+  })
+
+  it('logs nulls for an opened session whose client has no marks and Pi printed no block', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const fake = makeFakePiClient(makeSpec())
+
+    await establishSession(
+      { cwd: ABS_CWD, mcpServers: [] },
+      { ...makeDeps(fake), logStartupTiming: true },
+      { kind: 'open', sessionFile: SESSION_FILE, expectedSessionId: 'sess-1' },
+    )
+
+    expect(loggedTiming(errorSpy).parsed).toStrictEqual({
+      mode: 'open',
+      spawnMs: null,
+      readyMs: null,
+      metadataMs: expect.any(Number),
+      totalMs: expect.any(Number),
+      pi: null,
+    })
+  })
+
+  it('logs nothing when the switch is off', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const fake = makeFakePiClient({ ...makeSpec(), startupTiming: { spawnMs: 12, readyMs: 340 }, stderr: PI_STDERR })
+
+    await establishSession({ cwd: ABS_CWD, mcpServers: [] }, makeDeps(fake))
+
+    expect(errorSpy).not.toHaveBeenCalled()
+  })
+})
+
 describe('prompt template argument hints', () => {
   let templateDir: string
 
@@ -471,6 +538,7 @@ describe('session/new over the wire', () => {
       sessionDirs: SESSION_DIRS,
       mcpExtensionPath: MCP_EXTENSION_PATH,
       hiddenCommands,
+      logStartupTiming: false,
       createPiClient: fake.createPiClient,
     })
     const app = server.register(acp.agent({ name: AGENT_NAME }))

@@ -236,6 +236,20 @@ export * from './mcp/mcpConstants.js'
 export const NOTICE_SEVERITY_DEFAULT: NoticeSeverity = 'info'
 export const extensionNotifyLogLine = (message: string): string => `[${AGENT_NAME}] Pi extension notify: ${message}`
 
+// ── Startup timing ────────────────────────────────────────────────────────────
+//
+// `PI_TIMING` is Pi's own startup-profiling switch. The subprocess inherits it
+// and prints one block per namespace to stderr, which the adapter parses into
+// its own per-session line.
+
+export const ENV_PI_TIMING = 'PI_TIMING'
+/** Pi's exact check; any other value leaves profiling off. */
+export const PI_TIMING_ON = '1'
+export const PI_TIMING_BLOCK_HEADER = /^--- Startup Timings: (.+) ---$/
+// Greedy, so a label that itself holds `: ` (an extension path) anchors on the trailing count.
+export const PI_TIMING_BLOCK_ENTRY = /^ {2}(.+): (\d+)ms$/
+export const PI_TIMING_BLOCK_FOOTER = /^-+$/
+
 // ── Session title ──────────────────────────────────────────────────────────────
 //
 // A nameless session is titled from the first user message's first line, so Pi's
@@ -311,6 +325,10 @@ export function resolveRpcTimeoutMs(env: NodeJS.ProcessEnv): number {
   if (ms <= 0) throw new Error(`${ENV_RPC_TIMEOUT_MS}="${raw}" must be greater than zero`)
   if (ms > MAX_RPC_TIMEOUT_MS) throw new Error(`${ENV_RPC_TIMEOUT_MS}="${raw}" exceeds the maximum ${MAX_RPC_TIMEOUT_MS}`)
   return ms
+}
+
+export function resolveStartupTiming(env: NodeJS.ProcessEnv): boolean {
+  return env[ENV_PI_TIMING] === PI_TIMING_ON
 }
 
 export function resolveHiddenCommands(env: NodeJS.ProcessEnv): ReadonlySet<string> {

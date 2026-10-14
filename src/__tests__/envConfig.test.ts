@@ -3,9 +3,11 @@ import { describe, expect, it } from 'vitest'
 import {
   DEFAULT_RPC_TIMEOUT_MS,
   ENV_HIDE_COMMANDS,
+  ENV_PI_TIMING,
   ENV_RPC_TIMEOUT_MS,
   resolveHiddenCommands,
   resolveRpcTimeoutMs,
+  resolveStartupTiming,
 } from '../constants.js'
 
 describe('resolveRpcTimeoutMs', () => {
@@ -27,6 +29,15 @@ describe('resolveRpcTimeoutMs', () => {
     expect(() => resolveRpcTimeoutMs({ [ENV_RPC_TIMEOUT_MS]: '-5' })).toThrow(/whole number/)
     expect(() => resolveRpcTimeoutMs({ [ENV_RPC_TIMEOUT_MS]: '0' })).toThrow(/greater than zero/)
     expect(() => resolveRpcTimeoutMs({ [ENV_RPC_TIMEOUT_MS]: '9999999999' })).toThrow(/exceeds the maximum/)
+  })
+})
+
+describe('resolveStartupTiming', () => {
+  it('is on only for the exact value Pi checks', () => {
+    expect(resolveStartupTiming({ [ENV_PI_TIMING]: '1' })).toBe(true)
+    for (const value of [undefined, '', '0', 'true', ' 1', '1 ']) {
+      expect(resolveStartupTiming(value === undefined ? {} : { [ENV_PI_TIMING]: value })).toBe(false)
+    }
   })
 })
 

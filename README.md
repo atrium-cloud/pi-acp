@@ -14,6 +14,7 @@ The release is a single executable, `pi-acp`; put it on PATH or point your ACP c
 - `PI_ACP_PI_BIN`: the `pi` executable to launch; unset from a checkout.
 - `PI_ACP_RPC_TIMEOUT_MS`: bound on each Pi RPC round-trip; default 30000.
 - `PI_ACP_HIDE_COMMANDS`: comma-separated command names to leave out of the advertised slash commands, for example `llama`.
+- `PI_TIMING`: Pi's own startup profiling switch; with it set to `1`, pi-acp also logs the Pi launch and one startup timing line per session to stderr.
 
 ## ACP support
 

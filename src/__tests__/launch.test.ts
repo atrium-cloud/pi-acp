@@ -4,7 +4,16 @@ import { basename, isAbsolute } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 import { ENV_PI_BIN, PI_RPC_MODE_ARGS } from '../constants.js'
-import { BUNDLED_PI_SOURCE, resolvePiLaunch } from '../pi/launch.js'
+import { BUNDLED_PI_SOURCE, piLaunchLogLine, resolvePiLaunch } from '../pi/launch.js'
+
+describe('piLaunchLogLine', () => {
+  it('logs source, command and args as JSON, keeping each arg whole', () => {
+    const launch = { command: '/opt/my pi/bin/pi', args: ['--mode', 'rpc'], source: ENV_PI_BIN }
+    expect(piLaunchLogLine(launch)).toBe(
+      '[pi-acp] Pi launch {"source":"PI_ACP_PI_BIN","command":"/opt/my pi/bin/pi","args":["--mode","rpc"]}',
+    )
+  })
+})
 
 describe('resolvePiLaunch', () => {
   it('runs a PI_ACP_PI_BIN binary in RPC mode', () => {

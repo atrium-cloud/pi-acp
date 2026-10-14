@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process'
 import type { ChildProcessByStdio } from 'node:child_process'
+import { performance } from 'node:perf_hooks'
 import type { Readable, Writable } from 'node:stream'
 import { StringDecoder } from 'node:string_decoder'
 
@@ -45,6 +46,13 @@ const LOG_PREFIX = `[${AGENT_NAME}]`
 type PiChildProcess = ChildProcessByStdio<Writable, Readable, Readable>
 
 export type RpcNotifyRequest = Extract<RpcExtensionUIRequest, { method: 'notify' }>
+
+/** Rounded ms from the spawn call to the subprocess's `spawn` event and to its
+ * first `get_state` answer. */
+export interface StartupTiming {
+  readonly spawnMs: number
+  readonly readyMs: number
+}
 
 /** Pi emits this frame from `runRpcMode`'s extension `onError`; it is not part
  * of `JsonAgentSessionEvent` and upstream ships no type for it. */
@@ -104,6 +112,9 @@ export class PiRpcClient {
   private exitSignal: NodeJS.Signals | null = null
   private transportError: Error | null = null
   private stderrBuffer = ''
+  private spawnCalledAt: number | null = null
+  private spawnedAt: number | null = null
+  private readyAt: number | null = null
   private nextRequestId = 0
   private closeFallbackTimer: NodeJS.Timeout | null = null
   private forceKillTimer: NodeJS.Timeout | null = null
@@ -122,6 +133,7 @@ export class PiRpcClient {
     if (this.started) throw new Error('Pi RPC transport: the client has already been started')
     this.started = true
 
+    this.spawnCalledAt = performance.now()
     const child = this.spawnChild()
     this.child = child
 
@@ -158,6 +170,7 @@ export class PiRpcClient {
       // readiness write would report a closed pipe instead of the real ENOENT.
       await this.waitForSpawn(child)
       const state = await this.getState()
+      this.readyAt = performance.now()
       // A failure before this point surfaces only through start()'s rejection;
       // onExit is for the death of an already-live client, not a startup that
       // never completed.
@@ -169,6 +182,19 @@ export class PiRpcClient {
       await this.stop()
       throw startupFailure
     }
+  }
+
+  /** Undefined until `start()` has returned. */
+  get startupTiming(): StartupTiming | undefined {
+    if (this.spawnCalledAt === null || this.spawnedAt === null || this.readyAt === null) return undefined
+    return {
+      spawnMs: Math.round(this.spawnedAt - this.spawnCalledAt),
+      readyMs: Math.round(this.readyAt - this.spawnCalledAt),
+    }
+  }
+
+  stderrTail(): string {
+    return this.stderrBuffer
   }
 
   async getState(): Promise<RpcSessionState> {
@@ -280,6 +306,7 @@ export class PiRpcClient {
   private waitForSpawn(child: PiChildProcess): Promise<void> {
     return new Promise<void>((resolve, reject) => {
       const onSpawn = (): void => {
+        this.spawnedAt = performance.now()
         this.spawned = true
         child.off('error', onError)
         resolve()
@@ -485,10 +512,6 @@ export class PiRpcClient {
     if (this.stderrBuffer.length > STDERR_TAIL_MAX_BYTES) {
       this.stderrBuffer = this.stderrBuffer.slice(-STDERR_TAIL_MAX_BYTES)
     }
-  }
-
-  private stderrTail(): string {
-    return this.stderrBuffer
   }
 
   private handleStdinError(error: Error): void {

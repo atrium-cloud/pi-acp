@@ -99,6 +99,7 @@ function makeServer(spec: Partial<FakePiSpec> = {}): {
     sessionDirs: SESSION_DIRS,
     mcpExtensionPath: MCP_EXTENSION_PATH,
     hiddenCommands: new Set(),
+    logStartupTiming: false,
     createPiClient: fake.createPiClient,
   })
   server.initialize(initRequest(NOTICES_CAPABILITIES))
@@ -186,6 +187,7 @@ describe('extension notify with a client that advertised session.notices', () =>
       sessionDirs: SESSION_DIRS,
       mcpExtensionPath: MCP_EXTENSION_PATH,
       hiddenCommands: new Set(),
+      logStartupTiming: false,
       createPiClient: fake.createPiClient,
     })
     const app = server.register(acp.agent({ name: AGENT_NAME }))

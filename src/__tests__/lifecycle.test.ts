@@ -120,6 +120,7 @@ function makeServer(spec: FakePiSpec = makeSpec()): {
     sessionDirs: dirs,
     mcpExtensionPath: MCP_EXTENSION_PATH,
     hiddenCommands: new Set(),
+    logStartupTiming: false,
     createPiClient: fake.createPiClient,
   })
   const notify = vi.fn(async () => {})
@@ -336,6 +337,7 @@ describe('session/load', () => {
       sessionDirs: dirs,
       mcpExtensionPath: MCP_EXTENSION_PATH,
       hiddenCommands: new Set(),
+      logStartupTiming: false,
       createPiClient: fake.createPiClient,
     })
     const app = server.register(acp.agent({ name: AGENT_NAME }))

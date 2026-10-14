@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises'
 import { isAbsolute } from 'node:path'
+import { performance } from 'node:perf_hooks'
 
 import * as acp from '@agentclientprotocol/sdk'
 import type { AgentContext, AvailableCommand, McpServer } from '@agentclientprotocol/sdk'
@@ -23,6 +24,7 @@ import type { McpServerSpec } from '../mcp/servers.js'
 import { translateMcpServers } from '../mcp/servers.js'
 import type { PiLaunch } from '../pi/errors.js'
 import { PiRpcClient } from '../pi/PiRpcClient.js'
+import { parsePiStartupTimings, startupTimingLogLine } from '../pi/startupTimings.js'
 import { asMessage } from '../server/errors.js'
 import type { ModelChoice } from '../turn/configOptions.js'
 import { type CreatePiClient, SessionConnection } from './SessionConnection.js'
@@ -44,6 +46,7 @@ export interface SessionSetupDeps {
   readonly mcpExtensionPath: string
   /** Command names left out of the advertised commands. */
   readonly hiddenCommands: ReadonlySet<string>
+  readonly logStartupTiming: boolean
   /** Injectable for tests; defaults to spawning a real Pi RPC subprocess. */
   readonly createPiClient?: CreatePiClient | undefined
 }
@@ -74,6 +77,7 @@ export async function establishSession(
   deps: SessionSetupDeps,
   mode: SessionSetupMode = { kind: 'new' },
 ): Promise<EstablishedSession> {
+  const setupStartedAt = performance.now()
   const mcpServers = validateSessionRequest(request)
 
   const connection = new SessionConnection({
@@ -109,6 +113,7 @@ export async function establishSession(
   // start() self-cleans a failure inside itself; a failure in the follow-up
   // fetches would otherwise leave a live subprocess nobody holds.
   const state = await piClient.start()
+  const readyAt = performance.now()
   if (mode.kind === 'open' && state.sessionId !== mode.expectedSessionId) {
     // Pi opened something other than the requested session (a stale path, or an
     // id the file no longer carries): nothing downstream can be trusted.
@@ -130,6 +135,7 @@ export async function establishSession(
       name: model.name,
     }))
     const availableCommands = await mapCommands(commands.data.commands, deps.hiddenCommands)
+    const metadataDoneAt = performance.now()
     connection.attach({
       piClient,
       sessionId: state.sessionId,
@@ -137,6 +143,21 @@ export async function establishSession(
       models: modelChoices,
       levels: levels.data.levels,
     })
+    // Pi prints its blocks before it answers get_state, but on stderr, a separate
+    // pipe that can lag stdout, so the tail is read only after these round-trips.
+    if (deps.logStartupTiming) {
+      const startup = piClient.startupTiming
+      console.error(
+        startupTimingLogLine(state.sessionId, {
+          mode: mode.kind,
+          spawnMs: startup?.spawnMs ?? null,
+          readyMs: startup?.readyMs ?? null,
+          metadataMs: Math.round(metadataDoneAt - readyAt),
+          totalMs: Math.round(metadataDoneAt - setupStartedAt),
+          pi: parsePiStartupTimings(piClient.stderrTail()),
+        }),
+      )
+    }
     return {
       connection,
       sessionId: state.sessionId,

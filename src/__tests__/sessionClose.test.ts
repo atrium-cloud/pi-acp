@@ -40,6 +40,10 @@ function withTimeline(createPiClient: CreatePiClient): { createPiClient: CreateP
         timeline.push('stop')
         await client.stop()
       },
+      get startupTiming() {
+        return client.startupTiming
+      },
+      stderrTail: () => client.stderrTail(),
     }
   }
   return { createPiClient: wrapped, timeline }
@@ -76,6 +80,8 @@ function makeHangingAckClient(): CreatePiClient {
     stop: async () => {
       pendingAck.reject?.(new Error('the client was stopped before the command completed'))
     },
+    startupTiming: undefined,
+    stderrTail: () => '',
   }
   return () => client
 }
@@ -92,6 +98,7 @@ async function connect(createPiClient: CreatePiClient): Promise<{
     clientSupportsNotices: false,
     mcpExtensionPath: MCP_EXTENSION_PATH,
     hiddenCommands: new Set(),
+    logStartupTiming: false,
     createPiClient,
   })
   return { connection: established.connection, notify }

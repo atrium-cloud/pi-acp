@@ -113,6 +113,19 @@ describe('PiRpcClient startup', () => {
     expect(state.isStreaming).toBe(false)
   })
 
+  it('reports startup timing only once ready, in whole ms from the spawn call', async () => {
+    const client = createClient()
+    expect(client.startupTiming).toBeUndefined()
+    await client.start()
+
+    const timing = client.startupTiming
+    if (timing === undefined) throw new Error('startupTiming is unset after start()')
+    expect(Number.isInteger(timing.spawnMs)).toBe(true)
+    expect(Number.isInteger(timing.readyMs)).toBe(true)
+    expect(timing.spawnMs).toBeGreaterThanOrEqual(0)
+    expect(timing.readyMs).toBeGreaterThanOrEqual(timing.spawnMs)
+  })
+
   it('refuses a second start', async () => {
     const client = createClient()
     await client.start()
@@ -450,6 +463,7 @@ describe('PiRpcClient teardown', () => {
     expect(death).toBeInstanceOf(PiExitError)
     expect((death as PiExitError).code).toBe(7)
     expect(death?.message).toMatch(/exiting with code 7 without answering/)
+    expect(client.stderrTail()).toMatch(/exiting with code 7 without answering/)
 
     // `exit` and `close` both reach the death path; only one may be reported.
     await delay(QUIET_WINDOW_MS)

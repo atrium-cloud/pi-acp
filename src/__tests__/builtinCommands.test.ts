@@ -460,6 +460,7 @@ describe('a running built-in', () => {
       clientSupportsNotices: false,
       mcpExtensionPath: MCP_EXTENSION_PATH,
       hiddenCommands: new Set(),
+      logStartupTiming: false,
       createPiClient: fake.createPiClient,
     })
     return { fake, connection: established.connection }

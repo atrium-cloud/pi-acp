@@ -128,6 +128,7 @@ export function createAcpTestFixture(spec: Partial<FakePiSpec> = {}): AcpTestFix
     sessionDirs,
     mcpExtensionPath: MCP_EXTENSION_PATH,
     hiddenCommands: new Set(),
+    logStartupTiming: false,
     createPiClient: fake.createPiClient,
   })
 

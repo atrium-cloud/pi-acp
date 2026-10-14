@@ -28,7 +28,7 @@ import {
 } from '../constants.js'
 import { buildPermissionOptions, decodeSentinelTitle } from '../permissions/gate.js'
 import { PiRpcError } from '../pi/errors.js'
-import type { PiRpcClient, PiRpcClientOptions, RpcNotifyRequest } from '../pi/PiRpcClient.js'
+import type { PiRpcClient, PiRpcClientOptions, RpcNotifyRequest, StartupTiming } from '../pi/PiRpcClient.js'
 import type {
   JsonAgentSessionEvent,
   RpcCommand,
@@ -57,6 +57,8 @@ export interface PiClientLike {
   start(): Promise<RpcSessionState>
   request: PiRpcClient['request']
   stop(): Promise<void>
+  readonly startupTiming: StartupTiming | undefined
+  stderrTail(): string
 }
 
 export type CreatePiClient = (options: PiRpcClientOptions) => PiClientLike
