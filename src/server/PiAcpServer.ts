@@ -1,5 +1,6 @@
 import { rm, unlink } from 'node:fs/promises'
 import { isAbsolute, resolve } from 'node:path'
+import { performance } from 'node:perf_hooks'
 
 import * as acp from '@agentclientprotocol/sdk'
 import type {
@@ -42,6 +43,7 @@ import {
   SESSION_LIST_PAGE_SIZE,
 } from '../constants.js'
 import type { PiLaunch } from '../pi/errors.js'
+import { startupTimingLogLine } from '../pi/startupTimings.js'
 import {
   branchEntriesBefore,
   findSessionFile,
@@ -63,9 +65,11 @@ import {
   type EstablishedSession,
   establishSession,
   type SessionSetupDeps,
+  type SessionSetupRequest,
   validateSessionRequest,
 } from '../session/sessionSetup.js'
 import { deriveTitle } from '../session/title.js'
+import { WarmSpare } from '../session/warmSpare.js'
 import { flattenPromptContent } from '../turn/promptContent.js'
 import { toRequestError } from './errors.js'
 
@@ -84,23 +88,29 @@ export interface PiAcpServerOptions {
   readonly logStartupTiming: boolean
   /** Injectable for tests; defaults to spawning a real Pi RPC subprocess. */
   readonly createPiClient?: CreatePiClient | undefined
+  /** The warm spare's age cap; undefined leaves the spare off. */
+  readonly warmSpareMaxAgeMs?: number | undefined
 }
 
 /** A session with a live Pi subprocess. The commands ride along so a resume or
- * load that reuses the subprocess can re-announce them without a round-trip. */
+ * load that reuses the subprocess can re-announce them without a round-trip,
+ * and the setup request so a warm spare refilled after a prompt starts like it. */
 interface LiveSession {
   readonly connection: SessionConnection
   readonly commands: readonly AvailableCommand[]
+  readonly setup: SessionSetupRequest
 }
 
 export class PiAcpServer {
   private readonly options: PiAcpServerOptions
   private readonly sessions = new Map<string, LiveSession>()
+  private readonly warmSpare: WarmSpare | undefined
   private stopped = false
   private clientSupportsNotices = false
 
   constructor(options: PiAcpServerOptions) {
     this.options = options
+    this.warmSpare = options.warmSpareMaxAgeMs === undefined ? undefined : new WarmSpare(options.warmSpareMaxAgeMs)
   }
 
   register(app: acp.AgentApp): acp.AgentApp {
@@ -130,7 +140,7 @@ export class PiAcpServer {
     this.stopped = true
     const sessions = [...this.sessions.values()]
     this.sessions.clear()
-    await Promise.all(sessions.map((session) => session.connection.stop()))
+    await Promise.all([...sessions.map((session) => session.connection.stop()), this.warmSpare?.stop()])
   }
 
   initialize(params: InitializeRequest): InitializeResponse {
@@ -160,8 +170,20 @@ export class PiAcpServer {
   }
 
   async newSession(context: { params: NewSessionRequest; client: AgentContext }): Promise<NewSessionResponse> {
-    const established = await establishSession(context.params, this.setupDeps(context.client))
-    const session = await this.registerSession(established)
+    const startedAt = performance.now()
+    const request = context.params
+    const spare = this.warmSpare === undefined ? null : await this.warmSpare.take(request)
+    if (spare !== null) {
+      const session = await this.registerSession(spare.established, request)
+      session.connection.announceCommands(session.commands)
+      if (this.options.logStartupTiming) {
+        const totalMs = Math.round(performance.now() - startedAt)
+        console.error(startupTimingLogLine(spare.established.sessionId, { mode: 'take', ageMs: spare.ageMs, totalMs }))
+      }
+      return { sessionId: spare.established.sessionId, configOptions: spare.configOptions }
+    }
+    const established = await establishSession(request, this.setupDeps(context.client))
+    const session = await this.registerSession(established, request)
     session.connection.announceCommands(session.commands)
     return { sessionId: established.sessionId, configOptions: established.configOptions }
   }
@@ -261,7 +283,7 @@ export class PiAcpServer {
       await rm(messageMapPathFor(fork.path), { force: true })
       throw error
     }
-    const session = await this.registerSession(established)
+    const session = await this.registerSession(established, request)
     session.connection.announceCommands(session.commands)
     return { sessionId: established.sessionId, configOptions: established.configOptions }
   }
@@ -310,12 +332,15 @@ export class PiAcpServer {
     return { configOptions }
   }
 
-  async prompt(context: { params: PromptRequest; signal: AbortSignal }): Promise<PromptResponse> {
+  async prompt(context: { params: PromptRequest; signal: AbortSignal; client: AgentContext }): Promise<PromptResponse> {
     const session = this.sessions.get(context.params.sessionId)
     if (session === undefined) throw invalidParams(`unknown session "${context.params.sessionId}"`)
     const prompt = flattenPromptContent(context.params.prompt)
     const messageId = readMessageIdMeta(context.params._meta)
     const { stopReason, usage, acknowledgedMessageId } = await session.connection.runPrompt(prompt, context.signal, messageId)
+    // Only once a prompt resolves, never at create or for a prompt refused
+    // mid-turn, so the spawn stays off a running turn's CPU.
+    this.warmSpare?.refill(session.setup, this.setupDeps(context.client))
     const response: PromptResponse = { stopReason, ...(usage === undefined ? {} : { usage }) }
     if (acknowledgedMessageId === undefined) return response
     return {
@@ -379,10 +404,10 @@ export class PiAcpServer {
       sessionFile,
       expectedSessionId: request.sessionId,
     })
-    return await this.registerSession(established)
+    return await this.registerSession(established, request)
   }
 
-  private async registerSession(established: EstablishedSession): Promise<LiveSession> {
+  private async registerSession(established: EstablishedSession, request: SessionSetupRequest): Promise<LiveSession> {
     if (this.stopped || this.sessions.has(established.sessionId)) {
       await established.connection.stop()
       throw new acp.RequestError(
@@ -392,7 +417,11 @@ export class PiAcpServer {
           : `Pi returned a duplicate session id "${established.sessionId}"`,
       )
     }
-    const session: LiveSession = { connection: established.connection, commands: established.availableCommands }
+    const session: LiveSession = {
+      connection: established.connection,
+      commands: established.availableCommands,
+      setup: { cwd: request.cwd, mcpServers: request.mcpServers },
+    }
     this.sessions.set(established.sessionId, session)
     return session
   }

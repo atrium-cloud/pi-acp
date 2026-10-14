@@ -474,6 +474,7 @@ describe('session/fork', () => {
     const turn = server.prompt({
       params: { sessionId: SESSION_ID, prompt: HELLO_PROMPT },
       signal: new AbortController().signal,
+      client,
     })
     await Promise.resolve()
     await server.forkSession({ params: { sessionId: SESSION_ID, cwd: CWD }, client })
@@ -496,6 +497,7 @@ describe('session/fork', () => {
     const turn = server.prompt({
       params: { sessionId: SESSION_ID, prompt: HELLO_PROMPT },
       signal: new AbortController().signal,
+      client,
     })
     await Promise.resolve()
     await server.forkSession({ params: { sessionId: SESSION_ID, cwd: CWD }, client })
@@ -514,6 +516,7 @@ describe('session/fork', () => {
     const turn = server.prompt({
       params: { sessionId: SESSION_ID, prompt: HELLO_PROMPT },
       signal: new AbortController().signal,
+      client,
     })
     const readFlag = Object.getOwnPropertyDescriptor(SessionConnection.prototype, 'hasUnsettledTurnInStore')?.get
     if (readFlag === undefined) throw new Error('SessionConnection has no hasUnsettledTurnInStore getter')
@@ -567,6 +570,7 @@ describe('session/fork', () => {
     const turn = server.prompt({
       params: { sessionId: SESSION_ID, prompt: HELLO_PROMPT },
       signal: new AbortController().signal,
+      client,
     })
     await requested
     await server.forkSession({ params: { sessionId: SESSION_ID, cwd: CWD }, client })
@@ -587,6 +591,7 @@ describe('session/fork', () => {
     const turn = server.prompt({
       params: { sessionId: SESSION_ID, prompt: [{ type: 'text', text: `/${EXTENSION_COMMAND.name}` }] },
       signal: new AbortController().signal,
+      client,
     })
     await Promise.resolve()
     await server.forkSession({ params: { sessionId: SESSION_ID, cwd: CWD }, client })
@@ -685,6 +690,7 @@ describe('session/fork', () => {
     const turn = server.prompt({
       params: { sessionId: SESSION_ID, prompt: HELLO_PROMPT },
       signal: new AbortController().signal,
+      client,
     })
     await Promise.resolve()
     const response = await server.forkSession({ params: { sessionId: SESSION_ID, cwd: CWD }, client })
@@ -785,6 +791,7 @@ describe('session/close', () => {
     const turn = server.prompt({
       params: { sessionId: SESSION_ID, prompt: HELLO_PROMPT },
       signal: new AbortController().signal,
+      client,
     })
     await Promise.resolve()
     await expect(server.closeSession({ params: { sessionId: SESSION_ID } })).resolves.toEqual({})
@@ -792,7 +799,7 @@ describe('session/close', () => {
     await expect(turn).resolves.toEqual({ stopReason: 'cancelled' })
     expect(fake.wasStopped()).toBe(true)
     await expect(
-      server.prompt({ params: { sessionId: SESSION_ID, prompt: HELLO_PROMPT }, signal: new AbortController().signal }),
+      server.prompt({ params: { sessionId: SESSION_ID, prompt: HELLO_PROMPT }, signal: new AbortController().signal, client }),
     ).rejects.toMatchObject({ code: JSONRPC_INVALID_PARAMS, message: expect.stringContaining('unknown session') })
   })
 
@@ -834,7 +841,7 @@ describe('session/delete', () => {
     expect(fake.wasStopped()).toBe(true)
     expect(existsSync(path)).toBe(false)
     await expect(
-      server.prompt({ params: { sessionId: SESSION_ID, prompt: HELLO_PROMPT }, signal: new AbortController().signal }),
+      server.prompt({ params: { sessionId: SESSION_ID, prompt: HELLO_PROMPT }, signal: new AbortController().signal, client }),
     ).rejects.toMatchObject({ code: JSONRPC_INVALID_PARAMS })
   })
 

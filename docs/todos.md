@@ -328,4 +328,4 @@ Pi upstream ships an ACP agent on current schemas with session resume, thought-l
         - The session counts as busy while a run starts. The `prompt` ack still precedes `agent_start`, and an abort sent during run start aborts the run once it exists.
         - OpenRouter lists only the models the key may use, saved for offline use; the e2e pin is still offered.
     - docs/refs.md carries the range.
-- [x] docs/caveats.md holds the gaps that stay open by design (MCP startup status, Pi's own `mcp.json` servers, MCP OAuth, the MCP server environment, unforwarded extension notifications, advertised built-in commands, project trust, session-replacing commands, nested tool calls), each with the reason.
+- [x] docs/caveats.md holds the gaps that stay open by design (MCP startup status, Pi's own `mcp.json` servers, MCP OAuth, the MCP server environment, unforwarded extension notifications, advertised built-in commands, project trust, session-replacing commands, nested tool calls, warm spare sessions starting early), each with the reason.

@@ -10,6 +10,7 @@ import {
   resolveHiddenCommands,
   resolveRpcTimeoutMs,
   resolveStartupTiming,
+  resolveWarmSpareMaxAgeMs,
 } from './constants.js'
 import { materializeMcpExtension } from './mcp/extension.js'
 import { materializeGate } from './permissions/gate.js'
@@ -40,6 +41,8 @@ async function main(): Promise<void> {
   const server = new PiAcpServer({
     launch,
     rpcTimeoutMs: resolveRpcTimeoutMs(process.env),
+    // Ahead of the gate, so a bad value fails before anything is written.
+    warmSpareMaxAgeMs: resolveWarmSpareMaxAgeMs(process.env),
     // The subprocess inherits this environment, so both sides resolve the same
     // store; a later env change does not move it under a running adapter.
     sessionDirs: resolveSessionDirs(process.env),

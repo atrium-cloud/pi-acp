@@ -19,6 +19,7 @@ import type { RequestPermissionResponse } from '@agentclientprotocol/sdk'
 
 import { AGENT_NAME } from '../constants.js'
 import { PiAcpServer } from '../server/PiAcpServer.js'
+import type { CreatePiClient } from '../session/SessionConnection.js'
 import type { SessionDirs } from '../session/sessionDirectory.js'
 import {
   type FakeCommand,
@@ -118,7 +119,15 @@ export interface AcpTestFixture {
   close(): Promise<void>
 }
 
-export function createAcpTestFixture(spec: Partial<FakePiSpec> = {}): AcpTestFixture {
+export interface AcpTestFixtureOptions {
+  /** Replaces the spawn of `fake`, which then sees none, for a test that needs
+   * one fake Pi per spawn. */
+  readonly createPiClient?: CreatePiClient
+  readonly warmSpareMaxAgeMs?: number
+  readonly logStartupTiming?: boolean
+}
+
+export function createAcpTestFixture(spec: Partial<FakePiSpec> = {}, options: AcpTestFixtureOptions = {}): AcpTestFixture {
   const fake = makeFakePiClient({ ...defaultFakePiSpec(), ...spec })
   const sessionRoot = mkdtempSync(join(tmpdir(), TEMP_PREFIX))
   const sessionDirs: SessionDirs = { mode: 'perCwd', root: sessionRoot }
@@ -128,8 +137,9 @@ export function createAcpTestFixture(spec: Partial<FakePiSpec> = {}): AcpTestFix
     sessionDirs,
     mcpExtensionPath: MCP_EXTENSION_PATH,
     hiddenCommands: new Set(),
-    logStartupTiming: false,
-    createPiClient: fake.createPiClient,
+    logStartupTiming: options.logStartupTiming ?? false,
+    createPiClient: options.createPiClient ?? fake.createPiClient,
+    warmSpareMaxAgeMs: options.warmSpareMaxAgeMs,
   })
 
   const records: AcpRecord[] = []

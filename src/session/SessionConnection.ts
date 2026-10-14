@@ -226,6 +226,14 @@ export class SessionConnection {
     throw invalidParams(`unknown config option "${configId}"`)
   }
 
+  /** Re-reads the whole option set for a warm spare as it is taken: Pi refreshes
+   * its model catalog in the background after startup, so the list read at
+   * build time can be stale. */
+  async refreshConfig(): Promise<SessionConfigOption[]> {
+    await this.refresh(this.requireClient())
+    return this.requireConfig().options
+  }
+
   /** Rebuilds the cache from a full fresh read, recovering from a set whose
    * follow-up re-read failed. */
   private async refresh(client: PiClientLike): Promise<void> {

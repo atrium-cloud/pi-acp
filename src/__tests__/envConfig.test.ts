@@ -5,9 +5,11 @@ import {
   ENV_HIDE_COMMANDS,
   ENV_PI_TIMING,
   ENV_RPC_TIMEOUT_MS,
+  ENV_WARM_SPARE_MAX_AGE_MS,
   resolveHiddenCommands,
   resolveRpcTimeoutMs,
   resolveStartupTiming,
+  resolveWarmSpareMaxAgeMs,
 } from '../constants.js'
 
 describe('resolveRpcTimeoutMs', () => {
@@ -29,6 +31,30 @@ describe('resolveRpcTimeoutMs', () => {
     expect(() => resolveRpcTimeoutMs({ [ENV_RPC_TIMEOUT_MS]: '-5' })).toThrow(/whole number/)
     expect(() => resolveRpcTimeoutMs({ [ENV_RPC_TIMEOUT_MS]: '0' })).toThrow(/greater than zero/)
     expect(() => resolveRpcTimeoutMs({ [ENV_RPC_TIMEOUT_MS]: '9999999999' })).toThrow(/exceeds the maximum/)
+  })
+})
+
+describe('resolveWarmSpareMaxAgeMs', () => {
+  it('is off when unset, empty, or blank', () => {
+    expect(resolveWarmSpareMaxAgeMs({})).toBeUndefined()
+    expect(resolveWarmSpareMaxAgeMs({ [ENV_WARM_SPARE_MAX_AGE_MS]: '' })).toBeUndefined()
+    expect(resolveWarmSpareMaxAgeMs({ [ENV_WARM_SPARE_MAX_AGE_MS]: '   ' })).toBeUndefined()
+  })
+
+  it('accepts a positive integer up to the 32-bit ceiling, trimming space', () => {
+    expect(resolveWarmSpareMaxAgeMs({ [ENV_WARM_SPARE_MAX_AGE_MS]: '600000' })).toBe(600_000)
+    expect(resolveWarmSpareMaxAgeMs({ [ENV_WARM_SPARE_MAX_AGE_MS]: ' 250 ' })).toBe(250)
+    expect(resolveWarmSpareMaxAgeMs({ [ENV_WARM_SPARE_MAX_AGE_MS]: '2147483647' })).toBe(2_147_483_647)
+  })
+
+  it('rejects a non-integer, zero or negative, or over-32-bit value, naming the setting', () => {
+    expect(() => resolveWarmSpareMaxAgeMs({ [ENV_WARM_SPARE_MAX_AGE_MS]: '3.5' })).toThrow(
+      `${ENV_WARM_SPARE_MAX_AGE_MS}="3.5" must be a whole number of milliseconds`,
+    )
+    expect(() => resolveWarmSpareMaxAgeMs({ [ENV_WARM_SPARE_MAX_AGE_MS]: 'soon' })).toThrow(/whole number/)
+    expect(() => resolveWarmSpareMaxAgeMs({ [ENV_WARM_SPARE_MAX_AGE_MS]: '-5' })).toThrow(/whole number/)
+    expect(() => resolveWarmSpareMaxAgeMs({ [ENV_WARM_SPARE_MAX_AGE_MS]: '0' })).toThrow(/greater than zero/)
+    expect(() => resolveWarmSpareMaxAgeMs({ [ENV_WARM_SPARE_MAX_AGE_MS]: '9999999999' })).toThrow(/exceeds the maximum/)
   })
 })
 

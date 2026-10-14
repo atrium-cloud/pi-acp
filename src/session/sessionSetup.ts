@@ -58,10 +58,13 @@ export interface EstablishedSession {
   readonly availableCommands: AvailableCommand[]
 }
 
-/** `new` starts an empty session; `open` reopens a stored one from its file. Pi's
- * RPC mode has no id resolution, so `sessionFile` is always an absolute path. */
+/** `new` starts an empty session; `spare` starts one the same way, held as a
+ * warm spare, and differs only in its timing line; `open` reopens a stored one
+ * from its file. Pi's RPC mode has no id resolution, so `sessionFile` is always
+ * an absolute path. */
 export type SessionSetupMode =
   | { readonly kind: 'new' }
+  | { readonly kind: 'spare' }
   | { readonly kind: 'open'; readonly sessionFile: string; readonly expectedSessionId: string }
 
 /** The shape shared by `session/new`, `session/resume` and `session/load`;

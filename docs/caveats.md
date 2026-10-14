@@ -37,3 +37,7 @@ An extension command whose handler calls `ctx.newSession`, `switchSession`, `for
 ## Nested tool calls
 
 A tool that calls other tools through Pi's `ctx.executeTool` (the `codemode` tool, when a Pi setting or a user's `mcp.json` activates it) emits nested `tool_execution_*` events with ids of the form `<parent>/<n>` and a `parentToolCallId`. ACP v1 has no parent field, so a client sees them as flat sibling tool calls, and since Pi records nested calls in no transcript entry, `session/load` replays the parent call only. The permission gate prompts for a nested mutating or MCP call as for a top-level one, never for the orchestrating tool itself.
+
+## Warm spare sessions start early
+
+With `PI_ACP_WARM_SPARE_MAX_AGE_MS` set, a `session/new` that matches the spare's cwd and MCP servers gets a Pi subprocess started up to that long before. Until it is taken or reaches that age, the spare is one more Pi subprocess (about 120 MB resident) with its MCP servers connected. Its session header timestamp is the spare's start, and Pi's settings, `AGENTS.md`, skills and prompt templates are as Pi read them then; only the models and thinking levels are re-read at the take. There is one spare, refilled after a prompt with that session's cwd and MCP servers, so a host that alternates between cwds mostly misses it. A spare that is never taken leaves no session file, since Pi writes the file on the first prompt.

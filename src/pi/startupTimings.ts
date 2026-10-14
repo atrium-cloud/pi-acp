@@ -10,15 +10,18 @@ import {
 /** Pi's timing blocks by namespace (`main`, `extensions`): label → ms, `TOTAL` included. */
 export type PiStartupTimings = Readonly<Record<string, Readonly<Record<string, number>>>>
 
-/** One established session's startup timing line. */
-export interface SessionStartupTiming {
-  readonly mode: 'new' | 'open'
-  readonly spawnMs: number | null
-  readonly readyMs: number | null
-  readonly metadataMs: number
-  readonly totalMs: number
-  readonly pi: PiStartupTimings | null
-}
+/** One session's startup timing line: an established session's setup, or a
+ * `session/new` answered by taking a warm spare. */
+export type SessionStartupTiming =
+  | {
+      readonly mode: 'new' | 'open' | 'spare'
+      readonly spawnMs: number | null
+      readonly readyMs: number | null
+      readonly metadataMs: number
+      readonly totalMs: number
+      readonly pi: PiStartupTimings | null
+    }
+  | { readonly mode: 'take'; readonly ageMs: number; readonly totalMs: number }
 
 export const startupTimingLogLine = (sessionId: string, timing: SessionStartupTiming): string =>
   `[${AGENT_NAME}] [${sessionId}] startup timing ${JSON.stringify(timing)}`

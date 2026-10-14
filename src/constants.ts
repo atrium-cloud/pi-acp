@@ -256,6 +256,14 @@ export const PI_TIMING_BLOCK_HEADER = /^--- Startup Timings: (.+) ---$/
 export const PI_TIMING_BLOCK_ENTRY = /^ {2}(.+): (\d+)ms$/
 export const PI_TIMING_BLOCK_FOOTER = /^-+$/
 
+// ── Warm spare ────────────────────────────────────────────────────────────────
+//
+// Opt-in: one Pi subprocess started ahead of the next `session/new` with the same
+// cwd and MCP servers. The setting is the spare's age cap; unset leaves it off.
+
+export const ENV_WARM_SPARE_MAX_AGE_MS = 'PI_ACP_WARM_SPARE_MAX_AGE_MS'
+export const warmSpareLogLine = (message: string): string => `[${AGENT_NAME}] warm spare: ${message}`
+
 // ── Session title ──────────────────────────────────────────────────────────────
 //
 // A nameless session is titled from the first user message's first line, so Pi's
@@ -321,16 +329,24 @@ export const JSONRPC_INTERNAL_ERROR = -32_603
 
 // Above this, Node's setTimeout overflows its 32-bit delay and fires after ~1ms,
 // turning a "very patient" timeout into "instant".
-const MAX_RPC_TIMEOUT_MS = 2_147_483_647
+const MAX_TIMER_MS = 2_147_483_647
+
+function readTimerMs(env: NodeJS.ProcessEnv, name: string): number | undefined {
+  const raw = env[name]?.trim()
+  if (raw === undefined || raw === '') return undefined
+  if (!/^\d+$/.test(raw)) throw new Error(`${name}="${raw}" must be a whole number of milliseconds`)
+  const ms = Number(raw)
+  if (ms <= 0) throw new Error(`${name}="${raw}" must be greater than zero`)
+  if (ms > MAX_TIMER_MS) throw new Error(`${name}="${raw}" exceeds the maximum ${MAX_TIMER_MS}`)
+  return ms
+}
 
 export function resolveRpcTimeoutMs(env: NodeJS.ProcessEnv): number {
-  const raw = env[ENV_RPC_TIMEOUT_MS]?.trim()
-  if (raw === undefined || raw === '') return DEFAULT_RPC_TIMEOUT_MS
-  if (!/^\d+$/.test(raw)) throw new Error(`${ENV_RPC_TIMEOUT_MS}="${raw}" must be a whole number of milliseconds`)
-  const ms = Number(raw)
-  if (ms <= 0) throw new Error(`${ENV_RPC_TIMEOUT_MS}="${raw}" must be greater than zero`)
-  if (ms > MAX_RPC_TIMEOUT_MS) throw new Error(`${ENV_RPC_TIMEOUT_MS}="${raw}" exceeds the maximum ${MAX_RPC_TIMEOUT_MS}`)
-  return ms
+  return readTimerMs(env, ENV_RPC_TIMEOUT_MS) ?? DEFAULT_RPC_TIMEOUT_MS
+}
+
+export function resolveWarmSpareMaxAgeMs(env: NodeJS.ProcessEnv): number | undefined {
+  return readTimerMs(env, ENV_WARM_SPARE_MAX_AGE_MS)
 }
 
 export function resolveStartupTiming(env: NodeJS.ProcessEnv): boolean {
