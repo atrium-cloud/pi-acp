@@ -8,6 +8,7 @@ export interface PiLaunch {
   readonly args: readonly string[]
   /** Where the launch came from, e.g. `PI_ACP_PI_BIN` — shown in errors. */
   readonly source: string
+  readonly env?: NodeJS.ProcessEnv
 }
 
 export function describePiLaunch({ command, args, source }: PiLaunch): string {

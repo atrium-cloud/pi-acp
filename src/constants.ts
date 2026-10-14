@@ -26,6 +26,12 @@ export const ENV_PI_BIN = 'PI_ACP_PI_BIN'
 export const PI_RPC_ENTRY_SPECIFIER = '@earendil-works/pi-coding-agent/rpc-entry'
 export const PI_RPC_MODE_ARGS: readonly string[] = ['--mode', 'rpc']
 
+// Pi's `cli.js` calls `module.enableCompileCache()` but its RPC entry does not,
+// so the bundled launch turns the cache on through the env. The dir is Node's
+// own default, so both launch paths share one cache.
+export const ENV_NODE_COMPILE_CACHE = 'NODE_COMPILE_CACHE'
+export const NODE_COMPILE_CACHE_DIR_NAME = 'node-compile-cache'
+
 // ── RPC transport ─────────────────────────────────────────────────────────────
 
 // Bounds every round-trip including the readiness get_state; Pi's cold start can
@@ -218,7 +224,7 @@ export const MUTATING_TOOL_NAMES: readonly string[] = ['bash', 'powershell', 'ed
 // A real user answers, so the window is generous; a timeout fails closed (deny).
 export const PERMISSION_REQUEST_TIMEOUT_MS = 300_000
 export const GATE_DIR_PREFIX = 'pi-acp-'
-export const GATE_FILENAME = 'permission-gate.ts'
+export const GATE_FILENAME = 'permission-gate.mjs'
 
 // ── MCP ───────────────────────────────────────────────────────────────────────
 //

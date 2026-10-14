@@ -295,7 +295,7 @@ export class PiRpcClient {
     try {
       return spawn(launch.command, args, {
         cwd: this.options.cwd,
-        env: { ...process.env, ...this.options.env },
+        env: { ...process.env, ...launch.env, ...this.options.env },
         stdio: ['pipe', 'pipe', 'pipe'],
       })
     } catch (spawnFailure) {

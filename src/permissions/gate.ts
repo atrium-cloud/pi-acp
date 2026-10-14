@@ -55,12 +55,12 @@ export function buildPermissionOptions(): PermissionOption[] {
 
 // The gate extension source, materialized to a temp file and loaded with `-e`.
 // Built from the shared constants so the gate and adapter agree on the sentinel
-// and option ids. Plain (untyped) TS so jiti loads it and — critically — so the
-// bundled string never mentions the dev-only Pi package (the build purity guard
-// greps `dist/index.js` for it). Default-deny: only an explicit allow id runs the
-// tool; undefined/cancelled/any foreign value blocks. Gated tools are the
-// mutating built-ins plus every MCP tool, which is third-party code the adapter
-// cannot classify.
+// and option ids. Plain untyped JS so it never mentions the dev-only Pi package
+// (the build purity guard greps `dist/index.js`), written as `.mjs` so Pi imports
+// it natively instead of through jiti's TS transform. Default-deny: only an
+// explicit allow id runs the tool; undefined/cancelled/any foreign value blocks.
+// Gated tools are the mutating built-ins plus every MCP tool, which is
+// third-party code the adapter cannot classify.
 export const PERMISSION_GATE_SOURCE = [
   `const SENTINEL_PREFIX = ${JSON.stringify(SENTINEL_PREFIX)}`,
   `const MCP_PREFIX = ${JSON.stringify(MCP_TOOL_PREFIX)}`,

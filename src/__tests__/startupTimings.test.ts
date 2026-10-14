@@ -4,7 +4,7 @@ import { parsePiStartupTimings } from '../pi/startupTimings.js'
 
 const MAIN_HEADER = '--- Startup Timings: main ---'
 const EXTENSIONS_HEADER = '--- Startup Timings: extensions ---'
-const GATE_PATH = '/tmp/pi-acp-123/permission-gate.ts'
+const GATE_PATH = '/tmp/pi-acp-123/permission-gate.mjs'
 const ODD_PATH = '/srv/ext: odd/mcp.mjs'
 
 /** A block exactly as Pi's `printTimingGroup` writes it through `console.error`. */

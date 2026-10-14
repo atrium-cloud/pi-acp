@@ -1,8 +1,10 @@
 import { existsSync, readFileSync, rmSync } from 'node:fs'
+import { basename, extname } from 'node:path'
+import { pathToFileURL } from 'node:url'
 
 import { describe, expect, it } from 'vitest'
 
-import { MCP_TOOL_PREFIX } from '../constants.js'
+import { GATE_FILENAME, MCP_TOOL_PREFIX } from '../constants.js'
 import {
   buildPermissionOptions,
   decodeSentinelTitle,
@@ -22,6 +24,9 @@ interface GateCtx {
 }
 type GateResult = { block?: boolean; reason?: string } | undefined
 type GateHandler = (event: GateEvent, ctx: GateCtx) => Promise<GateResult>
+
+// Pi imports `.mjs` natively, with no jiti transform.
+const MJS_EXTENSION = '.mjs'
 
 // Loads the actual materialized gate source and returns its tool_call handler, so
 // the default-deny logic is exercised, not a reimplementation.
@@ -135,6 +140,15 @@ describe('materializeGate', () => {
     expect(readFileSync(path, 'utf8')).toBe(PERMISSION_GATE_SOURCE)
     // The bundled source must never name the dev-only Pi package.
     expect(PERMISSION_GATE_SOURCE).not.toContain('pi-coding-agent')
+    rmSync(path, { force: true })
+  })
+
+  it('writes an .mjs module that imports as native ESM', async () => {
+    const path = materializeGate()
+    expect(basename(path)).toBe(GATE_FILENAME)
+    expect(extname(path)).toBe(MJS_EXTENSION)
+    const gate = (await import(/* @vite-ignore */ pathToFileURL(path).href)) as { default: unknown }
+    expect(typeof gate.default).toBe('function')
     rmSync(path, { force: true })
   })
 })

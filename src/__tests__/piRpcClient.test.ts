@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -25,6 +25,7 @@ const U2029 = String.fromCodePoint(0x2029)
 
 interface FixtureClientOptions {
   readonly command?: string
+  readonly launchEnv?: NodeJS.ProcessEnv
   readonly env?: NodeJS.ProcessEnv
   readonly timeoutMs?: number
   readonly stdinEndGraceMs?: number
@@ -41,7 +42,12 @@ const openClients: PiRpcClient[] = []
 // an override whose value may be undefined into a required option.
 function createClient(overrides: FixtureClientOptions = {}): PiRpcClient {
   const options: PiRpcClientOptions = {
-    launch: { command: overrides.command ?? FAKE_PI, args: PI_RPC_MODE_ARGS, source: 'test fixture' },
+    launch: {
+      command: overrides.command ?? FAKE_PI,
+      args: PI_RPC_MODE_ARGS,
+      source: 'test fixture',
+      ...(overrides.launchEnv ? { env: overrides.launchEnv } : {}),
+    },
     cwd: REPO_ROOT,
     timeoutMs: overrides.timeoutMs ?? DEFAULT_TIMEOUT_MS,
     stdinEndGraceMs: overrides.stdinEndGraceMs ?? DEFAULT_STDIN_END_GRACE_MS,
@@ -160,6 +166,24 @@ describe('PiRpcClient startup', () => {
     const client = createClient()
     await client.stop()
     await expect(client.start()).rejects.toThrow(/after stop/)
+  })
+
+  it('passes the launch env to the subprocess', async () => {
+    const marker = markerPath()
+    const client = createClient({ launchEnv: { FAKE_PI_MARKER: marker } })
+    await client.start()
+    await client.stop()
+    expect(readMarker(marker)).toContain('stdin-end')
+  })
+
+  it('lets the per-session env override the launch env', async () => {
+    const launchMarker = markerPath()
+    const sessionMarker = markerPath()
+    const client = createClient({ launchEnv: { FAKE_PI_MARKER: launchMarker }, env: { FAKE_PI_MARKER: sessionMarker } })
+    await client.start()
+    await client.stop()
+    expect(readMarker(sessionMarker)).toContain('stdin-end')
+    expect(existsSync(launchMarker)).toBe(false)
   })
 })
 
