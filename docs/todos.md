@@ -41,13 +41,14 @@
 - No steering: ACP v1 has no steering method; Pi's `steer` / `follow_up` stay typed but unused until an ACP surface exists.
 - Adapter shutdown is driven by stdin EOF / connection close; ACP v1 defines no `exit` notification, so a client that expects process death before closing stdin gets it only when it closes the pipe.
 - The stdio transport has passed end-to-end against the ACP SDK client driving `dist/index.js` (the live e2e tier under Delivered); no editor client has been exercised yet.
-- An extension command whose handler calls `ctx.newSession`, `ctx.switchSession`, `ctx.fork`, or `ctx.navigateTree` replaces the session inside the Pi subprocess, so the adapter's `sessionId` silently stops matching the session Pi is now running. Nothing on the wire reports it, and a command's metadata says nothing about what its handler does, so there is nothing to filter on.
+- An extension command whose handler calls `ctx.newSession`, `ctx.switchSession` or `ctx.fork` replaces the session inside the Pi subprocess, so the adapter's `sessionId` silently stops matching the session Pi is now running. `ctx.navigateTree` keeps the session but moves it to another branch, which the adapter does not report. Nothing on the wire reports it, and a command's metadata says nothing about what its handler does, so there is nothing to filter on.
 - An interactive extension command runs with every one of its dialogs auto-cancelled: the adapter answers every non-sentinel `ctx.ui` request `cancelled: true`, so such a command completes as if the user dismissed each prompt.
 - Two Pi processes on one session file (a pi-acp session alongside a Pi TUI or `pi -p --session` run) take no lock, and the adapter adds none. Observed on Pi 0.84.3:
     - Appends do not interleave mid-record; the file stays well-formed.
     - Each process keeps its own in-memory leaf, so the second writer's entries become a sibling branch off the entry that was last when it opened.
     - The pi-acp side never sees the other branch; a fresh open follows the last-written leaf and `session/load` replays only that branch.
-    - Reuse of a live id inside one adapter prevents the adapter from doing this to itself; Pi's own tools on the same file are on their own.
+    - Pi 1.2.0 still appends without a lock (`SessionManager._persist`).
+    - Reuse of a live id inside one adapter prevents the adapter from doing this to itself, and a wake waits for the idle stop before relaunching; Pi's own tools on the same file are on their own.
 
 ## Exit criteria
 
@@ -178,7 +179,7 @@ Pi upstream ships an ACP agent on current schemas with session resume, thought-l
         - A failed read or parse costs that command its hint only, with one stderr line.
         - Skills and extension commands have no hint in Pi, so they get none.
     - Whether an `extension` command starts an agent loop is read from the `prompt` ack's `disposition`: `handled` resolves `end_turn` without a turn, and a quiet `agent_start` window after `started` stays a protocol error.
-    - Pi 0.99 loads its built-in extensions in RPC mode, so their commands (`/mcp`, `/llama`, reported with `sourceInfo.path` `builtin:<name>`) are advertised like any extension command. `PI_ACP_HIDE_COMMANDS`, a comma-separated list of names, leaves the named commands out of `available_commands_update`; the adapter's own built-ins can be hidden the same way, and a hidden command still runs if a client sends it.
+    - Pi loads its built-in extensions in RPC mode, so their commands (`/mcp`, `/llama`, reported with `sourceInfo.path` `builtin:<name>`) are advertised like any extension command. `PI_ACP_HIDE_COMMANDS`, a comma-separated list of names, leaves the named commands out of `available_commands_update`; the adapter's own built-ins can be hidden the same way, and a hidden command still runs if a client sends it.
     - Pi's TUI built-ins `/name`, `/session` and `/compact` run over their RPC equivalents; `get_commands` never reports them.
         - Advertised ahead of Pi's commands, with Pi's own descriptions.
         - `/name` carries the hint `<name>`, from Pi's TUI usage line.

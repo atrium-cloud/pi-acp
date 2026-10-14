@@ -59,7 +59,7 @@ Shell tools (`bash`, `powershell`) render as terminal entries via the Zed `_meta
         - `src/extensions/mcp/`: the built-in extension (`index.ts` connects on `session_start`, `runtime.ts` spawns stdio servers with the full `process.env`, `tools.ts` names tools `mcp__<server>__<tool>`, with every character outside `[A-Za-z0-9_]` replaced by `_` since 0.99.2)
         - `packages/mcp`: Pi's own MCP client (stdio and streamable HTTP; no SSE)
     - CLI
-        - `src/cli/args.ts`: flags consumed at spawn: `--mode rpc`, `--session`, `--session-dir`, `--extension` / `-e`, `--no-extensions`, `--model`, `--thinking`, `--name`
+        - `src/cli/args.ts`: flags consumed at spawn: `--mode rpc`, `--session`, `--session-id`, `--session-dir`, `--extension` / `-e`, `--no-extensions`, `--model`, `--thinking`, `--name`
         - `src/cli/auth-command.ts`: `pi auth check --provider`, the only non-interactive credential check
     - Prompt templates
         - `src/core/prompt-templates.ts`, `src/utils/frontmatter.ts`: the `argument-hint` parse the adapter mirrors
