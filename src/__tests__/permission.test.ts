@@ -113,6 +113,40 @@ describe('permission handler', () => {
     await finishTurn()
   })
 
+  it('answers a later call to an allow_always tool without asking the client', async () => {
+    const { fake, connection, request, finishTurn } = await connectMidTool(selected('allow_always'), { toolCallId: 'tc1', toolName: 'edit', args: { path: '/a' } })
+    await connection.handleExtensionUiRequest(sentinelSelect({ toolCallId: 'tc1', toolName: 'edit' }))
+    fake.emit({ type: 'tool_execution_start', toolCallId: 'tc2', toolName: 'edit', args: { path: '/b' } } as never)
+    const response = await connection.handleExtensionUiRequest(sentinelSelect({ toolCallId: 'tc2', toolName: 'edit' }))
+    expect(response).toEqual({ type: 'extension_ui_response', id: 'ui-1', value: 'allow_once' })
+    expect(request).toHaveBeenCalledTimes(1)
+    await finishTurn()
+  })
+
+  it('scopes an allow_always grant to its tool name', async () => {
+    const { fake, connection, request, finishTurn } = await connectMidTool(selected('allow_always'), { toolCallId: 'tc1', toolName: 'edit', args: { path: '/a' } })
+    await connection.handleExtensionUiRequest(sentinelSelect({ toolCallId: 'tc1', toolName: 'edit' }))
+    fake.emit({ type: 'tool_execution_start', toolCallId: 'tc2', toolName: 'write', args: { path: '/b' } } as never)
+    await connection.handleExtensionUiRequest(sentinelSelect({ toolCallId: 'tc2', toolName: 'write' }))
+    expect(request).toHaveBeenCalledTimes(2)
+    await finishTurn()
+  })
+
+  it('keys a grant on the announced tool name, not the name the sentinel claims', async () => {
+    const { fake, connection, request, finishTurn } = await connectMidTool(selected('allow_always'), { toolCallId: 'tc1', toolName: 'bash', args: { command: 'x' } })
+    await connection.handleExtensionUiRequest(sentinelSelect({ toolCallId: 'tc1', toolName: 'bash' }))
+    fake.emit({ type: 'tool_execution_start', toolCallId: 'tc2', toolName: 'edit', args: { path: '/a' } } as never)
+    await connection.handleExtensionUiRequest(sentinelSelect({ toolCallId: 'tc2', toolName: 'bash' }))
+    expect(request).toHaveBeenCalledTimes(2)
+    expect(request).toHaveBeenNthCalledWith(
+      2,
+      acp.methods.client.session.requestPermission,
+      expect.objectContaining({ toolCall: expect.objectContaining({ toolCallId: 'tc2', title: 'edit /a' }) }),
+      expect.anything(),
+    )
+    await finishTurn()
+  })
+
   it('denies a sentinel for an unannounced tool call without asking the client', async () => {
     const { connection, request, finishTurn } = await connectMidTool(selected('allow_once'), { toolCallId: 'tc-real', toolName: 'edit', args: { path: '/a' } })
     const response = await connection.handleExtensionUiRequest(sentinelSelect({ toolCallId: 'tc-forged', toolName: 'bash' }))

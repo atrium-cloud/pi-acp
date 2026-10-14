@@ -144,9 +144,10 @@ Pi upstream ships an ACP agent on current schemas with session resume, thought-l
     - Extension side (`src/permissions/gate.ts`, source built from shared constants, materialized once at startup)
         - `tool_call` handler asks through `ctx.ui.select` for every mutating built-in tool: `bash`, `powershell`, `edit`, `write`.
         - The `select` title is sentinel JSON carrying `toolCallId` and `toolName` only; the input is never re-sent (a large `write` would otherwise cross the Pi wire twice).
-        - `allow_always` is remembered per session per tool name inside the extension; default-deny on any unrecognized answer (Pi passes the value through unvalidated).
+        - The gate asks every time; default-deny on any unrecognized answer (Pi passes the value through unvalidated).
     - Adapter side (`SessionConnection.handleExtensionUiRequest`)
         - Recognizes the sentinel and maps it to `session/request_permission` with `allow_once`, `allow_always`, `reject_once`.
+        - `allow_always` is remembered per session per tool name, keyed on the announced tool name; a granted tool's sentinel is answered without asking the client.
         - Reads the tool input from the turn's cache: Pi emits `tool_execution_start` before it runs the `tool_call` hook (Pi `docs/extensions.md`, and `beforeToolCall` is invoked from `prepareToolCall` after the start event in the agent loop), so the id is always announced by the time the sentinel arrives. An unannounced id (no turn, or a sentinel forged by another loaded extension) is denied without a prompt.
         - Bounded `PERMISSION_REQUEST_TIMEOUT_MS`; `undefined`, `cancelled`, timeout, and a request error all resolve to deny. A timeout also sends `$/cancel_request` so the client's dialog closes.
         - A blocked tool is finalized by Pi as an immediate error result, so it still gets a failed `tool_execution_end` carrying the denial reason; the adapter adds no synthetic terminal update.

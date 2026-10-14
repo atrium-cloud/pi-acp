@@ -59,6 +59,7 @@ export function buildPermissionOptions(): PermissionOption[] {
 // (the build purity guard greps `dist/index.js`), written as `.mjs` so Pi imports
 // it natively instead of through jiti's TS transform. Default-deny: only an
 // explicit allow id runs the tool; undefined/cancelled/any foreign value blocks.
+// The adapter remembers `allow_always`, so the gate asks every time.
 // Gated tools are the mutating built-ins plus every MCP tool, which is
 // third-party code the adapter cannot classify.
 export const PERMISSION_GATE_SOURCE = [
@@ -69,15 +70,12 @@ export const PERMISSION_GATE_SOURCE = [
   `const DENIED_REASON = ${JSON.stringify(PERMISSION_DENIED_REASON)}`,
   `const MUTATING = new Set(${JSON.stringify([...MUTATING_TOOL_NAMES])})`,
   `export default function (pi) {`,
-  `  const alwaysAllowed = new Set()`,
   `  pi.on('tool_call', async (event, ctx) => {`,
   `    if (!MUTATING.has(event.toolName) && !event.toolName.startsWith(MCP_PREFIX)) return undefined`,
-  `    if (alwaysAllowed.has(event.toolName)) return undefined`,
   `    if (!ctx.hasUI) return { block: true, reason: DENIED_REASON }`,
   `    const title = SENTINEL_PREFIX + JSON.stringify({ toolCallId: event.toolCallId, toolName: event.toolName })`,
   `    const choice = await ctx.ui.select(title, [ALLOW_ONCE, ALLOW_ALWAYS, ${JSON.stringify(PERMISSION_OPTION_REJECT_ONCE)}])`,
-  `    if (choice === ALLOW_ALWAYS) { alwaysAllowed.add(event.toolName); return undefined }`,
-  `    if (choice === ALLOW_ONCE) return undefined`,
+  `    if (choice === ALLOW_ONCE || choice === ALLOW_ALWAYS) return undefined`,
   `    return { block: true, reason: DENIED_REASON }`,
   `  })`,
   `}`,

@@ -105,6 +105,8 @@ export class SessionConnection {
    * fails the cache no longer reflects Pi, so the next change re-reads first. */
   private configStale = false
   private activeTurn: TurnEventSink | null = null
+  /** Tool names the client allowed always. */
+  private readonly grantedTools = new Set<string>()
   /** Set once the subprocess dies; a later request answers with this cause. */
   private exitError: Error | null = null
   /** Set by `close()`; a closed session is never used again, so every later
@@ -545,9 +547,10 @@ export class SessionConnection {
   }
 
   /** Answers a Pi extension dialog. Only a sentinel `select` from the permission
-   * gate is mapped to `session/request_permission`; every other dialog fails
-   * closed (the gate reads a cancel as deny). Never throws — a rejection here
-   * would escape the transport's sync stdout handler. */
+   * gate is mapped to `session/request_permission` (or answered from this
+   * session's grants); every other dialog fails closed (the gate reads a cancel
+   * as deny). Never throws — a rejection here would escape the transport's sync
+   * stdout handler. */
   async handleExtensionUiRequest(request: RpcExtensionUIRequest): Promise<RpcExtensionUIResponse> {
     const cancelled: RpcExtensionUIResponse = { type: 'extension_ui_response', id: request.id, cancelled: true }
     if (request.method !== 'select') return cancelled
@@ -561,7 +564,13 @@ export class SessionConnection {
       console.error(`[${AGENT_NAME}] [${this.sessionId}] permission sentinel for unannounced tool call ${decoded.toolCallId}, denying`)
       return cancelled
     }
+    // Keyed on the name Pi announced, never `decoded.toolName`: the sentinel's
+    // claim can be forged by another extension.
+    if (this.grantedTools.has(announced.toolName)) {
+      return { type: 'extension_ui_response', id: request.id, value: PERMISSION_OPTION_ALLOW_ONCE }
+    }
     const optionId = await this.requestPermission(decoded.toolCallId, announced)
+    if (optionId === PERMISSION_OPTION_ALLOW_ALWAYS) this.grantedTools.add(announced.toolName)
     // Mirror the gate's default-deny: only an explicit allow runs the tool. A
     // blocked tool still gets a failed `tool_execution_end` from Pi, which
     // closes the announced row.

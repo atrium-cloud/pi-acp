@@ -5,9 +5,8 @@
  *
  * One adapter boot serves every case but the notice one, which needs a client
  * that advertises notices; every case opens its own session, so
- * the gate's per-session `allow_always` memory (which lives in the extension
- * inside each session's own Pi subprocess) never leaks between cases. Skipped
- * unless RUN_PI_E2E=true (see e2eGate.ts).
+ * the per-session `allow_always` memory (which lives on the adapter's session)
+ * never leaks between cases. Skipped unless RUN_PI_E2E=true (see e2eGate.ts).
  */
 
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'

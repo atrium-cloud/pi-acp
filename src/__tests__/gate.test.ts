@@ -115,13 +115,13 @@ describe('gate source behavior (default-deny)', () => {
     expect(await loadGateHandler()(mcpCall, ctxSelecting('reject_once'))).toMatchObject({ block: true })
   })
 
-  it('remembers allow_always per tool and stops asking', async () => {
+  it('asks every time after allow_always, since the adapter holds grants', async () => {
     const handler = loadGateHandler()
     let asks = 0
     const ctx: GateCtx = { hasUI: true, ui: { select: async () => { asks += 1; return 'allow_always' } } }
     await handler({ toolName: 'bash', toolCallId: 't1', input: { command: 'x' } }, ctx)
     await handler({ toolName: 'bash', toolCallId: 't2', input: { command: 'y' } }, ctx)
-    expect(asks).toBe(1)
+    expect(asks).toBe(2)
   })
 
   it('carries a decodable ids-only sentinel in the select title (the input stays off the wire)', async () => {
