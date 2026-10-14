@@ -71,7 +71,7 @@ Shell tools (`bash`, `powershell`) render as terminal entries via the Zed `_meta
 
 - The adapter speaks no MCP itself since Pi 0.99.0: it hands the ACP `mcpServers` to Pi's built-in support through `pi.registerMcpServer` (docs/todos.md, the MCP entry under Delivered; the upstream files are listed under Pi Agent above).
 - Specification: https://modelcontextprotocol.io/specification
-- `@modelcontextprotocol/server` 2.1.0, a dev dependency for the stdio probe server the e2e tier spawns (`src/__tests__/fixtures/mcp-probe-server.mjs`)
+- `@modelcontextprotocol/server` 2.3.1, a dev dependency for the stdio probe server the e2e tier spawns (`src/__tests__/fixtures/mcp-probe-server.mjs`)
 
 ## Reference adapters
 
