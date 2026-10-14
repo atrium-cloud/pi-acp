@@ -3,10 +3,12 @@ import { describe, expect, it } from 'vitest'
 import {
   DEFAULT_RPC_TIMEOUT_MS,
   ENV_HIDE_COMMANDS,
+  ENV_IDLE_TIMEOUT_MS,
   ENV_PI_TIMING,
   ENV_RPC_TIMEOUT_MS,
   ENV_WARM_SPARE_MAX_AGE_MS,
   resolveHiddenCommands,
+  resolveIdleTimeoutMs,
   resolveRpcTimeoutMs,
   resolveStartupTiming,
   resolveWarmSpareMaxAgeMs,
@@ -55,6 +57,30 @@ describe('resolveWarmSpareMaxAgeMs', () => {
     expect(() => resolveWarmSpareMaxAgeMs({ [ENV_WARM_SPARE_MAX_AGE_MS]: '-5' })).toThrow(/whole number/)
     expect(() => resolveWarmSpareMaxAgeMs({ [ENV_WARM_SPARE_MAX_AGE_MS]: '0' })).toThrow(/greater than zero/)
     expect(() => resolveWarmSpareMaxAgeMs({ [ENV_WARM_SPARE_MAX_AGE_MS]: '9999999999' })).toThrow(/exceeds the maximum/)
+  })
+})
+
+describe('resolveIdleTimeoutMs', () => {
+  it('is off when unset, empty, or blank', () => {
+    expect(resolveIdleTimeoutMs({})).toBeUndefined()
+    expect(resolveIdleTimeoutMs({ [ENV_IDLE_TIMEOUT_MS]: '' })).toBeUndefined()
+    expect(resolveIdleTimeoutMs({ [ENV_IDLE_TIMEOUT_MS]: '   ' })).toBeUndefined()
+  })
+
+  it('accepts a positive integer up to the 32-bit ceiling, trimming space', () => {
+    expect(resolveIdleTimeoutMs({ [ENV_IDLE_TIMEOUT_MS]: '900000' })).toBe(900_000)
+    expect(resolveIdleTimeoutMs({ [ENV_IDLE_TIMEOUT_MS]: ' 250 ' })).toBe(250)
+    expect(resolveIdleTimeoutMs({ [ENV_IDLE_TIMEOUT_MS]: '2147483647' })).toBe(2_147_483_647)
+  })
+
+  it('rejects a non-integer, zero or negative, or over-32-bit value, naming the setting', () => {
+    expect(() => resolveIdleTimeoutMs({ [ENV_IDLE_TIMEOUT_MS]: '3.5' })).toThrow(
+      `${ENV_IDLE_TIMEOUT_MS}="3.5" must be a whole number of milliseconds`,
+    )
+    expect(() => resolveIdleTimeoutMs({ [ENV_IDLE_TIMEOUT_MS]: 'soon' })).toThrow(/whole number/)
+    expect(() => resolveIdleTimeoutMs({ [ENV_IDLE_TIMEOUT_MS]: '-5' })).toThrow(/whole number/)
+    expect(() => resolveIdleTimeoutMs({ [ENV_IDLE_TIMEOUT_MS]: '0' })).toThrow(/greater than zero/)
+    expect(() => resolveIdleTimeoutMs({ [ENV_IDLE_TIMEOUT_MS]: '9999999999' })).toThrow(/exceeds the maximum/)
   })
 })
 

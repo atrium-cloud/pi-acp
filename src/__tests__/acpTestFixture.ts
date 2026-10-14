@@ -124,6 +124,7 @@ export interface AcpTestFixtureOptions {
    * one fake Pi per spawn. */
   readonly createPiClient?: CreatePiClient
   readonly warmSpareMaxAgeMs?: number
+  readonly idleTimeoutMs?: number
   readonly logStartupTiming?: boolean
 }
 
@@ -140,6 +141,7 @@ export function createAcpTestFixture(spec: Partial<FakePiSpec> = {}, options: Ac
     logStartupTiming: options.logStartupTiming ?? false,
     createPiClient: options.createPiClient ?? fake.createPiClient,
     warmSpareMaxAgeMs: options.warmSpareMaxAgeMs,
+    idleTimeoutMs: options.idleTimeoutMs,
   })
 
   const records: AcpRecord[] = []

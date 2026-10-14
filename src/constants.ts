@@ -264,6 +264,15 @@ export const PI_TIMING_BLOCK_FOOTER = /^-+$/
 export const ENV_WARM_SPARE_MAX_AGE_MS = 'PI_ACP_WARM_SPARE_MAX_AGE_MS'
 export const warmSpareLogLine = (message: string): string => `[${AGENT_NAME}] warm spare: ${message}`
 
+// ── Idle teardown ─────────────────────────────────────────────────────────────
+//
+// Opt-in: a registered session idle this long has its Pi subprocess stopped,
+// and the next prompt, config change or load relaunches it. Unset leaves it off.
+
+export const ENV_IDLE_TIMEOUT_MS = 'PI_ACP_IDLE_TIMEOUT_MS'
+export const idleTeardownLogLine = (sessionId: string, message: string): string =>
+  `[${AGENT_NAME}] [${sessionId}] idle teardown: ${message}`
+
 // ── Session title ──────────────────────────────────────────────────────────────
 //
 // A nameless session is titled from the first user message's first line, so Pi's
@@ -293,6 +302,9 @@ export const SESSION_FILE_VERSION = 3
 /** Reopens a stored session; the value is always an absolute `.jsonl` path,
  * since a bare id can hit Pi's interactive resolution on the CLI. */
 export const PI_SESSION_ARG = '--session'
+/** Opens the project session with this exact id, creating it when Pi never
+ * filed one; how a woken session that was never prompted gets its id back. */
+export const PI_SESSION_ID_ARG = '--session-id'
 export const SESSION_LIST_PAGE_SIZE = 50
 /** `session/list` cursors are a decimal offset into the freshly sorted list. */
 export const SESSION_LIST_CURSOR_PATTERN = /^\d+$/
@@ -347,6 +359,10 @@ export function resolveRpcTimeoutMs(env: NodeJS.ProcessEnv): number {
 
 export function resolveWarmSpareMaxAgeMs(env: NodeJS.ProcessEnv): number | undefined {
   return readTimerMs(env, ENV_WARM_SPARE_MAX_AGE_MS)
+}
+
+export function resolveIdleTimeoutMs(env: NodeJS.ProcessEnv): number | undefined {
+  return readTimerMs(env, ENV_IDLE_TIMEOUT_MS)
 }
 
 export function resolveStartupTiming(env: NodeJS.ProcessEnv): boolean {

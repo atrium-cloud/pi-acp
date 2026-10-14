@@ -10,11 +10,11 @@ import {
 /** Pi's timing blocks by namespace (`main`, `extensions`): label → ms, `TOTAL` included. */
 export type PiStartupTimings = Readonly<Record<string, Readonly<Record<string, number>>>>
 
-/** One session's startup timing line: an established session's setup, or a
- * `session/new` answered by taking a warm spare. */
+/** One session's startup timing line: an established session's setup or a
+ * wake's relaunch, or a `session/new` answered by taking a warm spare. */
 export type SessionStartupTiming =
   | {
-      readonly mode: 'new' | 'open' | 'spare'
+      readonly mode: 'new' | 'open' | 'spare' | 'wake'
       readonly spawnMs: number | null
       readonly readyMs: number | null
       readonly metadataMs: number

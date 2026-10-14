@@ -1,3 +1,5 @@
+import { existsSync } from 'node:fs'
+
 import * as acp from '@agentclientprotocol/sdk'
 import type { AgentContext, AvailableCommand, SessionConfigOption, SessionUpdate, StopReason, Usage } from '@agentclientprotocol/sdk'
 
@@ -17,6 +19,7 @@ import {
   CONFIG_ID_MODEL,
   CONFIG_ID_THOUGHT_LEVEL,
   extensionNotifyLogLine,
+  idleTeardownLogLine,
   JSONRPC_INVALID_PARAMS,
   JSONRPC_INVALID_REQUEST,
   NOTICE_SEVERITY_DEFAULT,
@@ -63,12 +66,36 @@ export interface PiClientLike {
 
 export type CreatePiClient = (options: PiRpcClientOptions) => PiClientLike
 
+/** A started Pi subprocess and what a session is built from. */
+export interface LaunchedPi {
+  readonly piClient: PiClientLike
+  readonly state: RpcSessionState
+  readonly models: readonly ModelChoice[]
+  readonly levels: readonly ThinkingLevelValue[]
+  readonly commands: readonly AvailableCommand[]
+}
+
+/** Where a wake points Pi: the session's file once Pi has written one, else its
+ * exact id, since Pi files a session only once its tree holds a message. */
+export type RelaunchTarget =
+  | { readonly kind: 'file'; readonly sessionFile: string; readonly sessionId: string }
+  | { readonly kind: 'id'; readonly sessionId: string }
+
+/** Launches a fresh subprocess for this session, wired to it like the first. */
+export type Relaunch = (target: RelaunchTarget) => Promise<LaunchedPi>
+
 interface ConfigState {
   readonly models: readonly ModelChoice[]
   readonly levels: readonly ThinkingLevelValue[]
   readonly currentModel: { readonly provider: string; readonly id: string } | undefined
-  readonly currentLevel: string
+  readonly currentLevel: ThinkingLevelValue
   readonly options: SessionConfigOption[]
+}
+
+/** A prompt waiting on a wake: a cancel answers it `cancelled`, a stop fails it. */
+interface WakeWaiter {
+  readonly cancel: () => void
+  readonly fail: (error: Error) => void
 }
 
 /** The result of one `session/prompt`. `acknowledgedMessageId` is the client's own
@@ -81,13 +108,7 @@ export interface PromptOutcome {
   readonly acknowledgedMessageId: string | undefined
 }
 
-export interface SessionConnectionInit {
-  readonly piClient: PiClientLike
-  readonly sessionId: string
-  readonly state: RpcSessionState
-  readonly models: readonly ModelChoice[]
-  readonly levels: readonly ThinkingLevelValue[]
-}
+const CANCELLED_OUTCOME: PromptOutcome = { stopReason: 'cancelled', usage: undefined, acknowledgedMessageId: undefined }
 
 /** Persistent per-session object, created at `session/new` and living until the
  * client closes it or the connection ends. It owns the single exhaustive router
@@ -97,10 +118,15 @@ export interface SessionConnectionInit {
 export class SessionConnection {
   private readonly notifier: AgentContext
   private readonly clientSupportsNotices: boolean
+  private readonly relaunch: Relaunch
   readonly cwd: string
   private piClient: PiClientLike | null = null
   private sessionId = ''
   private config: ConfigState | null = null
+  /** The advertised commands as last read from Pi; resume and load re-announce them. */
+  private commands: readonly AvailableCommand[] = []
+  /** Pi's name for the session, kept so a wake can give it back to a Pi that lost it. */
+  private sessionName: string | undefined
   /** A `set_*` may apply before its follow-up re-read lands; when that read
    * fails the cache no longer reflects Pi, so the next change re-reads first. */
   private configStale = false
@@ -112,6 +138,21 @@ export class SessionConnection {
   /** Set by `close()`; a closed session is never used again, so every later
    * request is rejected rather than raced against the teardown. */
   private closing = false
+  /** Set by `stop()`, the connection-close teardown. */
+  private stopped = false
+  private idleTimeoutMs: number | null = null
+  private idleTimer: NodeJS.Timeout | null = null
+  /** Prompts, config changes and replays in flight; idle teardown waits for none. */
+  private busy = 0
+  /** From an idle teardown until a wake attaches a new subprocess. */
+  private dormant = false
+  /** The idle teardown's stop. A wake awaits it, since two Pi processes on one
+   * file would interleave appends. */
+  private teardown: Promise<void> | null = null
+  private waking: Promise<PiClientLike> | null = null
+  /** An exit the wake's own subprocess reported before the wake attached it. */
+  private relaunchExit: Error | null = null
+  private readonly wakeWaiters = new Set<WakeWaiter>()
   /** True until this session gets a name; the first prompt derives one. */
   private needsTitle = false
   /** Pi's own file for this session, undefined when Pi persists nothing; without
@@ -125,18 +166,31 @@ export class SessionConnection {
   private announced = false
   private pendingNotices: SessionUpdate[] = []
 
-  constructor(init: { notifier: AgentContext; cwd: string; clientSupportsNotices: boolean }) {
+  constructor(init: { notifier: AgentContext; cwd: string; clientSupportsNotices: boolean; relaunch: Relaunch }) {
     this.notifier = init.notifier
     this.cwd = init.cwd
     this.clientSupportsNotices = init.clientSupportsNotices
+    this.relaunch = init.relaunch
   }
 
-  attach(init: SessionConnectionInit): void {
-    this.piClient = init.piClient
-    this.sessionId = init.sessionId
-    this.config = this.buildConfig(init.state, init.models, init.levels)
-    this.needsTitle = (init.state.sessionName ?? '').trim() === ''
-    this.sessionFile = init.state.sessionFile
+  attach(launched: LaunchedPi): void {
+    const { state } = launched
+    this.piClient = launched.piClient
+    this.sessionId = state.sessionId
+    this.config = this.buildConfig(state, launched.models, launched.levels)
+    this.configStale = false
+    this.commands = launched.commands
+    this.sessionName = state.sessionName
+    this.needsTitle = isUnnamed(state.sessionName)
+    this.sessionFile = state.sessionFile
+  }
+
+  /** Stops the subprocess once the session has been idle `ms`; the next prompt,
+   * config change or load relaunches it. Only a registered session is armed: a
+   * held warm spare has its own age cap. */
+  enableIdleTeardown(ms: number): void {
+    this.idleTimeoutMs = ms
+    this.armIdleTimer()
   }
 
   get configOptions(): SessionConfigOption[] {
@@ -159,13 +213,13 @@ export class SessionConnection {
    * inside the `session/new` response callback (acp.js SessionUpdateRouter), so an
    * update sent before that response lands is dropped for an unknown session.
    * Notices held back during setup follow it, in arrival order. */
-  announceCommands(commands: readonly AvailableCommand[]): void {
+  announceCommands(): void {
     setTimeout(() => {
       if (this.exitError || this.closing) return
       void this.notifier
         .notify(acp.methods.client.session.update, {
           sessionId: this.sessionId,
-          update: { sessionUpdate: 'available_commands_update', availableCommands: [...commands] },
+          update: { sessionUpdate: 'available_commands_update', availableCommands: [...this.commands] },
         })
         .catch((error: unknown) => {
           console.error(`[${AGENT_NAME}] [${this.sessionId}] failed to send available_commands_update: ${asMessage(error)}`)
@@ -181,19 +235,21 @@ export class SessionConnection {
    * before the response, so unlike `emit` these are awaited in order rather than
    * fired and forgotten, and a failure fails the load. */
   async replayHistory(): Promise<void> {
-    if (this.closing) throw closingError()
-    if (this.exitError) throw this.exitError
-    const client = this.requireClient()
-    const history = await client.request({ type: 'get_messages' })
-    for (const update of replayUpdates(history.data.messages, this.cwd)) {
-      await this.notifier.notify(acp.methods.client.session.update, { sessionId: this.sessionId, update })
-    }
+    await this.whileBusy(async () => {
+      const client = await this.awakeClient()
+      const history = await client.request({ type: 'get_messages' })
+      for (const update of replayUpdates(history.data.messages, this.cwd)) {
+        await this.notifier.notify(acp.methods.client.session.update, { sessionId: this.sessionId, update })
+      }
+    })
   }
 
   async applyConfigOption(configId: string, value: string): Promise<SessionConfigOption[]> {
-    if (this.closing) throw closingError()
-    if (this.exitError) throw this.exitError
-    const client = this.requireClient()
+    return await this.whileBusy(() => this.applyConfigOptionAwake(configId, value))
+  }
+
+  private async applyConfigOptionAwake(configId: string, value: string): Promise<SessionConfigOption[]> {
+    const client = await this.awakeClient()
     if (this.configStale) await this.refresh(client)
     const config = this.requireConfig()
 
@@ -254,6 +310,9 @@ export class SessionConnection {
   }
 
   routeEvent(event: JsonAgentSessionEvent): void {
+    // Until a wake attaches, events are its restore `set_*` echoes (an id wake's
+    // `set_model` passes through Pi's default level); the wake reports the outcome.
+    if (this.dormant) return
     switch (event.type) {
       // Session-level arms handled here, not by the turn (they can fire between
       // turns, which is why the router — not a per-turn handler — subscribes).
@@ -301,6 +360,8 @@ export class SessionConnection {
 
   private handleSessionInfoChanged(event: Extract<JsonAgentSessionEvent, { type: 'session_info_changed' }>): void {
     if (typeof event.name !== 'string') return
+    this.sessionName = event.name
+    this.needsTitle = isUnnamed(event.name)
     this.emit(sessionInfoUpdate(event.name))
   }
 
@@ -329,20 +390,29 @@ export class SessionConnection {
       })
   }
 
+  /** Wakes a dormant session first. A cancel, the prompt's abort signal or a
+   * close during the wake answers `cancelled` without sending the prompt; the
+   * turn checks run only once the wake lands, so two prompts racing one wake
+   * cannot both start a turn. */
+  async runPrompt(prompt: FlattenedPrompt, signal: AbortSignal, messageId?: string): Promise<PromptOutcome> {
+    return await this.whileBusy(async () => {
+      if (this.dormant && (signal.aborted || !(await this.awaitWake(signal)))) return CANCELLED_OUTCOME
+      return await this.runLivePrompt(prompt, signal, messageId)
+    })
+  }
+
   /** Runs one turn: register the turn BEFORE sending the prompt, because the ack
    * and a synchronously-dispatched `agent_start` can arrive in one stdout chunk,
    * ahead of the `await request` continuation — subscribing after would miss it.
    * Both cancel paths (`session/cancel` and the prompt's own `$/cancel_request`
    * abort signal) converge on `cancel()`. */
-  async runPrompt(prompt: FlattenedPrompt, signal: AbortSignal, messageId?: string): Promise<PromptOutcome> {
-    if (this.closing) throw closingError()
-    if (this.exitError) throw this.exitError
-    const client = this.requireClient()
+  private async runLivePrompt(prompt: FlattenedPrompt, signal: AbortSignal, messageId?: string): Promise<PromptOutcome> {
+    const client = this.liveClient()
     if (this.activeTurn !== null) {
       throw new acp.RequestError(JSONRPC_INVALID_REQUEST, 'a turn is already in progress for this session')
     }
     // Already cancelled before anything was sent: no turn runs, nothing to abort.
-    if (signal.aborted) return { stopReason: 'cancelled', usage: undefined, acknowledgedMessageId: undefined }
+    if (signal.aborted) return CANCELLED_OUTCOME
     // Checked before anything reaches Pi, so a built-in shadows a same-named
     // extension command the way it does in Pi's own TUI.
     const builtin = parseBuiltinCommand(prompt.message)
@@ -450,6 +520,7 @@ export class SessionConnection {
         // Pi normalizes the name it stores (a newline becomes a space), so the
         // reply reads back what it kept.
         const stored = (await client.request({ type: 'get_state' })).data.sessionName
+        this.sessionName = stored
         const set = builtinTextNameSet(stored ?? command.name)
         this.emitAgentText(
           stored === command.name ? set : `${builtinTextNameNormalized(command.name, stored)}${BUILTIN_TEXT_PARAGRAPH_BREAK}${set}`,
@@ -630,8 +701,10 @@ export class SessionConnection {
 
   /** Sticky-cancels the active turn and asks Pi to abort. The abort is fire and
    * forget: Pi defers it until the run is idle, so its ack can lag `agent_settled`
-   * or race teardown; the turn resolves off `agent_settled`/the sticky flag. */
+   * or race teardown; the turn resolves off `agent_settled`/the sticky flag. A
+   * prompt still waiting on a wake answers `cancelled` at once. */
   cancel(): void {
+    for (const waiter of [...this.wakeWaiters]) waiter.cancel()
     if (this.activeTurn === null) return
     this.activeTurn.cancel()
     this.requestAbort()
@@ -642,6 +715,12 @@ export class SessionConnection {
   }
 
   handleExit(error: Error): void {
+    // While dormant only a wake's own subprocess can exit (an intentional stop
+    // is silent); that fails the wake alone, and the next request retries.
+    if (this.dormant) {
+      this.relaunchExit = error
+      return
+    }
     if (this.exitError === null) this.exitError = error
     this.activeTurn?.fail(error)
   }
@@ -652,18 +731,214 @@ export class SessionConnection {
    * its pending `session/prompt` answers `cancelled` instead of erroring. */
   async close(): Promise<void> {
     this.closing = true
+    this.clearIdleTimer()
     this.cancel()
     this.activeTurn?.abandon()
+    await this.settleIdleWork()
     await this.piClient?.stop()
   }
 
   async stop(): Promise<void> {
+    this.stopped = true
+    this.clearIdleTimer()
     // An intentional stop suppresses the client's onExit, so handleExit won't
     // fire; fail the active turn here or runPrompt hangs on a promise nobody
     // resolves. This is connection-close teardown, not `session/close` — the
     // client is gone, so the turn ends as an error rather than a cancel.
-    this.activeTurn?.fail(new Error('the session was closed while a turn was in progress'))
+    const error = new Error('the session was closed while a turn was in progress')
+    for (const waiter of [...this.wakeWaiters]) waiter.fail(error)
+    this.activeTurn?.fail(error)
+    await this.settleIdleWork()
     await this.piClient?.stop()
+  }
+
+  // ── Idle teardown and wake ──────────────────────────────────────────────────
+
+  private async whileBusy<T>(work: () => Promise<T>): Promise<T> {
+    this.clearIdleTimer()
+    this.busy++
+    try {
+      return await work()
+    } finally {
+      this.busy--
+      this.armIdleTimer()
+    }
+  }
+
+  private get isIdle(): boolean {
+    return this.busy === 0 && !this.dormant && !this.closing && !this.stopped && this.exitError === null
+  }
+
+  private armIdleTimer(): void {
+    if (this.idleTimeoutMs === null || this.idleTimer !== null || !this.isIdle) return
+    this.idleTimer = setTimeout(() => {
+      this.idleTimer = null
+      this.tearDownIfIdle()
+    }, this.idleTimeoutMs)
+    this.idleTimer.unref()
+  }
+
+  private clearIdleTimer(): void {
+    if (this.idleTimer === null) return
+    clearTimeout(this.idleTimer)
+    this.idleTimer = null
+  }
+
+  private tearDownIfIdle(): void {
+    const client = this.piClient
+    if (!this.isIdle || client === null) return
+    this.dormant = true
+    this.piClient = null
+    this.teardown = client.stop().catch((error: unknown) => {
+      console.error(idleTeardownLogLine(this.sessionId, `failed to stop the idle Pi subprocess: ${asMessage(error)}`))
+    })
+  }
+
+  /** Lets a pending idle stop and any wake land first, so the client a wake
+   * attached is the one stopped. A failed wake already answered its requests. */
+  private async settleIdleWork(): Promise<void> {
+    await this.teardown
+    await this.waking?.catch(() => undefined)
+  }
+
+  private async awakeClient(): Promise<PiClientLike> {
+    if (this.dormant) await this.ensureAwake()
+    return this.liveClient()
+  }
+
+  private liveClient(): PiClientLike {
+    if (this.closing) throw closingError()
+    if (this.exitError) throw this.exitError
+    return this.requireClient()
+  }
+
+  /** Resolves false when a cancel, the prompt's abort signal or a close lands
+   * before the wake does, so the prompt answers without waiting on the spawn. */
+  private awaitWake(signal: AbortSignal): Promise<boolean> {
+    return new Promise<boolean>((resolve, reject) => {
+      const settle = (done: () => void): void => {
+        this.wakeWaiters.delete(waiter)
+        signal.removeEventListener('abort', waiter.cancel)
+        done()
+      }
+      const waiter: WakeWaiter = {
+        cancel: () => settle(() => resolve(false)),
+        fail: (error) => settle(() => reject(error)),
+      }
+      this.wakeWaiters.add(waiter)
+      signal.addEventListener('abort', waiter.cancel, { once: true })
+      this.ensureAwake().then(
+        () => settle(() => resolve(true)),
+        (error: unknown) => settle(() => reject(error)),
+      )
+    })
+  }
+
+  /** One wake at a time: every request that finds the session dormant shares it.
+   * A failure is logged too, since a cancelled prompt may leave nobody to receive it. */
+  private ensureAwake(): Promise<PiClientLike> {
+    if (this.waking === null) {
+      this.waking = this.wake().finally(() => {
+        this.waking = null
+      })
+      this.waking.catch((error: unknown) => {
+        console.error(idleTeardownLogLine(this.sessionId, `wake failed: ${asMessage(error)}`))
+      })
+    }
+    return this.waking
+  }
+
+  /** Relaunches the subprocess an idle teardown stopped. A failure goes to the
+   * requests waiting on it and leaves the session dormant for the next to retry. */
+  private async wake(): Promise<PiClientLike> {
+    await this.teardown
+    this.throwIfEnded()
+    // Taken before the relaunch: a restore `set_*` echoes back into the cache.
+    const wanted = { config: this.requireConfig(), name: this.sessionName }
+    const sessionFile = this.sessionFile
+    this.relaunchExit = null
+    const launched = await this.relaunch(
+      sessionFile !== undefined && existsSync(sessionFile)
+        ? { kind: 'file', sessionFile, sessionId: this.sessionId }
+        : { kind: 'id', sessionId: this.sessionId },
+    )
+    let restored: LaunchedPi
+    try {
+      this.throwIfEnded()
+      restored = await this.restore(launched, wanted)
+      this.throwIfEnded()
+      // The restore swallows a failed `set_*`, so an exit it hit only shows here.
+      if (this.relaunchExit !== null) throw this.relaunchExit
+    } catch (error) {
+      await launched.piClient.stop()
+      throw error
+    }
+    const seen = { options: this.configOptions, commands: this.commands }
+    this.attach(restored)
+    this.dormant = false
+    this.teardown = null
+    if (!sameJson(this.configOptions, seen.options)) this.emit(configOptionUpdate(this.configOptions))
+    if (!sameJson(this.commands, seen.commands)) {
+      this.emit({ sessionUpdate: 'available_commands_update', availableCommands: [...this.commands] })
+    }
+    // A prompt cancelled during the wake has already left, so nothing else re-arms it.
+    this.armIdleTimer()
+    return launched.piClient
+  }
+
+  /** Gives a relaunched Pi back what it lost: one that opened by id (never
+   * filed) starts on its defaults. Model before level, since `set_model`
+   * re-resolves the level. Returns the launch with what Pi then reports. */
+  private async restore(
+    launched: LaunchedPi,
+    wanted: { readonly config: ConfigState; readonly name: string | undefined },
+  ): Promise<LaunchedPi> {
+    const client = launched.piClient
+    let { state, levels } = launched
+    let reapplied = false
+    const model = wanted.config.currentModel
+    const modelDiffers = state.model?.provider !== model?.provider || state.model?.id !== model?.id
+    if (model !== undefined && modelDiffers) {
+      const set = () => client.request({ type: 'set_model', provider: model.provider, modelId: model.id })
+      if (await this.reapply('model', set)) {
+        reapplied = true
+        const [after, levelsAfter] = await Promise.all([
+          client.request({ type: 'get_state' }),
+          client.request({ type: 'get_available_thinking_levels' }),
+        ])
+        state = after.data
+        levels = levelsAfter.data.levels
+      }
+    }
+    const level = wanted.config.currentLevel
+    if (state.thinkingLevel !== level) {
+      const set = () => client.request({ type: 'set_thinking_level', level })
+      if (await this.reapply('thinking level', set)) reapplied = true
+    }
+    const name = wanted.name
+    if (name !== undefined && !isUnnamed(name) && state.sessionName !== name) {
+      const set = () => client.request({ type: 'set_session_name', name })
+      if (await this.reapply('session name', set)) reapplied = true
+    }
+    if (reapplied) state = (await client.request({ type: 'get_state' })).data
+    return { ...launched, state, levels }
+  }
+
+  /** Best effort: a failed re-apply is logged, and the wake carries on with what Pi reports. */
+  private async reapply(what: string, apply: () => Promise<unknown>): Promise<boolean> {
+    try {
+      await apply()
+      return true
+    } catch (error) {
+      console.error(idleTeardownLogLine(this.sessionId, `failed to re-apply the ${what} on wake: ${asMessage(error)}`))
+      return false
+    }
+  }
+
+  /** A wake that lands after `close()` or `stop()` attaches nothing. */
+  private throwIfEnded(): void {
+    if (this.closing) throw closingError()
+    if (this.stopped) throw new Error('the client connection closed')
   }
 
   private buildConfig(
@@ -693,6 +968,15 @@ function lastUserEntryId(entries: readonly SessionFileEntry[]): string | undefin
     if (entry !== undefined && isUserMessageEntry(entry) && typeof entry.id === 'string') return entry.id
   }
   return undefined
+}
+
+function isUnnamed(name: string | undefined): boolean {
+  return (name ?? '').trim() === ''
+}
+
+/** Both sides come from the same builders, so equal values serialize alike. */
+function sameJson(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right)
 }
 
 function invalidParams(message: string): acp.RequestError {

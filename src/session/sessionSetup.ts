@@ -19,6 +19,7 @@ import {
   JSONRPC_INVALID_PARAMS,
   LINE_FEED,
   PI_SESSION_ARG,
+  PI_SESSION_ID_ARG,
 } from '../constants.js'
 import type { McpServerSpec } from '../mcp/servers.js'
 import { translateMcpServers } from '../mcp/servers.js'
@@ -27,7 +28,7 @@ import { PiRpcClient } from '../pi/PiRpcClient.js'
 import { parsePiStartupTimings, startupTimingLogLine } from '../pi/startupTimings.js'
 import { asMessage } from '../server/errors.js'
 import type { ModelChoice } from '../turn/configOptions.js'
-import { type CreatePiClient, SessionConnection } from './SessionConnection.js'
+import { type CreatePiClient, type LaunchedPi, type RelaunchTarget, SessionConnection } from './SessionConnection.js'
 import { stripBom } from './sessionDirectory.js'
 
 const defaultCreatePiClient: CreatePiClient = (options) => new PiRpcClient(options)
@@ -55,7 +56,7 @@ export interface EstablishedSession {
   readonly connection: SessionConnection
   readonly sessionId: string
   readonly configOptions: acp.SessionConfigOption[]
-  readonly availableCommands: AvailableCommand[]
+  readonly availableCommands: readonly AvailableCommand[]
 }
 
 /** `new` starts an empty session; `spare` starts one the same way, held as a
@@ -75,29 +76,64 @@ export interface SessionSetupRequest {
   readonly additionalDirectories?: readonly string[] | undefined
 }
 
+/** An empty session, or a known one by its file or exact id. */
+type LaunchTarget = { readonly kind: 'empty' } | RelaunchTarget
+
+/** What every launch of one session shares, fixed at setup. */
+interface LaunchPlan {
+  readonly deps: SessionSetupDeps
+  readonly cwd: string
+  readonly mcpServers: readonly McpServerSpec[]
+}
+
 export async function establishSession(
   request: SessionSetupRequest,
   deps: SessionSetupDeps,
   mode: SessionSetupMode = { kind: 'new' },
 ): Promise<EstablishedSession> {
-  const setupStartedAt = performance.now()
-  const mcpServers = validateSessionRequest(request)
-
-  const connection = new SessionConnection({
+  const plan: LaunchPlan = { deps, cwd: request.cwd, mcpServers: validateSessionRequest(request) }
+  const connection: SessionConnection = new SessionConnection({
     notifier: deps.notifier,
     cwd: request.cwd,
     clientSupportsNotices: deps.clientSupportsNotices,
+    relaunch: (target) => launchPi(connection, plan, target, 'wake'),
   })
+  const target: LaunchTarget =
+    mode.kind === 'open'
+      ? { kind: 'file', sessionFile: mode.sessionFile, sessionId: mode.expectedSessionId }
+      : { kind: 'empty' }
+  const launched = await launchPi(connection, plan, target, mode.kind)
+  connection.attach(launched)
+  return {
+    connection,
+    sessionId: launched.state.sessionId,
+    configOptions: connection.configOptions,
+    availableCommands: launched.commands,
+  }
+}
+
+/** Spawns and starts one Pi subprocess wired to `connection`, then reads what
+ * the session is built from. Setup and a wake both launch through here, so a
+ * woken session runs the same extensions and MCP servers as before. */
+async function launchPi(
+  connection: SessionConnection,
+  plan: LaunchPlan,
+  target: LaunchTarget,
+  timingMode: SessionSetupMode['kind'] | 'wake',
+): Promise<LaunchedPi> {
+  const startedAt = performance.now()
+  const { deps, mcpServers } = plan
   const createPiClient = deps.createPiClient ?? defaultCreatePiClient
   // The gate loads alongside the user's own extensions (no --no-extensions).
   const args = deps.gateExtensionPath !== undefined ? ['-e', deps.gateExtensionPath] : []
   // Only a session that asked for servers loads the MCP extension; it reads the
   // list from the environment and deletes it before anything can inherit it.
   if (mcpServers.length > 0) args.push('-e', deps.mcpExtensionPath)
-  if (mode.kind === 'open') args.push(PI_SESSION_ARG, mode.sessionFile)
+  if (target.kind === 'file') args.push(PI_SESSION_ARG, target.sessionFile)
+  if (target.kind === 'id') args.push(PI_SESSION_ID_ARG, target.sessionId)
   const piClient = createPiClient({
     launch: deps.launch,
-    cwd: request.cwd,
+    cwd: plan.cwd,
     args,
     ...(mcpServers.length > 0 ? { env: { [ENV_MCP_SERVERS]: JSON.stringify(mcpServers) } } : {}),
     timeoutMs: deps.rpcTimeoutMs,
@@ -117,13 +153,14 @@ export async function establishSession(
   // fetches would otherwise leave a live subprocess nobody holds.
   const state = await piClient.start()
   const readyAt = performance.now()
-  if (mode.kind === 'open' && state.sessionId !== mode.expectedSessionId) {
+  if (target.kind !== 'empty' && state.sessionId !== target.sessionId) {
     // Pi opened something other than the requested session (a stale path, or an
     // id the file no longer carries): nothing downstream can be trusted.
     await piClient.stop()
+    const source = target.kind === 'file' ? target.sessionFile : `${PI_SESSION_ID_ARG} ${target.sessionId}`
     throw new acp.RequestError(
       JSONRPC_INTERNAL_ERROR,
-      `Pi opened session "${state.sessionId}" from ${mode.sessionFile}, expected "${mode.expectedSessionId}"`,
+      `Pi opened session "${state.sessionId}" from ${source}, expected "${target.sessionId}"`,
     )
   }
   try {
@@ -139,34 +176,22 @@ export async function establishSession(
     }))
     const availableCommands = await mapCommands(commands.data.commands, deps.hiddenCommands)
     const metadataDoneAt = performance.now()
-    connection.attach({
-      piClient,
-      sessionId: state.sessionId,
-      state,
-      models: modelChoices,
-      levels: levels.data.levels,
-    })
     // Pi prints its blocks before it answers get_state, but on stderr, a separate
     // pipe that can lag stdout, so the tail is read only after these round-trips.
     if (deps.logStartupTiming) {
       const startup = piClient.startupTiming
       console.error(
         startupTimingLogLine(state.sessionId, {
-          mode: mode.kind,
+          mode: timingMode,
           spawnMs: startup?.spawnMs ?? null,
           readyMs: startup?.readyMs ?? null,
           metadataMs: Math.round(metadataDoneAt - readyAt),
-          totalMs: Math.round(metadataDoneAt - setupStartedAt),
+          totalMs: Math.round(metadataDoneAt - startedAt),
           pi: parsePiStartupTimings(piClient.stderrTail()),
         }),
       )
     }
-    return {
-      connection,
-      sessionId: state.sessionId,
-      configOptions: connection.configOptions,
-      availableCommands,
-    }
+    return { piClient, state, models: modelChoices, levels: levels.data.levels, commands: availableCommands }
   } catch (error) {
     await piClient.stop()
     throw error

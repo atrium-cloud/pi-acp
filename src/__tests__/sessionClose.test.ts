@@ -166,7 +166,7 @@ describe('SessionConnection.close', () => {
   it('sends no session update after close', async () => {
     const { connection, notify } = await connect(makeFakePiClient(baseSpec()).createPiClient)
     await connection.close()
-    connection.announceCommands([{ name: 'plan', description: '' }])
+    connection.announceCommands()
     await new Promise((resolve) => setTimeout(resolve, 0))
     expect(notify).not.toHaveBeenCalled()
   })

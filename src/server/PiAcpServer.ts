@@ -5,7 +5,6 @@ import { performance } from 'node:perf_hooks'
 import * as acp from '@agentclientprotocol/sdk'
 import type {
   AgentContext,
-  AvailableCommand,
   CancelNotification,
   CloseSessionRequest,
   CloseSessionResponse,
@@ -90,14 +89,15 @@ export interface PiAcpServerOptions {
   readonly createPiClient?: CreatePiClient | undefined
   /** The warm spare's age cap; undefined leaves the spare off. */
   readonly warmSpareMaxAgeMs?: number | undefined
+  /** How long a session idles before its subprocess is stopped; undefined leaves
+   * idle teardown off. */
+  readonly idleTimeoutMs?: number | undefined
 }
 
-/** A session with a live Pi subprocess. The commands ride along so a resume or
- * load that reuses the subprocess can re-announce them without a round-trip,
- * and the setup request so a warm spare refilled after a prompt starts like it. */
+/** A registered session, its subprocess live or stopped at idle. The setup
+ * request rides along so a warm spare refilled after a prompt starts like it. */
 interface LiveSession {
   readonly connection: SessionConnection
-  readonly commands: readonly AvailableCommand[]
   readonly setup: SessionSetupRequest
 }
 
@@ -175,7 +175,7 @@ export class PiAcpServer {
     const spare = this.warmSpare === undefined ? null : await this.warmSpare.take(request)
     if (spare !== null) {
       const session = await this.registerSession(spare.established, request)
-      session.connection.announceCommands(session.commands)
+      session.connection.announceCommands()
       if (this.options.logStartupTiming) {
         const totalMs = Math.round(performance.now() - startedAt)
         console.error(startupTimingLogLine(spare.established.sessionId, { mode: 'take', ageMs: spare.ageMs, totalMs }))
@@ -184,7 +184,7 @@ export class PiAcpServer {
     }
     const established = await establishSession(request, this.setupDeps(context.client))
     const session = await this.registerSession(established, request)
-    session.connection.announceCommands(session.commands)
+    session.connection.announceCommands()
     return { sessionId: established.sessionId, configOptions: established.configOptions }
   }
 
@@ -215,7 +215,7 @@ export class PiAcpServer {
     client: AgentContext
   }): Promise<ResumeSessionResponse> {
     const session = await this.openSession(context.params, context.client)
-    session.connection.announceCommands(session.commands)
+    session.connection.announceCommands()
     return { configOptions: session.connection.configOptions }
   }
 
@@ -224,7 +224,7 @@ export class PiAcpServer {
     // ACP puts the replayed history before the response, so this is awaited here
     // rather than deferred the way available_commands_update is.
     await session.connection.replayHistory()
-    session.connection.announceCommands(session.commands)
+    session.connection.announceCommands()
     return { configOptions: session.connection.configOptions }
   }
 
@@ -284,7 +284,7 @@ export class PiAcpServer {
       throw error
     }
     const session = await this.registerSession(established, request)
-    session.connection.announceCommands(session.commands)
+    session.connection.announceCommands()
     return { sessionId: established.sessionId, configOptions: established.configOptions }
   }
 
@@ -419,10 +419,10 @@ export class PiAcpServer {
     }
     const session: LiveSession = {
       connection: established.connection,
-      commands: established.availableCommands,
       setup: { cwd: request.cwd, mcpServers: request.mcpServers },
     }
     this.sessions.set(established.sessionId, session)
+    if (this.options.idleTimeoutMs !== undefined) session.connection.enableIdleTeardown(this.options.idleTimeoutMs)
     return session
   }
 
