@@ -1,11 +1,6 @@
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-
 import type { PermissionOption } from '@agentclientprotocol/sdk'
 
 import {
-  GATE_DIR_PREFIX,
   GATE_FILENAME,
   MCP_TOOL_PREFIX,
   MUTATING_TOOL_NAMES,
@@ -15,6 +10,7 @@ import {
   PERMISSION_OPTION_REJECT_ONCE,
   SENTINEL_PREFIX,
 } from '../constants.js'
+import { materializeExtension } from '../pi/extensionFile.js'
 
 /** Ids only: the tool input is never put on the wire twice. Pi emits
  * `tool_execution_start` (which carries the args) before it runs the `tool_call`
@@ -82,20 +78,7 @@ export const PERMISSION_GATE_SOURCE = [
   '',
 ].join('\n')
 
-/** Writes the gate to a per-process temp file and returns its absolute path; the
- * directory is removed on process exit. Called once at startup and reused for
- * every session's `-e`. */
+/** Called once at startup; the file is reused for every session's `-e`. */
 export function materializeGate(): string {
-  const dir = join(tmpdir(), `${GATE_DIR_PREFIX}${process.pid}`)
-  mkdirSync(dir, { recursive: true })
-  const path = join(dir, GATE_FILENAME)
-  writeFileSync(path, PERMISSION_GATE_SOURCE, 'utf8')
-  process.once('exit', () => {
-    try {
-      rmSync(dir, { recursive: true, force: true })
-    } catch {
-      // Best effort on exit; the OS reclaims the temp dir regardless.
-    }
-  })
-  return path
+  return materializeExtension(GATE_FILENAME, PERMISSION_GATE_SOURCE)
 }

@@ -233,6 +233,21 @@ export const GATE_FILENAME = 'permission-gate.mjs'
 
 export * from './mcp/mcpConstants.js'
 
+// ── Origin overrides (pi-acp-owned Pi extension loaded with `-e`) ─────────────
+//
+// `<authority>=<origin>` pairs, comma-separated: an https request whose `URL.host`
+// is an authority goes to that origin instead, keeping its own path, query and
+// headers. Unset or empty loads nothing.
+
+export const ENV_ORIGIN_OVERRIDES = 'PI_ACP_ORIGIN_OVERRIDES'
+export const ORIGIN_OVERRIDES_ENTRY_SEPARATOR = ','
+export const ORIGIN_OVERRIDES_PAIR_SEPARATOR = '='
+export const ORIGIN_OVERRIDES_EXTENSION_FILENAME = 'origin-overrides.mjs'
+export const ORIGIN_OVERRIDES_MATCHED_PROTOCOL = 'https:'
+export const ORIGIN_OVERRIDES_TARGET_PROTOCOLS: readonly string[] = ['http:', 'https:']
+// Where undici 8, which Pi bundles, keeps the dispatcher its fetch uses.
+export const UNDICI_GLOBAL_DISPATCHER_KEY = 'undici.globalDispatcher.2'
+
 // ── Extension notify ──────────────────────────────────────────────────────────
 //
 // A Pi extension's `ctx.ui.notify` becomes an ACP `notice` for a client that
@@ -367,6 +382,40 @@ export function resolveIdleTimeoutMs(env: NodeJS.ProcessEnv): number | undefined
 
 export function resolveStartupTiming(env: NodeJS.ProcessEnv): boolean {
   return env[ENV_PI_TIMING] === PI_TIMING_ON
+}
+
+/** Authority to override origin. Each side must already be in the canonical form
+ * `URL` gives it, so the extension matches a request by plain string equality. */
+export function resolveOriginOverrides(env: NodeJS.ProcessEnv): ReadonlyMap<string, string> {
+  const overrides = new Map<string, string>()
+  const raw = env[ENV_ORIGIN_OVERRIDES]?.trim()
+  if (raw === undefined || raw === '') return overrides
+  const malformedEntry = (entry: string) =>
+    new Error(
+      `${ENV_ORIGIN_OVERRIDES} entry "${entry}" must be <host>[:port]=<scheme>://<host>[:port], lowercase, with no default port, path, query or credentials`,
+    )
+  for (const entry of raw.split(ORIGIN_OVERRIDES_ENTRY_SEPARATOR)) {
+    const separatorIndex = entry.indexOf(ORIGIN_OVERRIDES_PAIR_SEPARATOR)
+    if (separatorIndex === -1) throw malformedEntry(entry)
+    const authority = entry.slice(0, separatorIndex).trim()
+    const origin = entry.slice(separatorIndex + 1).trim()
+    if (!isCanonicalAuthority(authority) || !isCanonicalOrigin(origin)) throw malformedEntry(entry)
+    if (overrides.has(authority)) {
+      throw new Error(`${ENV_ORIGIN_OVERRIDES} entry "${entry}" repeats the host "${authority}"`)
+    }
+    overrides.set(authority, origin)
+  }
+  return overrides
+}
+
+function isCanonicalAuthority(authority: string): boolean {
+  return URL.canParse(`https://${authority}`) && new URL(`https://${authority}`).host === authority
+}
+
+function isCanonicalOrigin(origin: string): boolean {
+  if (!URL.canParse(origin)) return false
+  const url = new URL(origin)
+  return ORIGIN_OVERRIDES_TARGET_PROTOCOLS.includes(url.protocol) && url.origin === origin
 }
 
 export function resolveHiddenCommands(env: NodeJS.ProcessEnv): ReadonlySet<string> {

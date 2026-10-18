@@ -51,6 +51,7 @@ Shell tools (`bash`, `powershell`) render as terminal entries via the Zed `_meta
     - Extensions
         - `src/core/extensions/types.ts`, `docs/extensions.md` (Tool Events): `tool_call` handler contract (`{ block, reason, terminate }`), `ctx.ui.select/confirm/input/editor`
         - `examples/extensions/permission-gate.ts`: permission prompt from a `tool_call` handler
+        - `src/core/http-dispatcher.ts`: `configureHttpDispatcher`, the undici global dispatcher Pi installs at startup and again after extensions load (`src/main.ts`), which the origin overrides extension wraps; `src/core/extensions/runner.ts` `emitBeforeProviderHeaders`, the per-call hook that re-wraps it
         - `src/core/source-info.ts`: `builtin:<name>` extension paths (`builtin:mcp`, `builtin:llama.cpp`), whose commands `get_commands` reports with `sourceInfo.source` `builtin`
     - MCP (built in since 0.99.0)
         - `docs/mcp.md`: configuration (`mcp.json`), exposure (`codemode` default, `direct`, `deferred`, `hidden`), OAuth, resources, permissions

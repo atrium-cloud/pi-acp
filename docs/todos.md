@@ -285,6 +285,12 @@ Pi upstream ships an ACP agent on current schemas with session resume, thought-l
     - Pi owns what the bundled client used to: protocol negotiation, result mapping (text over 20 KB is middle-truncated with the full text in a temp file), `isError` results, `tools/list_changed`, reconnects, resources (`list_mcp_resources`, `read_mcp_resource`), and OAuth (unusable over RPC, docs/caveats.md).
     - Nothing persists across sessions: each of `session/new`, `session/resume`, `session/load` and `session/fork` registers exactly what its own request carries, and an absent list means none. Pi's own `mcp.json` servers connect in every session besides, and an entry there with the same name overrides the client's (docs/caveats.md).
     - A client that can name a stdio `command` can run anything in the Pi environment; that is inherent to the ACP schema.
+- [x] Origin overrides (`src/network/originOverrides.ts`)
+    - `PI_ACP_ORIGIN_OVERRIDES`, comma-separated `<host>=<origin>` pairs, loads a pi-acp-owned extension with `-e` in every session; unset loads nothing, and a malformed or repeated entry fails startup.
+    - Each side must already be in the form `URL` reports: `new URL('https://' + host).host === host` and `new URL(origin).origin === origin`, with an `http:` or `https:` origin.
+    - The extension wraps undici's global dispatcher and sends an https request whose `URL.host` is listed to the paired origin, keeping its path, query and headers, so one host entry serves every model behind it whatever wire or path each uses.
+    - Pi installs a fresh dispatcher after extensions load, so the wrap is re-asserted in `before_provider_headers`; an empty dispatcher slot at load fails the extension load, which stops Pi (docs/caveats.md).
+    - Verified live against Pi 1.2.0 (2026-10-18) with a stand-in listener: a chat-completions and an Anthropic-messages model each arrive on their own path with their own auth header.
 - [x] Extension-command slash commands
     - Advertised alongside `prompt` and `skill` commands, with their invocation names (Pi's `name:1` / `name:2` disambiguation included).
     - A prompt Pi answers `handled` ran no turn and skips the title and usage round-trips: its text is a command line, not a title, and no tokens were spent. A cancel that landed during the ack window still wins as `cancelled`.
@@ -294,7 +300,8 @@ Pi upstream ships an ACP agent on current schemas with session resume, thought-l
 - [x] E2E harness (`src/__tests__/e2e/`): the built `dist/index.js` driven as a real ACP client against a real Pi.
     - Uses the host's own Pi credentials; only the session store is redirected to scratch (`PI_CODING_AGENT_SESSION_DIR`).
     - `RUN_PI_E2E=true` (`pnpm run test:e2e`); model `openrouter/deepseek/deepseek-v4.1-flash` (moved from `deepseek-v4-flash-0731` on 2026-09-30, at a third of the output price).
-    - 29 cases across turns, config, lifecycle, fork, permissions, prompt content, MCP stdio, extension commands, prompt template hints, built-in commands, notices, warm spare, idle teardown. 29/29 live against Pi 1.2.0 (2026-10-14).
+    - 30 cases across turns, config, lifecycle, fork, permissions, prompt content, MCP stdio, extension commands, prompt template hints, built-in commands, notices, warm spare, idle teardown, origin overrides. 29/29 live against Pi 1.2.0 (2026-10-14); the origin overrides case live on 2026-10-18.
+    - The origin overrides case is hermetic: a scratch agent dir, a fake key and a local listener, so it spends no tokens.
     - The three cancel cases hold the turn open with a `sleep 30` bash call and cancel on the `tool_call` update: a long streamed reply can arrive from the provider as one burst with the settle right behind it, which is how they failed on 2026-09-21.
 - [x] Distribution: one `pi-acp.zip` (the `pi-acp` executable, a hashbang bundle, plus LICENSE and NOTICE) on GitHub Releases, no npm. Needs Node 22.19+ on PATH and `PI_ACP_PI_BIN`.
 - [x] CI (`.github/workflows/ci.yml`): typecheck, unit tests, build, `--version` smoke, `pnpm run package`.
@@ -331,4 +338,4 @@ Pi upstream ships an ACP agent on current schemas with session resume, thought-l
         - The session counts as busy while a run starts. The `prompt` ack still precedes `agent_start`, and an abort sent during run start aborts the run once it exists.
         - OpenRouter lists only the models the key may use, saved for offline use; the e2e pin is still offered.
     - docs/refs.md carries the range.
-- [x] docs/caveats.md holds the gaps that stay open by design (MCP startup status, Pi's own `mcp.json` servers, MCP OAuth, the MCP server environment, unforwarded extension notifications, advertised built-in commands, project trust, session-replacing commands, nested tool calls, warm spare sessions starting early, idle sessions stopping their subprocess), each with the reason.
+- [x] docs/caveats.md holds the gaps that stay open by design (MCP startup status, Pi's own `mcp.json` servers, MCP OAuth, the MCP server environment, unforwarded extension notifications, advertised built-in commands, project trust, session-replacing commands, nested tool calls, warm spare sessions starting early, origin overrides starting at the first provider call, idle sessions stopping their subprocess), each with the reason.

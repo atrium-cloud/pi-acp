@@ -31,21 +31,30 @@ const RUN_E2E_TRUTHY: readonly string[] = [RUN_E2E_VALUE, '1']
 export const E2E_PROVIDER_SLUG = 'openrouter'
 export const E2E_MODEL_ID = 'deepseek/deepseek-v4.1-flash'
 
-/** Finds the pinned model's value in a returned config-option set: the bare id,
- * or the provider-prefixed form inside the pinned provider's group when the id
- * is shared. Throws when the host's Pi does not offer the pinned model. */
+/** Finds the pinned model's value in a returned config-option set. Throws when
+ * the host's Pi does not offer the pinned model. */
 export function pinnedModelValue(configOptions: readonly SessionConfigOption[] | null | undefined): string {
+  return modelValue(configOptions, E2E_PROVIDER_SLUG, E2E_MODEL_ID)
+}
+
+/** Finds one provider's model in a returned config-option set: the bare id, or
+ * the provider-prefixed form inside that provider's group when the id is shared. */
+export function modelValue(
+  configOptions: readonly SessionConfigOption[] | null | undefined,
+  provider: string,
+  modelId: string,
+): string {
   const select = configOptions?.find((option) => option.id === CONFIG_ID_MODEL)
   if (select?.type !== 'select') throw new Error('model config option missing from session response')
   for (const entry of select.options) {
-    // A bare id proves the pinned provider only inside its own group: another
-    // provider offering the same id uniquely would carry the same bare value.
-    if (!('options' in entry) || entry.group !== E2E_PROVIDER_SLUG) continue
+    // A bare id proves the provider only inside its own group: another provider
+    // offering the same id uniquely would carry the same bare value.
+    if (!('options' in entry) || entry.group !== provider) continue
     for (const option of entry.options) {
-      if (option.value === E2E_MODEL_ID || option.value.endsWith(`/${E2E_MODEL_ID}`)) return option.value
+      if (option.value === modelId || option.value.endsWith(`/${modelId}`)) return option.value
     }
   }
-  throw new Error(`pinned model ${E2E_PROVIDER_SLUG}/${E2E_MODEL_ID} not offered by the host's Pi`)
+  throw new Error(`model ${provider}/${modelId} not offered by the host's Pi`)
 }
 
 /** One live turn: a provider round-trip on an already warm subprocess. */

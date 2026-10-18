@@ -16,6 +16,7 @@ The release is a single executable, `pi-acp`; put it on PATH or point your ACP c
 - `PI_ACP_HIDE_COMMANDS`: comma-separated command names to leave out of the advertised slash commands, for example `llama`.
 - `PI_ACP_WARM_SPARE_MAX_AGE_MS`: keeps one Pi subprocess started ahead for the next `session/new` with the same cwd and MCP servers, stopped at this age; off when unset.
 - `PI_ACP_IDLE_TIMEOUT_MS`: stops a session's Pi subprocess once the session has had no request in flight for this long, and relaunches it on the session's next prompt, config change or load; off when unset.
+- `PI_ACP_ORIGIN_OVERRIDES`: comma-separated `<authority>=<origin>` pairs, for example `opencode.ai=http://127.0.0.1:3129`; an https request Pi sends through its HTTP dispatcher to a listed authority goes to the paired origin instead, with its own path, query and headers. `<authority>` is the lowercase host, with a `:port` only for a port other than 443, and `<origin>` is `scheme://host[:port]` alone. Off when unset; a malformed or repeated entry fails startup.
 - `PI_TIMING`: Pi's own startup profiling switch; with it set to `1`, pi-acp also logs the Pi launch and a startup timing line for each session start and each wake to stderr.
 
 ## ACP support

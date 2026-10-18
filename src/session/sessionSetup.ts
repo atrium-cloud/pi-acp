@@ -42,6 +42,9 @@ export interface SessionSetupDeps {
   /** Absolute path to the materialized permission gate, loaded with `-e`. Absent
    * in tests (the fake client ignores args), so no temp file is written. */
   readonly gateExtensionPath?: string | undefined
+  /** Absolute path to the materialized origin overrides extension, loaded with
+   * `-e` by every session; absent when no override is configured. */
+  readonly originOverridesExtensionPath?: string | undefined
   /** Absolute path to the materialized MCP extension, loaded with a second `-e`
    * only by a session whose request carries servers. */
   readonly mcpExtensionPath: string
@@ -126,6 +129,7 @@ async function launchPi(
   const createPiClient = deps.createPiClient ?? defaultCreatePiClient
   // The gate loads alongside the user's own extensions (no --no-extensions).
   const args = deps.gateExtensionPath !== undefined ? ['-e', deps.gateExtensionPath] : []
+  if (deps.originOverridesExtensionPath !== undefined) args.push('-e', deps.originOverridesExtensionPath)
   // Only a session that asked for servers loads the MCP extension; it reads the
   // list from the environment and deletes it before anything can inherit it.
   if (mcpServers.length > 0) args.push('-e', deps.mcpExtensionPath)

@@ -4,11 +4,13 @@ import {
   DEFAULT_RPC_TIMEOUT_MS,
   ENV_HIDE_COMMANDS,
   ENV_IDLE_TIMEOUT_MS,
+  ENV_ORIGIN_OVERRIDES,
   ENV_PI_TIMING,
   ENV_RPC_TIMEOUT_MS,
   ENV_WARM_SPARE_MAX_AGE_MS,
   resolveHiddenCommands,
   resolveIdleTimeoutMs,
+  resolveOriginOverrides,
   resolveRpcTimeoutMs,
   resolveStartupTiming,
   resolveWarmSpareMaxAgeMs,
@@ -90,6 +92,52 @@ describe('resolveStartupTiming', () => {
     for (const value of [undefined, '', '0', 'true', ' 1', '1 ']) {
       expect(resolveStartupTiming(value === undefined ? {} : { [ENV_PI_TIMING]: value })).toBe(false)
     }
+  })
+})
+
+describe('resolveOriginOverrides', () => {
+  it('overrides nothing when unset, empty, or blank', () => {
+    expect(resolveOriginOverrides({})).toEqual(new Map())
+    expect(resolveOriginOverrides({ [ENV_ORIGIN_OVERRIDES]: '' })).toEqual(new Map())
+    expect(resolveOriginOverrides({ [ENV_ORIGIN_OVERRIDES]: '   ' })).toEqual(new Map())
+  })
+
+  it('maps each host, with a non-443 port where it has one, to its origin', () => {
+    const raw = 'opencode.ai=http://127.0.0.1:3129, api.example.test:8443=https://gateway.example.test'
+    expect(resolveOriginOverrides({ [ENV_ORIGIN_OVERRIDES]: raw })).toEqual(
+      new Map([
+        ['opencode.ai', 'http://127.0.0.1:3129'],
+        ['api.example.test:8443', 'https://gateway.example.test'],
+      ]),
+    )
+  })
+
+  it('rejects a malformed entry, naming the variable and the entry', () => {
+    const malformed = [
+      'opencode.ai',
+      'opencode.ai=http://127.0.0.1:3129/',
+      'opencode.ai=http://127.0.0.1:3129/zen/go/v1',
+      'opencode.ai=http://user:pass@127.0.0.1:3129',
+      'opencode.ai=ftp://127.0.0.1:3129',
+      'OpenCode.ai=http://127.0.0.1:3129',
+      'opencode.ai:443=http://127.0.0.1:3129',
+      'https://opencode.ai=http://127.0.0.1:3129',
+      '=http://127.0.0.1:3129',
+    ]
+    for (const entry of malformed) {
+      expect(() => resolveOriginOverrides({ [ENV_ORIGIN_OVERRIDES]: entry })).toThrow(
+        `${ENV_ORIGIN_OVERRIDES} entry "${entry}" must be`,
+      )
+    }
+    expect(() => resolveOriginOverrides({ [ENV_ORIGIN_OVERRIDES]: 'opencode.ai=http://127.0.0.1:3129,' })).toThrow(
+      `${ENV_ORIGIN_OVERRIDES} entry "" must be`,
+    )
+  })
+
+  it('rejects a host named twice', () => {
+    expect(() =>
+      resolveOriginOverrides({ [ENV_ORIGIN_OVERRIDES]: 'opencode.ai=http://127.0.0.1:3129,opencode.ai=http://127.0.0.1:3130' }),
+    ).toThrow(`${ENV_ORIGIN_OVERRIDES} entry "opencode.ai=http://127.0.0.1:3130" repeats the host "opencode.ai"`)
   })
 })
 

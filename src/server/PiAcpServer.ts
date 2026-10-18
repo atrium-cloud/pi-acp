@@ -79,6 +79,8 @@ export interface PiAcpServerOptions {
   readonly sessionDirs: SessionDirs
   /** Absolute path to the permission gate extension (`-e`); omitted in tests. */
   readonly gateExtensionPath?: string | undefined
+  /** Absolute path to the origin overrides extension (`-e`); absent when none is configured. */
+  readonly originOverridesExtensionPath?: string | undefined
   /** Absolute path to the MCP extension, loaded only by a session whose request
    * carries `mcpServers`. */
   readonly mcpExtensionPath: string
@@ -433,6 +435,7 @@ export class PiAcpServer {
       notifier: client,
       clientSupportsNotices: this.clientSupportsNotices,
       gateExtensionPath: this.options.gateExtensionPath,
+      originOverridesExtensionPath: this.options.originOverridesExtensionPath,
       mcpExtensionPath: this.options.mcpExtensionPath,
       hiddenCommands: this.options.hiddenCommands,
       logStartupTiming: this.options.logStartupTiming,

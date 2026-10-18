@@ -116,6 +116,7 @@ const SESSION_DIRS: SessionDirs = { mode: 'flat', dir: '/tmp/pi-acp-sessions' }
 const SESSION_FILE = '/tmp/pi-acp-sessions/2026-01-01T00-00-00-000Z_sess-1.jsonl'
 const GATE_PATH = '/tmp/gate.ts'
 const MCP_EXTENSION_PATH = '/tmp/mcp-extension.mjs'
+const ORIGIN_OVERRIDES_PATH = '/tmp/origin-overrides.mjs'
 const STDIO_SERVER: McpServer = {
   name: 'probe',
   command: '/usr/bin/probe',
@@ -206,6 +207,15 @@ describe('establishSession', () => {
         env: { [ENV_MCP_SERVERS]: JSON.stringify([STDIO_SPEC]) },
       },
     ])
+  })
+
+  it('loads the origin overrides extension after the gate when one is configured', async () => {
+    const fake = makeFakePiClient(makeSpec())
+    await establishSession(
+      { cwd: ABS_CWD, mcpServers: [STDIO_SERVER] },
+      { ...makeDeps(fake), gateExtensionPath: GATE_PATH, originOverridesExtensionPath: ORIGIN_OVERRIDES_PATH },
+    )
+    expect(fake.spawns[0]?.args).toEqual(['-e', GATE_PATH, '-e', ORIGIN_OVERRIDES_PATH, '-e', MCP_EXTENSION_PATH])
   })
 
   it('passes neither the extension nor the environment when the request carries no servers', async () => {

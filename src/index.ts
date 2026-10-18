@@ -9,11 +9,13 @@ import {
   AGENT_VERSION,
   resolveHiddenCommands,
   resolveIdleTimeoutMs,
+  resolveOriginOverrides,
   resolveRpcTimeoutMs,
   resolveStartupTiming,
   resolveWarmSpareMaxAgeMs,
 } from './constants.js'
 import { materializeMcpExtension } from './mcp/extension.js'
+import { materializeOriginOverridesExtension } from './network/originOverrides.js'
 import { materializeGate } from './permissions/gate.js'
 import { piLaunchLogLine, resolvePiLaunch } from './pi/launch.js'
 import { PiAcpServer } from './server/PiAcpServer.js'
@@ -37,6 +39,8 @@ async function main(): Promise<void> {
 
   const launch = resolvePiLaunch(process.env)
   const logStartupTiming = resolveStartupTiming(process.env)
+  // Ahead of the gate, so a bad value fails before anything is written.
+  const originOverrides = resolveOriginOverrides(process.env)
   if (logStartupTiming) console.error(piLaunchLogLine(launch))
 
   const server = new PiAcpServer({
@@ -50,6 +54,8 @@ async function main(): Promise<void> {
     sessionDirs: resolveSessionDirs(process.env),
     // Written once at startup; every session loads it with `-e`.
     gateExtensionPath: materializeGate(),
+    // Written only when overrides are configured; every session then loads it.
+    originOverridesExtensionPath: materializeOriginOverridesExtension(originOverrides),
     // Written alongside the gate; loaded only by a session that asked for MCP.
     mcpExtensionPath: materializeMcpExtension(),
     hiddenCommands: resolveHiddenCommands(process.env),
