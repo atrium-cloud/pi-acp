@@ -47,7 +47,7 @@
     - Appends do not interleave mid-record; the file stays well-formed.
     - Each process keeps its own in-memory leaf, so the second writer's entries become a sibling branch off the entry that was last when it opened.
     - The pi-acp side never sees the other branch; a fresh open follows the last-written leaf and `session/load` replays only that branch.
-    - Pi 1.2.0 still appends without a lock (`SessionManager._persist`).
+    - Pi 1.3.0 still appends without a lock (`SessionManager._persist`).
     - Reuse of a live id inside one adapter prevents the adapter from doing this to itself, and a wake waits for the idle stop before relaunching; Pi's own tools on the same file are on their own.
 
 ## Exit criteria
@@ -157,7 +157,7 @@ Pi upstream ships an ACP agent on current schemas with session resume, thought-l
         - Extension source is embedded in the bundle (never naming the dev-only Pi package) and materialized to a temp file at startup so the single-file release bundle works.
         - The subprocess is spawned without `--no-extensions` so the user's own extensions keep loading alongside the gate.
     - The sentinel prefix is a trust boundary, not a security boundary: any extension in the same Pi process can emit one, but the worst case is a spurious prompt for an already-announced id.
-    - Verified live against Pi 1.2.0 (2026-10-14) by the e2e tier: allow once, allow always and reject for a built-in tool, allow once for an MCP tool.
+    - Verified live against Pi 1.3.0 (2026-10-19) by the e2e tier: allow once, allow always and reject for a built-in tool, allow once for an MCP tool.
 - [x] No session modes
     - Pi has no native permission policy to map onto.
     - `modes` is omitted from `session/new`; `session/set_mode` is not handled.
@@ -290,7 +290,7 @@ Pi upstream ships an ACP agent on current schemas with session resume, thought-l
     - Each side must already be in the form `URL` reports: `new URL('https://' + host).host === host` and `new URL(origin).origin === origin`, with an `http:` or `https:` origin.
     - The extension wraps undici's global dispatcher and sends an https request whose `URL.host` is listed to the paired origin, keeping its path, query and headers, so one host entry serves every model behind it whatever wire or path each uses.
     - Pi installs a fresh dispatcher after extensions load, so the wrap is re-asserted in `before_provider_headers`; an empty dispatcher slot at load fails the extension load, which stops Pi (docs/caveats.md).
-    - Verified live against Pi 1.2.0 (2026-10-18) with a stand-in listener: a chat-completions and an Anthropic-messages model each arrive on their own path with their own auth header.
+    - Verified live against Pi 1.3.0 (2026-10-19) with a stand-in listener: a chat-completions and an Anthropic-messages model each arrive on their own path with their own auth header.
 - [x] Extension-command slash commands
     - Advertised alongside `prompt` and `skill` commands, with their invocation names (Pi's `name:1` / `name:2` disambiguation included).
     - A prompt Pi answers `handled` ran no turn and skips the title and usage round-trips: its text is a command line, not a title, and no tokens were spent. A cancel that landed during the ack window still wins as `cancelled`.
@@ -300,7 +300,7 @@ Pi upstream ships an ACP agent on current schemas with session resume, thought-l
 - [x] E2E harness (`src/__tests__/e2e/`): the built `dist/index.js` driven as a real ACP client against a real Pi.
     - Uses the host's own Pi credentials; only the session store is redirected to scratch (`PI_CODING_AGENT_SESSION_DIR`).
     - `RUN_PI_E2E=true` (`pnpm run test:e2e`); model `openrouter/deepseek/deepseek-v4.1-flash` (moved from `deepseek-v4-flash-0731` on 2026-09-30, at a third of the output price).
-    - 30 cases across turns, config, lifecycle, fork, permissions, prompt content, MCP stdio, extension commands, prompt template hints, built-in commands, notices, warm spare, idle teardown, origin overrides. 29/29 live against Pi 1.2.0 (2026-10-14); the origin overrides case live on 2026-10-18.
+    - 30 cases across turns, config, lifecycle, fork, permissions, prompt content, MCP stdio, extension commands, prompt template hints, built-in commands, notices, warm spare, idle teardown, origin overrides. 30/30 live against Pi 1.3.0 (2026-10-19).
     - The origin overrides case is hermetic: a scratch agent dir, a fake key and a local listener, so it spends no tokens.
     - The three cancel cases hold the turn open with a `sleep 30` bash call and cancel on the `tool_call` update: a long streamed reply can arrive from the provider as one burst with the settle right behind it, which is how they failed on 2026-09-21.
 - [x] Distribution: one `pi-acp.zip` (the `pi-acp` executable, a hashbang bundle, plus LICENSE and NOTICE) on GitHub Releases, no npm. Needs Node 22.19+ on PATH and `PI_ACP_PI_BIN`.
@@ -337,5 +337,10 @@ Pi upstream ships an ACP agent on current schemas with session resume, thought-l
         - `before_agent_start` is now a user/custom union; the gate handles only `tool_call`.
         - The session counts as busy while a run starts. The `prompt` ack still precedes `agent_start`, and an abort sent during run start aborts the run once it exists.
         - OpenRouter lists only the models the key may use, saved for offline use; the e2e pin is still offered.
+    - 1.2.0 → 1.3.0 on 2026-10-19, all three green on a clean checkout (typecheck, 523 unit, 30/30 live on Node 26.12.0) with no adapter change.
+        - `rpc-types.d.ts`, `json-event.d.ts`, the extension types and `docs/rpc.md` are unchanged.
+        - OpenCode Zen and Go move to `https://opencode.ai/inference` paths on the same host, so an `opencode.ai` origin override still covers both wires.
+        - Pi still bundles undici 8, so the origin overrides dispatcher slot is unchanged.
+        - A resumed session restores the active tools its transcript records.
     - docs/refs.md carries the range.
 - [x] docs/caveats.md holds the gaps that stay open by design (MCP startup status, Pi's own `mcp.json` servers, MCP OAuth, the MCP server environment, unforwarded extension notifications, advertised built-in commands, project trust, session-replacing commands, nested tool calls, warm spare sessions starting early, origin overrides starting at the first provider call, idle sessions stopping their subprocess), each with the reason.
