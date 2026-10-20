@@ -42,9 +42,9 @@ A tool that calls other tools through Pi's `ctx.executeTool` (the `codemode` too
 
 With `PI_ACP_WARM_SPARE_MAX_AGE_MS` set, a `session/new` that matches the spare's cwd and MCP servers gets a Pi subprocess started up to that long before. Until it is taken or reaches that age, the spare is one more Pi subprocess (about 120 MB resident) with its MCP servers connected. Its session header timestamp is the spare's start, and Pi's settings, `AGENTS.md`, skills and prompt templates are as Pi read them then; only the models and thinking levels are re-read at the take. There is one spare, refilled after a prompt with that session's cwd and MCP servers, so a host that alternates between cwds mostly misses it. A spare that is never taken leaves no session file, since Pi writes the file on the first prompt.
 
-## Origin overrides start at the first provider call
+## Origin overrides start at `session_start`
 
-With `PI_ACP_ORIGIN_OVERRIDES` set, the override covers every provider call a session makes. Pi installs a fresh HTTP dispatcher after extensions load, and the extension wraps it again right before each provider call, so requests Pi sends between its startup and a session's first provider call, such as a provider's model catalog refresh, go to the provider's own host. The wrap targets the global dispatcher slot of undici 8, which Pi bundles; an empty slot fails the extension load, which stops Pi at session start, and a Pi release on a later undici major needs the slot re-verified.
+With `PI_ACP_ORIGIN_OVERRIDES` set, the override covers every request a Pi subprocess sends through its HTTP dispatcher from `session_start` on: Pi's model catalog refresh, OpenRouter's `/models/user` read included, and every provider call. Pi installs a fresh HTTP dispatcher after extensions load, and the extension wraps it again at `session_start` and right before each provider call, so a request Pi starts in between, such as an early `pi.dev` catalog fetch, goes to its own host. The wrap targets the global dispatcher slot of undici 8, which Pi bundles; an empty slot fails the extension load, which stops Pi at session start, and a Pi release on a later undici major needs the slot re-verified.
 
 ## Idle sessions stop their Pi subprocess
 

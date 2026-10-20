@@ -289,7 +289,7 @@ Pi upstream ships an ACP agent on current schemas with session resume, thought-l
     - `PI_ACP_ORIGIN_OVERRIDES`, comma-separated `<host>=<origin>` pairs, loads a pi-acp-owned extension with `-e` in every session; unset loads nothing, and a malformed or repeated entry fails startup.
     - Each side must already be in the form `URL` reports: `new URL('https://' + host).host === host` and `new URL(origin).origin === origin`, with an `http:` or `https:` origin.
     - The extension wraps undici's global dispatcher and sends an https request whose `URL.host` is listed to the paired origin, keeping its path, query and headers, so one host entry serves every model behind it whatever wire or path each uses.
-    - Pi installs a fresh dispatcher after extensions load, so the wrap is re-asserted in `before_provider_headers`; an empty dispatcher slot at load fails the extension load, which stops Pi (docs/caveats.md).
+    - Pi installs a fresh dispatcher after extensions load, so the wrap is re-asserted on `session_start`, ahead of Pi's model catalog refresh, and in `before_provider_headers`; an empty dispatcher slot at load fails the extension load, which stops Pi (docs/caveats.md).
     - Verified live against Pi 1.3.0 (2026-10-19) with a stand-in listener: a chat-completions and an Anthropic-messages model each arrive on their own path with their own auth header.
 - [x] Extension-command slash commands
     - Advertised alongside `prompt` and `skill` commands, with their invocation names (Pi's `name:1` / `name:2` disambiguation included).
@@ -343,4 +343,4 @@ Pi upstream ships an ACP agent on current schemas with session resume, thought-l
         - Pi still bundles undici 8, so the origin overrides dispatcher slot is unchanged.
         - A resumed session restores the active tools its transcript records.
     - docs/refs.md carries the range.
-- [x] docs/caveats.md holds the gaps that stay open by design (MCP startup status, Pi's own `mcp.json` servers, MCP OAuth, the MCP server environment, unforwarded extension notifications, advertised built-in commands, project trust, session-replacing commands, nested tool calls, warm spare sessions starting early, origin overrides starting at the first provider call, idle sessions stopping their subprocess), each with the reason.
+- [x] docs/caveats.md holds the gaps that stay open by design (MCP startup status, Pi's own `mcp.json` servers, MCP OAuth, the MCP server environment, unforwarded extension notifications, advertised built-in commands, project trust, session-replacing commands, nested tool calls, warm spare sessions starting early, origin overrides starting at `session_start`, idle sessions stopping their subprocess), each with the reason.

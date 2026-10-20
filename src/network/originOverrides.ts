@@ -9,10 +9,10 @@ import { materializeExtension } from '../pi/extensionFile.js'
 export const originOverridesLogLine = (hosts: readonly string[]): string =>
   `[${AGENT_NAME}] origin overrides: ${hosts.length} host(s): ${hosts.join(', ')}`
 
-// The extension wraps the undici global dispatcher Pi's provider SDKs fetch
-// through, rewriting only a matched request's origin. Pi installs a fresh
-// dispatcher after extensions load, so the wrap is re-asserted before every
-// provider call. The resolved table is baked in; the extension reads no env.
+// The extension wraps the undici global dispatcher Pi fetches through, rewriting
+// only a matched request's origin. Pi installs a fresh dispatcher after extensions
+// load, so the wrap is re-asserted at `session_start`, ahead of Pi's model catalog
+// refresh, and before every provider call. The resolved table is baked in.
 export function originOverridesExtensionSource(overrides: ReadonlyMap<string, string>): string {
   const missingDispatcher = `${AGENT_NAME} origin overrides extension: no undici global dispatcher at Symbol.for(${JSON.stringify(UNDICI_GLOBAL_DISPATCHER_KEY)})`
   return [
@@ -42,8 +42,9 @@ export function originOverridesExtensionSource(overrides: ReadonlyMap<string, st
     // A throw here fails the extension load, and Pi's RPC mode exits on that.
     `  ensureWrapped()`,
     `  console.error(${JSON.stringify(originOverridesLogLine([...overrides.keys()]))})`,
-    // Pi reports a throw from this handler as an extension error and still
-    // sends the request, so the load-time check is the one that stops Pi.
+    // Pi reports a throw from either handler as an extension error and carries
+    // on, so the load-time check is the one that stops Pi.
+    `  pi.on('session_start', ensureWrapped)`,
     `  pi.on('before_provider_headers', ensureWrapped)`,
     `}`,
     '',

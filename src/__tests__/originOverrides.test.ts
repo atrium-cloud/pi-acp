@@ -23,8 +23,12 @@ interface Dispatcher {
   close(): Promise<void>
   destroy(): Promise<void>
 }
-type ProviderHeadersHandler = () => void
-type ExtensionFactory = (pi: { on: (event: string, handler: ProviderHeadersHandler) => void }) => void
+type EventHandler = () => void
+type ExtensionFactory = (pi: { on: (event: string, handler: EventHandler) => void }) => void
+interface Handlers {
+  readonly sessionStart: EventHandler
+  readonly beforeProviderCall: EventHandler
+}
 
 const OVERRIDE_ORIGIN = 'http://127.0.0.1:3129'
 const PORTED_OVERRIDE_ORIGIN = 'https://gateway.example.test'
@@ -94,17 +98,21 @@ afterAll(() => {
 })
 
 /** Installs `inner` as Pi's dispatcher, loads the extension, and returns the
- * `before_provider_headers` handler it registered. */
-function load(inner: Dispatcher): ProviderHeadersHandler {
+ * `session_start` and `before_provider_headers` handlers it registered. */
+function load(inner: Dispatcher): Handlers {
   globals[DISPATCHER_KEY] = inner
-  let handler: ProviderHeadersHandler | undefined
+  const registered = new Map<string, EventHandler>()
   factory({
-    on: (event, registered) => {
-      if (event === 'before_provider_headers') handler = registered
+    on: (event, handler) => {
+      registered.set(event, handler)
     },
   })
-  if (handler === undefined) throw new Error('extension registered no before_provider_headers handler')
-  return handler
+  const sessionStart = registered.get('session_start')
+  const beforeProviderCall = registered.get('before_provider_headers')
+  if (sessionStart === undefined || beforeProviderCall === undefined) {
+    throw new Error(`extension registered handlers for ${JSON.stringify([...registered.keys()])}`)
+  }
+  return { sessionStart, beforeProviderCall }
 }
 
 describe('the origin overrides extension', () => {
@@ -147,9 +155,23 @@ describe('the origin overrides extension', () => {
     expect(inner.calls).toEqual(['close', 'destroy'])
   })
 
+  it('wraps the dispatcher Pi installs after load at session_start, ahead of its catalog refresh', () => {
+    const onLoad = recordingDispatcher()
+    const { sessionStart } = load(onLoad)
+    // What Pi's configureHttpDispatcher leaves in the slot through setGlobalDispatcher.
+    const installed = recordingDispatcher()
+    globals[DISPATCHER_KEY] = installed
+
+    sessionStart()
+    current().dispatch(request('https://opencode.ai'), {})
+
+    expect(installed.received.map((options) => options.origin)).toEqual([OVERRIDE_ORIGIN])
+    expect(onLoad.received).toEqual([])
+  })
+
   it('wraps a dispatcher Pi installs after load before the next provider call, once', () => {
     const onLoad = recordingDispatcher()
-    const beforeProviderCall = load(onLoad)
+    const { beforeProviderCall } = load(onLoad)
     const replacement = recordingDispatcher()
     globals[DISPATCHER_KEY] = replacement
 
