@@ -3,9 +3,12 @@
  * host, each model's requests reach a stand-in local listener on that model's
  * own vendor path, carrying that wire's own auth header.
  *
- * Hermetic, unlike the rest of the tier: a scratch Pi agent dir and an obviously
- * fake key, so no provider is contacted and no tokens are spent. Each turn fails
- * on the listener's answer; only what the listener received is asserted.
+ * Hermetic, unlike the rest of the tier: the adapter inherits no host
+ * environment (`hermeticHome`), so its only credential is an obviously fake key,
+ * and any request the override does not take to the listener goes to a proxy on
+ * a closed loopback port and fails there. No provider is contacted and no
+ * tokens are spent. Each turn fails on the listener's answer; only what the
+ * listener received is asserted.
  * Skipped unless RUN_PI_E2E=true (see e2eGate.ts).
  */
 
@@ -96,6 +99,8 @@ describeE2E('pi origin overrides', () => {
     listener = await startListener()
     agentDir = mkdtempSync(join(tmpdir(), AGENT_DIR_PREFIX))
     agent = await createSpawnedAgent({
+      // The scratch agent dir doubles as the home, so no credential file under the real home is read.
+      hermeticHome: agentDir,
       env: {
         [ENV_PI_AGENT_DIR]: agentDir,
         [PROVIDER_KEY_ENV]: FAKE_KEY,

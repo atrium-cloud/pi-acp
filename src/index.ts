@@ -19,6 +19,7 @@ import { materializeOriginOverridesExtension } from './network/originOverrides.j
 import { materializeGate } from './permissions/gate.js'
 import { piLaunchLogLine, resolvePiLaunch } from './pi/launch.js'
 import { PiAcpServer } from './server/PiAcpServer.js'
+import { materializeCatalogRefreshExtension } from './session/catalogRefresh.js'
 import { resolveSessionDirs } from './session/sessionDirectory.js'
 
 // The SDK resolves `connection.closed` for both a clean stdin EOF and a
@@ -58,6 +59,8 @@ async function main(): Promise<void> {
     originOverridesExtensionPath: materializeOriginOverridesExtension(originOverrides),
     // Written alongside the gate; loaded only by a session that asked for MCP.
     mcpExtensionPath: materializeMcpExtension(),
+    // Loaded only by the catalog refresher's own Pi, never by a session.
+    catalogRefreshExtensionPath: materializeCatalogRefreshExtension(),
     hiddenCommands: resolveHiddenCommands(process.env),
     logStartupTiming,
   })

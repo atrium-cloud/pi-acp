@@ -13,7 +13,8 @@
  * already authorized and passes no key of its own. What it does isolate is the
  * session store: `PI_CODING_AGENT_SESSION_DIR` points both Pi and the adapter at
  * one flat scratch directory, so a live run never writes into the developer's
- * real sessions.
+ * real sessions. A case run with `hermeticHome` inherits no host environment
+ * and so no credentials at all.
  */
 
 import { spawn } from 'node:child_process'
@@ -67,6 +68,16 @@ const NODE_COMMAND = 'node'
  * tier deliberately runs against. What the tier needs is re-added below. */
 const HERMETIC_ENV_PREFIXES: readonly string[] = ['PI_ACP_', 'PI_CODING_AGENT_']
 
+/** All a `hermeticHome` child keeps from the host: what finds `node` and the temp dir. */
+const HERMETIC_KEPT_ENV: readonly string[] = ['PATH', 'TMPDIR']
+/** A proxy on a closed loopback port, so a request the origin overrides do not
+ * send to a local listener fails without leaving the host. undici reads the
+ * lowercase names first. */
+const UNROUTED_REQUEST_PROXY = 'http://127.0.0.1:9'
+const UNROUTED_REQUEST_PROXY_ENV: readonly string[] = ['http_proxy', 'https_proxy', 'HTTP_PROXY', 'HTTPS_PROXY']
+const LOCAL_HOSTS = '127.0.0.1,localhost'
+const LOCAL_HOSTS_ENV: readonly string[] = ['no_proxy', 'NO_PROXY']
+
 /** Pi's cold start outlasts the adapter's default 30s round-trip bound on a
  * CI-class VM, so the child gets a wider one. */
 const E2E_RPC_TIMEOUT_MS = '120000'
@@ -108,6 +119,10 @@ export interface SpawnedAgentOptions {
   readonly onPermission?: PermissionAnswer
   /** What the client advertises on `initialize`; absent means none. */
   readonly clientCapabilities?: ClientCapabilities
+  /** Runs the adapter with no inherited environment beyond `PATH` and `TMPDIR`:
+   * this scratch dir as `HOME`, and the unrouted-request proxy. Absent inherits
+   * the host's environment and Pi install. */
+  readonly hermeticHome?: string
 }
 
 export interface SpawnedAgent {
@@ -160,25 +175,46 @@ export function createScratchPaths(): { readonly root: string; readonly sessionD
   return { root, sessionDir, workspace }
 }
 
-/** Spawn the built adapter against the host's Pi credentials and a scratch
- * session store, with no ACP wiring of its own. */
+/** The child environment before the tier's own variables: the host's, scrubbed
+ * of adapter and Pi directory overrides, or for `hermeticHome` none of it. */
+function baseEnv(hermeticHome: string | undefined): NodeJS.ProcessEnv {
+  if (hermeticHome !== undefined) {
+    return {
+      ...Object.fromEntries(
+        HERMETIC_KEPT_ENV.flatMap((name) => {
+          const value = process.env[name]
+          return value === undefined ? [] : [[name, value] as const]
+        }),
+      ),
+      HOME: hermeticHome,
+      ...Object.fromEntries(UNROUTED_REQUEST_PROXY_ENV.map((name) => [name, UNROUTED_REQUEST_PROXY])),
+      ...Object.fromEntries(LOCAL_HOSTS_ENV.map((name) => [name, LOCAL_HOSTS])),
+    }
+  }
+  // The one prefixed variable that is carried over rather than scrubbed: it
+  // names the Pi install whose stored credentials this tier authenticates
+  // against. Unset on the host means Pi's own default agent dir.
+  const hostAgentDir = process.env[ENV_PI_AGENT_DIR]
+  return {
+    ...Object.fromEntries(
+      Object.entries(process.env).filter(([key]) => !HERMETIC_ENV_PREFIXES.some((prefix) => key.startsWith(prefix))),
+    ),
+    ...(hostAgentDir === undefined ? {} : { [ENV_PI_AGENT_DIR]: hostAgentDir }),
+  }
+}
+
+/** Spawn the built adapter against the host's Pi credentials, or none for
+ * `hermeticHome`, and a scratch session store, with no ACP wiring of its own. */
 function spawnAgentProcess(
   sessionDir: string,
   workspace: string,
   options: SpawnedAgentOptions = {},
 ): ChildProcessWithoutNullStreams {
-  // The one prefixed variable that is carried over rather than scrubbed: it
-  // names the Pi install whose stored credentials this tier authenticates
-  // against. Unset on the host means Pi's own default agent dir.
-  const hostAgentDir = process.env[ENV_PI_AGENT_DIR]
   return spawn(NODE_COMMAND, [DIST_ENTRY], {
     cwd: workspace,
     stdio: ['pipe', 'pipe', 'pipe'],
     env: {
-      ...Object.fromEntries(
-        Object.entries(process.env).filter(([key]) => !HERMETIC_ENV_PREFIXES.some((prefix) => key.startsWith(prefix))),
-      ),
-      ...(hostAgentDir === undefined ? {} : { [ENV_PI_AGENT_DIR]: hostAgentDir }),
+      ...baseEnv(options.hermeticHome),
       [ENV_PI_SESSION_DIR]: sessionDir,
       [ENV_RPC_TIMEOUT_MS]: E2E_RPC_TIMEOUT_MS,
       ...options.env,

@@ -16,6 +16,10 @@ const MODE = process.env.FAKE_PI_MODE ?? 'normal'
 const MARKER_PATH = process.env.FAKE_PI_MARKER
 const SIGTERM_TRAP = 'sigterm-trap'
 const STARTUP_HANG = 'startup-hang'
+// Every prompt is an extension command whose handler threw: Pi reports the throw,
+// then answers the prompt `handled`.
+const COMMAND_ERROR = 'command-error'
+const COMMAND_ERROR_MESSAGE = 'model catalog refresh failed: openrouter: fake-pi refused'
 
 // Built from code points so the separators stay visible in the source; the raw
 // characters render as ordinary spaces.
@@ -162,6 +166,12 @@ function handleLine(line) {
       handleTrigger(parsed.id, parsed.name)
       return
     case 'prompt':
+      if (MODE === COMMAND_ERROR) {
+        const commandName = parsed.message.slice(1).split(' ')[0]
+        writeLine({ type: 'extension_error', extensionPath: `command:${commandName}`, event: 'command', error: COMMAND_ERROR_MESSAGE })
+        respond(parsed.id, 'prompt', { disposition: 'handled' })
+        return
+      }
       respond(parsed.id, 'prompt', { disposition: 'started' })
       return
     default:

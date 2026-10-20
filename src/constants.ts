@@ -248,6 +248,24 @@ export const ORIGIN_OVERRIDES_TARGET_PROTOCOLS: readonly string[] = ['http:', 'h
 // Where undici 8, which Pi bundles, keeps the dispatcher its fetch uses.
 export const UNDICI_GLOBAL_DISPATCHER_KEY = 'undici.globalDispatcher.2'
 
+// ── Catalog refresh (pi-acp-owned Pi extension loaded with `-e`) ──────────────
+//
+// A Pi subprocess of the adapter's own runs Pi's network refresh of its model
+// catalog, which Pi saves for every Pi started afterward. The first runs well past
+// the few seconds a client that only reads the model list keeps the adapter up.
+
+export const CATALOG_REFRESH_STARTUP_DELAY_MS = 60_000
+export const CATALOG_REFRESH_INTERVAL_MS = 3_600_000
+/** Pi's own budget for the refresh, the cap Pi puts on its startup refresh. */
+export const CATALOG_REFRESH_TIMEOUT_MS = 15_000
+export const CATALOG_REFRESH_COMMAND = 'pi-acp-catalog-refresh'
+export const CATALOG_REFRESH_EXTENSION_FILENAME = 'catalog-refresh.mjs'
+// `--offline` skips Pi's own startup refresh; the command's explicit network
+// refresh still runs. The subprocess runs no turn, so it files no session, and
+// the refresh needs no MCP servers.
+export const CATALOG_REFRESH_PI_ARGS: readonly string[] = ['--no-session', '--offline', '--no-mcp']
+export const catalogRefreshLogLine = (message: string): string => `[${AGENT_NAME}] catalog refresh: ${message}`
+
 // ── Extension notify ──────────────────────────────────────────────────────────
 //
 // A Pi extension's `ctx.ui.notify` becomes an ACP `notice` for a client that

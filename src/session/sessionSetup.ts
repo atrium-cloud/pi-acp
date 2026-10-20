@@ -31,7 +31,19 @@ import type { ModelChoice } from '../turn/configOptions.js'
 import { type CreatePiClient, type LaunchedPi, type RelaunchTarget, SessionConnection } from './SessionConnection.js'
 import { stripBom } from './sessionDirectory.js'
 
-const defaultCreatePiClient: CreatePiClient = (options) => new PiRpcClient(options)
+export const defaultCreatePiClient: CreatePiClient = (options) => new PiRpcClient(options)
+
+/** The `-e` args every Pi the adapter starts loads: the gate, then the origin
+ * overrides when configured. The user's own extensions load alongside them (no
+ * --no-extensions). */
+export function piExtensionArgs(paths: {
+  readonly gateExtensionPath?: string | undefined
+  readonly originOverridesExtensionPath?: string | undefined
+}): string[] {
+  const args = paths.gateExtensionPath !== undefined ? ['-e', paths.gateExtensionPath] : []
+  if (paths.originOverridesExtensionPath !== undefined) args.push('-e', paths.originOverridesExtensionPath)
+  return args
+}
 
 export interface SessionSetupDeps {
   readonly launch: PiLaunch
@@ -127,9 +139,7 @@ async function launchPi(
   const startedAt = performance.now()
   const { deps, mcpServers } = plan
   const createPiClient = deps.createPiClient ?? defaultCreatePiClient
-  // The gate loads alongside the user's own extensions (no --no-extensions).
-  const args = deps.gateExtensionPath !== undefined ? ['-e', deps.gateExtensionPath] : []
-  if (deps.originOverridesExtensionPath !== undefined) args.push('-e', deps.originOverridesExtensionPath)
+  const args = piExtensionArgs(deps)
   // Only a session that asked for servers loads the MCP extension; it reads the
   // list from the environment and deletes it before anything can inherit it.
   if (mcpServers.length > 0) args.push('-e', deps.mcpExtensionPath)

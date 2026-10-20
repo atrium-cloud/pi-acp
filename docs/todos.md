@@ -12,6 +12,7 @@
     - Pi RPC mode serves exactly one session per process (`get_state` has one `sessionId`; `switch_session` replaces it in place).
     - One `pi --mode rpc` child per ACP session, spawned at `session/new`, `session/resume`, `session/load`, and `session/fork`, with `cwd` set to the ACP `cwd`.
         - With `PI_ACP_IDLE_TIMEOUT_MS` set, an idle session's subprocess is stopped and relaunched on its next prompt, config change or load: `--session <file>`, or `--session-id <id>` before the first prompt.
+    - One more child, owned by no session, runs Pi's model catalog refresh 60 s after the adapter starts and hourly after that (the Catalog refresher entry under Delivered).
     - Nothing is multiplexed; event routing is per child.
 - Requirements
     - `session/resume` and `session/list` are served from Pi's own session store; no adapter-side session map.
@@ -291,6 +292,12 @@ Pi upstream ships an ACP agent on current schemas with session resume, thought-l
     - The extension wraps undici's global dispatcher and sends an https request whose `URL.host` is listed to the paired origin, keeping its path, query and headers, so one host entry serves every model behind it whatever wire or path each uses.
     - Pi installs a fresh dispatcher after extensions load, so the wrap is re-asserted on `session_start`, ahead of Pi's model catalog refresh, and in `before_provider_headers`; an empty dispatcher slot at load fails the extension load, which stops Pi (docs/caveats.md).
     - Verified live against Pi 1.3.0 (2026-10-19) with a stand-in listener: a chat-completions and an Anthropic-messages model each arrive on their own path with their own auth header.
+- [x] Catalog refresher (`src/session/catalogRefresh.ts`)
+    - A Pi subprocess of the adapter's own runs Pi's network refresh of its model catalog 60 s after the adapter starts and hourly after that; Pi saves the result to `models-store.json`, which every Pi started afterward restores.
+    - The subprocess runs with `--no-session --offline --no-mcp` and the session extensions (gate, origin overrides) plus a refresh extension only it loads, and sends that extension's command as a `prompt`; Pi answers `handled` once `ctx.modelRegistry.refresh({ allowNetwork: true })` settles, bounded at 15 s.
+    - A failed refresh is one stderr line: Pi's `extension_error` for a provider error or a timeout, the refresher's own for a spawn or transport failure. One refresh runs at a time per adapter process, and the saved catalog keeps serving.
+    - The adapter never writes `models-store.json`; Pi owns its format and the OpenRouter personalization.
+    - `stopAllSessions` clears the schedule and stops a refresh in flight.
 - [x] Extension-command slash commands
     - Advertised alongside `prompt` and `skill` commands, with their invocation names (Pi's `name:1` / `name:2` disambiguation included).
     - A prompt Pi answers `handled` ran no turn and skips the title and usage round-trips: its text is a command line, not a title, and no tokens were spent. A cancel that landed during the ack window still wins as `cancelled`.
@@ -300,8 +307,8 @@ Pi upstream ships an ACP agent on current schemas with session resume, thought-l
 - [x] E2E harness (`src/__tests__/e2e/`): the built `dist/index.js` driven as a real ACP client against a real Pi.
     - Uses the host's own Pi credentials; only the session store is redirected to scratch (`PI_CODING_AGENT_SESSION_DIR`).
     - `RUN_PI_E2E=true` (`pnpm run test:e2e`); model `openrouter/deepseek/deepseek-v4.1-flash` (moved from `deepseek-v4-flash-0731` on 2026-09-30, at a third of the output price).
-    - 30 cases across turns, config, lifecycle, fork, permissions, prompt content, MCP stdio, extension commands, prompt template hints, built-in commands, notices, warm spare, idle teardown, origin overrides. 30/30 live against Pi 1.3.0 (2026-10-19).
-    - The origin overrides case is hermetic: a scratch agent dir, a fake key and a local listener, so it spends no tokens.
+    - 32 cases across turns, config, lifecycle, fork, permissions, prompt content, MCP stdio, extension commands, prompt template hints, built-in commands, notices, warm spare, idle teardown, origin overrides, catalog refresh. 30/30 live against Pi 1.3.0 (2026-10-19); the two catalog refresh cases and the origin overrides case live against Pi 1.3.0 (2026-10-20).
+    - The origin overrides and catalog refresh cases are hermetic: the adapter inherits no host environment beyond `PATH` and `TMPDIR`, gets a scratch agent dir as its home, a fake key and a local listener, and sends any request the overrides do not route to a proxy on a closed loopback port, so they spend no tokens and reach no vendor host.
     - The three cancel cases hold the turn open with a `sleep 30` bash call and cancel on the `tool_call` update: a long streamed reply can arrive from the provider as one burst with the settle right behind it, which is how they failed on 2026-09-21.
 - [x] Distribution: one `pi-acp.zip` (the `pi-acp` executable, a hashbang bundle, plus LICENSE and NOTICE) on GitHub Releases, no npm. Needs Node 22.19+ on PATH and `PI_ACP_PI_BIN`.
 - [x] CI (`.github/workflows/ci.yml`): typecheck, unit tests, build, `--version` smoke, `pnpm run package`.
@@ -343,4 +350,4 @@ Pi upstream ships an ACP agent on current schemas with session resume, thought-l
         - Pi still bundles undici 8, so the origin overrides dispatcher slot is unchanged.
         - A resumed session restores the active tools its transcript records.
     - docs/refs.md carries the range.
-- [x] docs/caveats.md holds the gaps that stay open by design (MCP startup status, Pi's own `mcp.json` servers, MCP OAuth, the MCP server environment, unforwarded extension notifications, advertised built-in commands, project trust, session-replacing commands, nested tool calls, warm spare sessions starting early, origin overrides starting at `session_start`, idle sessions stopping their subprocess), each with the reason.
+- [x] docs/caveats.md holds the gaps that stay open by design (MCP startup status, Pi's own `mcp.json` servers, MCP OAuth, the MCP server environment, unforwarded extension notifications, advertised built-in commands, project trust, session-replacing commands, nested tool calls, warm spare sessions starting early, origin overrides starting at `session_start`, the catalog refresher relying on `session_start`, idle sessions stopping their subprocess), each with the reason.

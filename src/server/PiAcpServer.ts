@@ -33,6 +33,8 @@ import {
   AGENT_NAME,
   AGENT_TITLE,
   AGENT_VERSION,
+  CATALOG_REFRESH_INTERVAL_MS,
+  CATALOG_REFRESH_STARTUP_DELAY_MS,
   JSONRPC_INTERNAL_ERROR,
   JSONRPC_INVALID_PARAMS,
   META_KEY_BREAKPOINT_NAMESPACE,
@@ -59,10 +61,13 @@ import {
   writeForkFile,
   writeMessageMap,
 } from '../session/sessionDirectory.js'
+import { CatalogRefresher } from '../session/catalogRefresh.js'
 import type { CreatePiClient, SessionConnection } from '../session/SessionConnection.js'
 import {
+  defaultCreatePiClient,
   type EstablishedSession,
   establishSession,
+  piExtensionArgs,
   type SessionSetupDeps,
   type SessionSetupRequest,
   validateSessionRequest,
@@ -94,6 +99,12 @@ export interface PiAcpServerOptions {
   /** How long a session idles before its subprocess is stopped; undefined leaves
    * idle teardown off. */
   readonly idleTimeoutMs?: number | undefined
+  /** Absolute path to the catalog refresh extension; absent leaves the refresher off. */
+  readonly catalogRefreshExtensionPath?: string | undefined
+  /** Injectable for tests; CATALOG_REFRESH_STARTUP_DELAY_MS when unset. */
+  readonly catalogRefreshStartupDelayMs?: number | undefined
+  /** Injectable for tests; CATALOG_REFRESH_INTERVAL_MS when unset. */
+  readonly catalogRefreshIntervalMs?: number | undefined
 }
 
 /** A registered session, its subprocess live or stopped at idle. The setup
@@ -107,12 +118,27 @@ export class PiAcpServer {
   private readonly options: PiAcpServerOptions
   private readonly sessions = new Map<string, LiveSession>()
   private readonly warmSpare: WarmSpare | undefined
+  private readonly catalogRefresher: CatalogRefresher | undefined
   private stopped = false
   private clientSupportsNotices = false
 
   constructor(options: PiAcpServerOptions) {
     this.options = options
     this.warmSpare = options.warmSpareMaxAgeMs === undefined ? undefined : new WarmSpare(options.warmSpareMaxAgeMs)
+    this.catalogRefresher =
+      options.catalogRefreshExtensionPath === undefined
+        ? undefined
+        : new CatalogRefresher({
+            launch: options.launch,
+            rpcTimeoutMs: options.rpcTimeoutMs,
+            cwd: process.cwd(),
+            sessionExtensionArgs: piExtensionArgs(options),
+            extensionPath: options.catalogRefreshExtensionPath,
+            startupDelayMs: options.catalogRefreshStartupDelayMs ?? CATALOG_REFRESH_STARTUP_DELAY_MS,
+            intervalMs: options.catalogRefreshIntervalMs ?? CATALOG_REFRESH_INTERVAL_MS,
+            createPiClient: options.createPiClient ?? defaultCreatePiClient,
+          })
+    this.catalogRefresher?.start()
   }
 
   register(app: acp.AgentApp): acp.AgentApp {
@@ -135,14 +161,19 @@ export class PiAcpServer {
       })
   }
 
-  /** Stops every session subprocess; called once the client connection closes.
-   * `stopped` closes the window where a `session/new` still in flight would
-   * register a subprocess into the just-cleared map and orphan it. */
+  /** Stops every session subprocess, the warm spare and the catalog refresher;
+   * called once the client connection closes. `stopped` closes the window where a
+   * `session/new` still in flight would register a subprocess into the
+   * just-cleared map and orphan it. */
   async stopAllSessions(): Promise<void> {
     this.stopped = true
     const sessions = [...this.sessions.values()]
     this.sessions.clear()
-    await Promise.all([...sessions.map((session) => session.connection.stop()), this.warmSpare?.stop()])
+    await Promise.all([
+      ...sessions.map((session) => session.connection.stop()),
+      this.warmSpare?.stop(),
+      this.catalogRefresher?.stop(),
+    ])
   }
 
   initialize(params: InitializeRequest): InitializeResponse {
