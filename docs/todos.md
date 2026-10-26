@@ -4,13 +4,14 @@
 
 - Purpose: expose Pi Agent as an ACP v1 agent by wrapping its RPC mode (`pi --mode rpc`). Retire once Pi adopts a current ACP schema upstream.
 - Layering
-    - `index.ts`: stdio transport
-    - `PiAcpServer`: ACP semantics; `src/session/sessionSetup.ts` handles establishment
+    - `src/index.ts`: stdio transport
+    - `src/server/PiAcpServer.ts`: ACP semantics; `src/session/sessionSetup.ts` handles establishment
     - `src/pi/PiRpcClient.ts`: one Pi child per session
     - JSONL commands and events over the child's stdio
 - Process model
     - Pi RPC mode serves exactly one session per process (`get_state` has one `sessionId`; `switch_session` replaces it in place).
     - One `pi --mode rpc` child per ACP session, spawned at `session/new`, `session/resume`, `session/load`, and `session/fork`, with `cwd` set to the ACP `cwd`.
+        - With `PI_ACP_WARM_SPARE_MAX_AGE_MS` set, one spare child, started after a prompt resolves with that session's `cwd` and MCP servers, is held for the next `session/new` with the same `cwd` and servers, which takes it instead of spawning (the Warm spare entry under Delivered).
         - With `PI_ACP_IDLE_TIMEOUT_MS` set, an idle session's subprocess is stopped and relaunched on its next prompt, config change or load: `--session <file>`, or `--session-id <id>` before the first prompt.
     - One more child, owned by no session, runs Pi's model catalog refresh 60 s after the adapter starts and hourly after that (the Catalog refresher entry under Delivered).
     - Nothing is multiplexed; event routing is per child.
@@ -79,12 +80,12 @@ Pi upstream ships an ACP agent on current schemas with session resume, thought-l
     - Fails the in-flight prompt with the exit code and stderr tail.
     - Client rejects in-flight work and fires `onExit` with the exit code + stderr tail; a dead child never crashes the adapter (EPIPE handled). Session teardown off `onExit` is wired in the `session/close` and `session/delete` entries under Delivered.
 - [x] Types for the consumed RPC subset
-    - Type-only imports from the `@earendil-works/pi-coding-agent` dependency: `RpcCommand`, `RpcResponse`, `RpcSessionState`, `RpcExtensionUIRequest`, `RpcExtensionUIResponse`, `JsonAgentSessionEvent`.
+    - Type-only imports from the `@earendil-works/pi-coding-agent` dependency: `RpcCommand`, `RpcResponse`, `RpcSessionState`, `RpcExtensionUIRequest`, `RpcExtensionUIResponse`, `JsonAgentSessionEvent`, `SessionStats`.
     - No Pi code in the adapter bundle: `import type` only, and the package is `external` in `build.mjs`; Pi runs as a subprocess.
     - Exhaustive switches over event types with no `default` are the compile-time tripwire.
 
 - [x] `initialize`
-    - Honest capabilities only, each advertised in the change that implements it; pinned by `initialize.test.ts`. Text-only prompt caps here; image/embeddedContext turn on with `session/prompt`.
+    - Honest capabilities only, each advertised in the change that implements it; pinned by `initialize.test.ts`. Prompt caps advertise `image` and `embeddedContext`, which `session/prompt` handles; `audio` is off.
     - No `authMethods`: Pi resolves credentials from its own `auth.json` and environment, and there is no non-interactive login to expose.
     - `initialize`: returns pi-acp's own version and capabilities synchronously.
     - Provider auth failures surface as turn errors carrying Pi's message; wired with the turn layer (`session/prompt`).
@@ -125,11 +126,11 @@ Pi upstream ships an ACP agent on current schemas with session resume, thought-l
         - `locations` from `path` args; `rawInput` / `rawOutput` carried; args cached at start (the end event omits them).
         - The `tool_call` carries Pi's tool name verbatim as `name` (stable since ACP SDK 1.5.0); updates omit it, which leaves it unchanged.
         - `edit` rendered as one `diff` content block per `edits[]` entry, built from the INPUT `{oldText,newText}` (ACP's `Diff` doesn't decompose `details.patch`).
-        - `bash` / `powershell` render as terminal entries (Zed `_meta` convention; contract in docs/refs.md): a `terminal` content item on the `tool_call`, partial snapshots stream as `terminal_output_delta` (a full `terminal_output` replace once the snapshot stops extending), and the end update carries the output snapshot plus `terminal_exit` with the parsed exit code — no text content. Other tools' partial results replace the row content via `tool_execution_update.partialResult`; `bash_execution_update` is ignored as redundant (UNVERIFIED against live Pi).
+        - `bash` / `powershell` render as terminal entries (Zed `_meta` convention; contract in docs/refs.md): a `terminal` content item on the `tool_call`, partial snapshots stream as `terminal_output_delta` (a full `terminal_output` replace once the snapshot stops extending), and the end update carries no text content, only the output snapshot plus `terminal_exit` with the parsed exit code. Other tools' partial results replace the row content via `tool_execution_update.partialResult`; `bash_execution_update` is ignored: Pi emits it only from `AgentSession.executeBash`, which RPC mode calls only for its `bash` command, and the adapter never sends that command.
     - Pi's default tool set is `read`, `bash`, `edit`, `write`; `grep` / `find` / `ls` are opt-in and `powershell` is Windows-only. The kind map covers all eight.
 - [x] Session-level wire events not in the RPC docs' event table
     - `session_info_changed { name }` → `session_info_update`
-    - `thinking_level_changed { level }` → `config_option_update` (full set, rebuilt from the cached current model — no round-trip; the client tolerates the idempotent echo of a client-initiated set)
+    - `thinking_level_changed { level }` → `config_option_update` (full set, rebuilt from the cached current model, no round-trip; see Config options for how it orders with a client-initiated set)
     - `entry_appended`, `queue_update`: ignored
     - Exhaustive switch over `JsonAgentSessionEvent` with no `default` keeps the list honest.
 - [x] Usage
@@ -164,12 +165,14 @@ Pi upstream ships an ACP agent on current schemas with session resume, thought-l
     - `modes` is omitted from `session/new`; `session/set_mode` is not handled.
     - The client's own auto-approval is the only policy layer.
 - [x] Config options (`src/turn/configOptions.ts`)
-    - `model`: category `model`, values `provider/id` from `get_available_models`, applied with `set_model`.
+    - `model`: category `model`, options from `get_available_models` grouped by provider, applied with `set_model`. A value is the bare model id, or `provider/id` when another provider offers the same id.
     - `thought_level`: category `thought_level`, values from `get_available_thinking_levels`, applied with `set_thinking_level`.
     - Both are re-read after a model switch because the level set is per model; the full set is returned in `SetSessionConfigOptionResponse`.
     - `initialize` is static; options are built per session at `session/new` from `get_state`.
     - Pi persists both as `thinking_level_change` and `model_change` session entries, so a resumed session reports the level and model it last ran with.
-    - Deferred to the streaming layer (`thinking_level_changed`): a client-initiated set already returns the full set, and the resulting Pi event will also push a `config_option_update`, so the event-driven push must suppress or tolerate that echo.
+    - A client-initiated set returns the full set, and Pi's `thinking_level_changed` event, when the set changes the level, pushes a `config_option_update` (the Session-level wire events entry) before the response.
+        - A `thought_level` set: the push carries the same set the response returns.
+        - A `model` set: Pi applies the new model's level inside `set_model`, so the push carries the old model and level list; the response that follows carries the new ones.
 - [x] Slash commands
     - `get_commands` snapshot sent as `available_commands_update`; invoked as `/name args` prompt text.
     - Command metadata comes from `sourceInfo` (`{ path, source, scope, origin }`).
@@ -299,10 +302,20 @@ Pi upstream ships an ACP agent on current schemas with session resume, thought-l
     - A failed refresh is one stderr line: Pi's `extension_error` for a provider error or a timeout, the refresher's own for a spawn or transport failure. One refresh runs at a time per adapter process, and the saved catalog keeps serving.
     - The adapter never writes `models-store.json`; Pi owns its format and the OpenRouter personalization.
     - `stopAllSessions` clears the schedule and stops a refresh in flight.
+- [x] Warm spare (`src/session/warmSpare.ts`)
+    - `PI_ACP_WARM_SPARE_MAX_AGE_MS` keeps one started Pi subprocess, unregistered, for the next `session/new`, and stops it at that age; unset leaves it off.
+    - It is refilled after a prompt resolves, with that session's `cwd` and MCP servers; a `session/new` with the same `cwd` and server list takes it, and any other starts cold.
+    - A take re-reads the models, thinking levels and state, since Pi refreshes its catalog after startup; a failed re-read stops the spare and the request starts cold.
+- [x] Idle teardown (`src/session/SessionConnection.ts`)
+    - `PI_ACP_IDLE_TIMEOUT_MS` stops a registered session's subprocess once no request has been in flight for that long; unset leaves it off.
+    - The next prompt, config change or `session/load` relaunches Pi with `--session <file>`, or `--session-id <id>` when Pi never filed one; every request that finds the session stopped shares one wake.
+    - The wake re-applies the model, thinking level and session name where the new Pi differs, and sends `config_option_update` or `available_commands_update` when what Pi reports changed. A failed wake fails the requests waiting on it and leaves the session stopped for the next request to retry.
+- [x] Startup timing (`src/pi/startupTimings.ts`): with `PI_TIMING=1`, Pi's own profiling switch, which the subprocess inherits, the adapter logs the Pi launch and one `startup timing` line per session start to stderr. The line names its mode (`new`, `open`, `spare`, `wake`, or `take` for a `session/new` answered by the warm spare) and its milliseconds, with Pi's own timing blocks parsed from its stderr.
+- [x] Extension files (`src/pi/extensionFile.ts`): each adapter process writes its pi-acp-owned Pi extensions into its own `mkdtemp` directory, removed when that process exits. The name is never the pid, so adapters sharing a pid (every sandboxed adapter is pid 1) never remove each other's extensions.
 - [x] Extension-command slash commands
     - Advertised alongside `prompt` and `skill` commands, with their invocation names (Pi's `name:1` / `name:2` disambiguation included).
     - A prompt Pi answers `handled` ran no turn and skips the title and usage round-trips: its text is a command line, not a title, and no tokens were spent. A cancel that landed during the ack window still wins as `cancelled`.
-- [x] Verified live against Pi 0.84.3 (2026-08-29): extension commands, fork (cross-cwd and mid-turn), MCP over stdio, streamable HTTP and SSE, including through a single-file build with no `node_modules`.
+- [x] Verified live against Pi 0.84.3 (2026-08-29): extension commands and fork (cross-cwd and mid-turn), including through a single-file build with no `node_modules`.
 
 - [x] Snapshot test harness (`src/__tests__/acpTestFixture.ts`): scripted Pi RPC events in, recorded ACP transcript out, no real Pi. New adapter tests default to this style.
 - [x] E2E harness (`src/__tests__/e2e/`): the built `dist/index.js` driven as a real ACP client against a real Pi.
