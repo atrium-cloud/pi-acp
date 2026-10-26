@@ -294,7 +294,8 @@ Pi upstream ships an ACP agent on current schemas with session resume, thought-l
     - Verified live against Pi 1.3.0 (2026-10-19) with a stand-in listener: a chat-completions and an Anthropic-messages model each arrive on their own path with their own auth header.
 - [x] Catalog refresher (`src/session/catalogRefresh.ts`)
     - A Pi subprocess of the adapter's own runs Pi's network refresh of its model catalog 60 s after the adapter starts and hourly after that; Pi saves the result to `models-store.json`, which every Pi started afterward restores.
-    - The subprocess runs with `--no-session --offline --no-mcp` and the session extensions (gate, origin overrides) plus a refresh extension only it loads, and sends that extension's command as a `prompt`; Pi answers `handled` once `ctx.modelRegistry.refresh({ allowNetwork: true })` settles, bounded at 15 s.
+    - The subprocess runs with `--no-session --offline --no-mcp` and the session extensions (gate, origin overrides) plus a refresh extension only it loads, and sends that extension's command as a `prompt`; Pi answers `handled` once `ctx.modelRegistry.refresh({ allowNetwork: true, force: true })` settles, bounded at 15 s.
+        - `force` skips Pi's four-hour freshness window for pi.dev catalogs, which every session's startup refresh restarts.
     - A failed refresh is one stderr line: Pi's `extension_error` for a provider error or a timeout, the refresher's own for a spawn or transport failure. One refresh runs at a time per adapter process, and the saved catalog keeps serving.
     - The adapter never writes `models-store.json`; Pi owns its format and the OpenRouter personalization.
     - `stopAllSessions` clears the schedule and stops a refresh in flight.

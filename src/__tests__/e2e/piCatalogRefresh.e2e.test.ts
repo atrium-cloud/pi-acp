@@ -1,7 +1,7 @@
 /**
  * Live-Pi catalog refresh: the adapter's own refresh Pi stores exactly the
- * models the key may use, and a session's own startup refresh reads them from
- * the override origin rather than the vendor host.
+ * models the key may use and refetches catalogs inside Pi's freshness window,
+ * and a session's own startup refresh reads them from the override origin.
  *
  * Hermetic, like the origin overrides case: the adapter inherits no host
  * environment (`hermeticHome`), so its only credential is an obviously fake key,
@@ -10,7 +10,7 @@
  * loopback port and fails there. Skipped unless RUN_PI_E2E=true (see e2eGate.ts).
  */
 
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import type { IncomingHttpHeaders, Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
@@ -38,6 +38,9 @@ const PROVIDER = 'openrouter'
 const PROVIDER_HOST = 'openrouter.ai'
 const CATALOG_HOST = 'pi.dev'
 const PROVIDER_KEY_ENV = 'OPENROUTER_API_KEY'
+/** A provider on Pi's plain pi.dev catalog, whose refresh honors the freshness window. */
+const CATALOG_PROVIDER = 'deepseek'
+const CATALOG_PROVIDER_KEY_ENV = 'DEEPSEEK_API_KEY'
 const FAKE_KEY = 'pi-acp-e2e-not-a-real-key'
 
 /** Two of Pi's built-in OpenRouter models: personalization keeps only built-in ids. */
@@ -107,8 +110,18 @@ async function startListener(): Promise<Listener> {
   }
 }
 
+function reads(listener: Listener, pathname: string): ReceivedRequest[] {
+  return listener.received.filter((request) => request.method === GET && request.pathname === pathname)
+}
+
 function userModelReads(listener: Listener): ReceivedRequest[] {
-  return listener.received.filter((request) => request.method === GET && request.pathname === USER_MODELS_PATH)
+  return reads(listener, USER_MODELS_PATH)
+}
+
+/** Saves a catalog entry Pi checked just now, as a session's startup refresh leaves it. */
+function seedFreshCatalogEntry(agentDir: string, provider: string): void {
+  const entry = { models: [], checkedAt: Date.now(), lastModified: 0 }
+  writeFileSync(join(agentDir, MODELS_STORE_FILE), JSON.stringify({ [provider]: entry }), 'utf8')
 }
 
 /** The provider's chat model ids in Pi's saved catalog; throws until Pi has saved one. */
@@ -151,6 +164,7 @@ describeE2E('pi catalog refresh', () => {
       env: {
         [ENV_PI_AGENT_DIR]: agentDir,
         [PROVIDER_KEY_ENV]: FAKE_KEY,
+        [CATALOG_PROVIDER_KEY_ENV]: FAKE_KEY,
         [ENV_ORIGIN_OVERRIDES]: `${PROVIDER_HOST}=${listener.origin},${CATALOG_HOST}=${listener.origin}`,
       },
     })
@@ -166,20 +180,30 @@ describeE2E('pi catalog refresh', () => {
   }, E2E_SETUP_TIMEOUT_MS)
 
   it(
-    "saves only the key's models a minute after start, and the next session/new offers only those",
+    "saves only the key's models a minute after start, refetches a catalog Pi checked just now, and the next session/new offers only those",
     async () => {
       if (agent === null || listener === null || agentDir === null) throw new Error('e2e: the adapter never booted')
       const dir = agentDir
+      const serving = listener
+      seedFreshCatalogEntry(dir, CATALOG_PROVIDER)
 
       // No session first: the refresher's Pi is the only one that can save the list.
       const stored = await vi.waitFor(() => storedChatModelIds(dir), { timeout: REFRESH_WAIT_MS, interval: POLL_INTERVAL_MS })
       expect(stored).toEqual([...KEY_MODELS].sort())
-      expect(userModelReads(listener).map((request) => request.headers.authorization)).toEqual([`Bearer ${FAKE_KEY}`])
+      expect(userModelReads(serving).map((request) => request.headers.authorization)).toEqual([`Bearer ${FAKE_KEY}`])
+      await vi.waitFor(
+        () => {
+          if (reads(serving, `${CATALOG_PATH_PREFIX}${CATALOG_PROVIDER}`).length === 0) {
+            throw new Error(`no ${CATALOG_PROVIDER} catalog read has reached the listener yet`)
+          }
+        },
+        { timeout: E2E_SETUP_TIMEOUT_MS, interval: POLL_INTERVAL_MS },
+      )
 
       const created = await agent.agent.request(acp.methods.agent.session.new, { cwd: agent.workspace, mcpServers: [] })
       expect(offeredModelIds(created.configOptions)).toEqual([...KEY_MODELS].sort())
     },
-    REFRESH_WAIT_MS + E2E_SETUP_TIMEOUT_MS,
+    REFRESH_WAIT_MS + 2 * E2E_SETUP_TIMEOUT_MS,
   )
 
   it(

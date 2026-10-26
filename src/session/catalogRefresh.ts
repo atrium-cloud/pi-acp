@@ -12,9 +12,10 @@ import { asMessage } from '../server/errors.js'
 import type { CreatePiClient, PiClientLike } from './SessionConnection.js'
 
 // The refresh extension: one command whose handler awaits Pi's network refresh of
-// every provider's catalog, which Pi saves itself. Pi answers the command `handled`
-// once the handler settles, and reports a throw as an `extension_error`, which the
-// RPC transport logs. Plain untyped JS, like the gate.
+// every provider's catalog, which Pi saves itself. `force` skips Pi's four-hour
+// freshness window, which every session's startup refresh restarts. Pi answers the
+// command `handled` once the handler settles, and reports a throw as an
+// `extension_error`, which the RPC transport logs. Plain untyped JS, like the gate.
 export const CATALOG_REFRESH_EXTENSION_SOURCE = [
   `const COMMAND = ${JSON.stringify(CATALOG_REFRESH_COMMAND)}`,
   `const TIMEOUT_MS = ${CATALOG_REFRESH_TIMEOUT_MS}`,
@@ -22,7 +23,7 @@ export const CATALOG_REFRESH_EXTENSION_SOURCE = [
   `  pi.registerCommand(COMMAND, {`,
   `    description: 'Refresh the model catalog',`,
   `    handler: async (_args, ctx) => {`,
-  `      const result = await ctx.modelRegistry.refresh({ allowNetwork: true, signal: AbortSignal.timeout(TIMEOUT_MS) })`,
+  `      const result = await ctx.modelRegistry.refresh({ allowNetwork: true, force: true, signal: AbortSignal.timeout(TIMEOUT_MS) })`,
   `      if (result.aborted) throw new Error('model catalog refresh timed out after ' + TIMEOUT_MS + 'ms')`,
   `      if (result.errors.size === 0) return`,
   `      const failures = [...result.errors].map(([provider, error]) => provider + ': ' + error.message)`,

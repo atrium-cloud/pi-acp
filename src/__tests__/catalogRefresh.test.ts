@@ -249,7 +249,7 @@ describe('the catalog refresh extension', () => {
     rmSync(dir, { recursive: true, force: true })
   })
 
-  it('runs a network refresh under its own timeout and throws naming each provider that failed', async () => {
+  it('runs a forced network refresh under its own timeout and throws naming each provider that failed', async () => {
     let handler: CommandHandler | undefined
     extension({
       registerCommand: (name, options) => {
@@ -269,7 +269,7 @@ describe('the catalog refresh extension', () => {
     }
 
     await handler('', ctx)
-    expect(requested).toEqual([{ allowNetwork: true, signal: expect.any(AbortSignal) }])
+    expect(requested).toEqual([{ allowNetwork: true, force: true, signal: expect.any(AbortSignal) }])
 
     result = { aborted: false, errors: new Map([['openrouter', new Error(PROVIDER_FAILURE)]]) }
     await expect(handler('', ctx)).rejects.toThrow(`model catalog refresh failed: openrouter: ${PROVIDER_FAILURE}`)
