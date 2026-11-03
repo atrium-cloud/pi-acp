@@ -1,21 +1,23 @@
 /**
  * Live-Pi catalog refresh: the adapter's own refresh Pi stores exactly the
  * models the key may use and refetches catalogs inside Pi's freshness window,
- * and a session's own startup refresh reads them from the override origin.
+ * and a session's own startup refresh reads them through the proxy.
  *
- * Hermetic, like the origin overrides case: the adapter inherits no host
- * environment (`hermeticHome`), so its only credential is an obviously fake key,
- * and a stand-in listener takes OpenRouter and Pi's catalog host through
- * `PI_ACP_ORIGIN_OVERRIDES`. Any other request goes to a proxy on a closed
- * loopback port and fails there. Skipped unless RUN_PI_E2E=true (see e2eGate.ts).
+ * Hermetic: the adapter inherits no host environment (`hermeticHome`), so its
+ * only credential is an obviously fake key. A stand-in forward proxy terminates
+ * TLS for OpenRouter and Pi's catalog host under a certificate only the child
+ * trusts, the way an egress proxy does, and refuses any other destination.
+ * Skipped unless RUN_PI_E2E=true (see e2eGate.ts).
  */
 
+import { execFileSync } from 'node:child_process'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import type { IncomingHttpHeaders, Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { TLSSocket } from 'node:tls'
 
 import * as acp from '@agentclientprotocol/sdk'
 import type { SessionConfigOption } from '@agentclientprotocol/sdk'
@@ -24,19 +26,23 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import {
   CATALOG_REFRESH_STARTUP_DELAY_MS,
   CONFIG_ID_MODEL,
-  ENV_ORIGIN_OVERRIDES,
   ENV_PI_AGENT_DIR,
   MODEL_VALUE_SEPARATOR,
 } from '../../constants.js'
 import { describeE2E, E2E_SETUP_TIMEOUT_MS } from './e2eGate.js'
 import type { SpawnedAgent } from './spawnedAgentFixture.js'
-import { createSpawnedAgent } from './spawnedAgentFixture.js'
+import { createSpawnedAgent, REQUEST_PROXY_ENV } from './spawnedAgentFixture.js'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const PROVIDER = 'openrouter'
 const PROVIDER_HOST = 'openrouter.ai'
 const CATALOG_HOST = 'pi.dev'
+const STAND_IN_HOSTS: readonly string[] = [PROVIDER_HOST, CATALOG_HOST]
+const STAND_IN_KEY_FILE = 'stand-in.key'
+const STAND_IN_CERTIFICATE_FILE = 'stand-in.crt'
+const CONNECT_ACCEPTED = 'HTTP/1.1 200 Connection Established\r\n\r\n'
+const CONNECT_REFUSED = 'HTTP/1.1 403 Forbidden\r\n\r\n'
 const PROVIDER_KEY_ENV = 'OPENROUTER_API_KEY'
 /** A provider on Pi's plain pi.dev catalog, whose refresh honors the freshness window. */
 const CATALOG_PROVIDER = 'deepseek'
@@ -72,9 +78,15 @@ interface ReceivedRequest {
 }
 
 interface Listener {
-  readonly origin: string
+  readonly proxyUrl: string
   readonly received: readonly ReceivedRequest[]
   close(): Promise<void>
+}
+
+interface StandInCertificate {
+  readonly path: string
+  readonly key: string
+  readonly cert: string
 }
 
 interface StoredModel {
@@ -82,7 +94,37 @@ interface StoredModel {
   readonly type?: string
 }
 
-async function startListener(): Promise<Listener> {
+/** A throwaway self-signed certificate naming the stand-in hosts. */
+function createStandInCertificate(dir: string): StandInCertificate {
+  const keyPath = join(dir, STAND_IN_KEY_FILE)
+  const path = join(dir, STAND_IN_CERTIFICATE_FILE)
+  execFileSync(
+    'openssl',
+    [
+      'req',
+      '-x509',
+      '-newkey',
+      'ec',
+      '-pkeyopt',
+      'ec_paramgen_curve:prime256v1',
+      '-nodes',
+      '-days',
+      '1',
+      '-subj',
+      `/CN=${PROVIDER_HOST}`,
+      '-addext',
+      `subjectAltName=${STAND_IN_HOSTS.map((host) => `DNS:${host}`).join(',')}`,
+      '-keyout',
+      keyPath,
+      '-out',
+      path,
+    ],
+    { stdio: 'ignore' },
+  )
+  return { path, key: readFileSync(keyPath, 'utf8'), cert: readFileSync(path, 'utf8') }
+}
+
+async function startListener(certificate: StandInCertificate): Promise<Listener> {
   const received: ReceivedRequest[] = []
   const server: Server = createServer((request, response) => {
     const pathname = new URL(request.url ?? '/', LISTENER_URL_BASE).pathname
@@ -96,12 +138,20 @@ async function startListener(): Promise<Listener> {
     response.writeHead(pathname.startsWith(CATALOG_PATH_PREFIX) ? NO_CATALOG_STATUS : UNEXPECTED_STATUS)
     response.end()
   })
+  server.on('connect', (request, socket) => {
+    if (!STAND_IN_HOSTS.includes(new URL(`https://${request.url ?? ''}`).hostname)) {
+      socket.end(CONNECT_REFUSED)
+      return
+    }
+    socket.write(CONNECT_ACCEPTED)
+    server.emit('connection', new TLSSocket(socket, { isServer: true, key: certificate.key, cert: certificate.cert }))
+  })
   await new Promise<void>((resolveListen) => {
     server.listen(0, LOOPBACK_HOST, resolveListen)
   })
   const { port } = server.address() as AddressInfo
   return {
-    origin: `${LISTENER_URL_BASE}:${port}`,
+    proxyUrl: `${LISTENER_URL_BASE}:${port}`,
     received,
     close: () =>
       new Promise<void>((resolveClose, rejectClose) => {
@@ -156,8 +206,10 @@ describeE2E('pi catalog refresh', () => {
   let agentDir: string | null = null
 
   beforeEach(async () => {
-    listener = await startListener()
     agentDir = mkdtempSync(join(tmpdir(), AGENT_DIR_PREFIX))
+    const certificate = createStandInCertificate(agentDir)
+    listener = await startListener(certificate)
+    const { proxyUrl } = listener
     agent = await createSpawnedAgent({
       // The scratch agent dir doubles as the home, so no credential file under the real home is read.
       hermeticHome: agentDir,
@@ -165,7 +217,8 @@ describeE2E('pi catalog refresh', () => {
         [ENV_PI_AGENT_DIR]: agentDir,
         [PROVIDER_KEY_ENV]: FAKE_KEY,
         [CATALOG_PROVIDER_KEY_ENV]: FAKE_KEY,
-        [ENV_ORIGIN_OVERRIDES]: `${PROVIDER_HOST}=${listener.origin},${CATALOG_HOST}=${listener.origin}`,
+        ...Object.fromEntries(REQUEST_PROXY_ENV.map((name) => [name, proxyUrl])),
+        NODE_EXTRA_CA_CERTS: certificate.path,
       },
     })
   }, E2E_SETUP_TIMEOUT_MS)
@@ -207,14 +260,13 @@ describeE2E('pi catalog refresh', () => {
   )
 
   it(
-    "sends a session's own startup read of the key's models to the override origin",
+    "sends a session's own startup read of the key's models through the proxy",
     async () => {
       if (agent === null || listener === null) throw new Error('e2e: the adapter never booted')
       const serving = listener
 
       await agent.agent.request(acp.methods.agent.session.new, { cwd: agent.workspace, mcpServers: [] })
 
-      // Only this read is asserted: Pi's catalog fetch can start before `session_start` wraps the dispatcher.
       const reads = await vi.waitFor(
         () => {
           const found = userModelReads(serving)

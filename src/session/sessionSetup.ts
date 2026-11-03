@@ -33,16 +33,10 @@ import { stripBom } from './sessionDirectory.js'
 
 export const defaultCreatePiClient: CreatePiClient = (options) => new PiRpcClient(options)
 
-/** The `-e` args every Pi the adapter starts loads: the gate, then the origin
- * overrides when configured. The user's own extensions load alongside them (no
- * --no-extensions). */
-export function piExtensionArgs(paths: {
-  readonly gateExtensionPath?: string | undefined
-  readonly originOverridesExtensionPath?: string | undefined
-}): string[] {
-  const args = paths.gateExtensionPath !== undefined ? ['-e', paths.gateExtensionPath] : []
-  if (paths.originOverridesExtensionPath !== undefined) args.push('-e', paths.originOverridesExtensionPath)
-  return args
+/** The `-e` args every Pi the adapter starts loads: the gate. The user's own
+ * extensions load alongside it (no --no-extensions). */
+export function piExtensionArgs(paths: { readonly gateExtensionPath?: string | undefined }): string[] {
+  return paths.gateExtensionPath !== undefined ? ['-e', paths.gateExtensionPath] : []
 }
 
 export interface SessionSetupDeps {
@@ -54,9 +48,6 @@ export interface SessionSetupDeps {
   /** Absolute path to the materialized permission gate, loaded with `-e`. Absent
    * in tests (the fake client ignores args), so no temp file is written. */
   readonly gateExtensionPath?: string | undefined
-  /** Absolute path to the materialized origin overrides extension, loaded with
-   * `-e` by every session; absent when no override is configured. */
-  readonly originOverridesExtensionPath?: string | undefined
   /** Absolute path to the materialized MCP extension, loaded with a second `-e`
    * only by a session whose request carries servers. */
   readonly mcpExtensionPath: string

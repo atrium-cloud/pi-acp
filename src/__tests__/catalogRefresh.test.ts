@@ -26,7 +26,6 @@ const FAKE_PI = fileURLToPath(new URL('./fixtures/fake-pi.mjs', import.meta.url)
 const MISSING_PI = '/pi-acp-test/missing/pi'
 const RPC_MODE_ARGS = ['--mode', 'rpc']
 const GATE_PATH = '/pi-acp-test/extensions/permission-gate.mjs'
-const OVERRIDES_PATH = '/pi-acp-test/extensions/origin-overrides.mjs'
 const REFRESH_PATH = '/pi-acp-test/extensions/catalog-refresh.mjs'
 const MCP_PATH = '/pi-acp-test/extensions/mcp.mjs'
 const SESSION_ROOT = '/pi-acp-test/sessions'
@@ -72,7 +71,6 @@ function startServer(createPiClient: CreatePiClient): PiAcpServer {
     rpcTimeoutMs: RPC_TIMEOUT_MS,
     sessionDirs: { mode: 'perCwd', root: SESSION_ROOT },
     gateExtensionPath: GATE_PATH,
-    originOverridesExtensionPath: OVERRIDES_PATH,
     mcpExtensionPath: MCP_PATH,
     hiddenCommands: new Set(),
     logStartupTiming: false,
@@ -123,7 +121,7 @@ describe('the catalog refresher schedule', () => {
     expect(fake.spawns).toEqual([
       {
         cwd: process.cwd(),
-        args: ['--no-session', '--offline', '--no-mcp', '-e', GATE_PATH, '-e', OVERRIDES_PATH, '-e', REFRESH_PATH],
+        args: ['--no-session', '--offline', '--no-mcp', '-e', GATE_PATH, '-e', REFRESH_PATH],
         env: undefined,
       },
     ])

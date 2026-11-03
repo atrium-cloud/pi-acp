@@ -70,11 +70,11 @@ const HERMETIC_ENV_PREFIXES: readonly string[] = ['PI_ACP_', 'PI_CODING_AGENT_']
 
 /** All a `hermeticHome` child keeps from the host: what finds `node` and the temp dir. */
 const HERMETIC_KEPT_ENV: readonly string[] = ['PATH', 'TMPDIR']
-/** A proxy on a closed loopback port, so a request the origin overrides do not
- * send to a local listener fails without leaving the host. undici reads the
- * lowercase names first. */
+/** A proxy on a closed loopback port, so a request fails without leaving the
+ * host unless a case routes it to its own proxy. undici reads the lowercase
+ * names first. */
 const UNROUTED_REQUEST_PROXY = 'http://127.0.0.1:9'
-const UNROUTED_REQUEST_PROXY_ENV: readonly string[] = ['http_proxy', 'https_proxy', 'HTTP_PROXY', 'HTTPS_PROXY']
+export const REQUEST_PROXY_ENV: readonly string[] = ['http_proxy', 'https_proxy', 'HTTP_PROXY', 'HTTPS_PROXY']
 const LOCAL_HOSTS = '127.0.0.1,localhost'
 const LOCAL_HOSTS_ENV: readonly string[] = ['no_proxy', 'NO_PROXY']
 
@@ -187,7 +187,7 @@ function baseEnv(hermeticHome: string | undefined): NodeJS.ProcessEnv {
         }),
       ),
       HOME: hermeticHome,
-      ...Object.fromEntries(UNROUTED_REQUEST_PROXY_ENV.map((name) => [name, UNROUTED_REQUEST_PROXY])),
+      ...Object.fromEntries(REQUEST_PROXY_ENV.map((name) => [name, UNROUTED_REQUEST_PROXY])),
       ...Object.fromEntries(LOCAL_HOSTS_ENV.map((name) => [name, LOCAL_HOSTS])),
     }
   }
