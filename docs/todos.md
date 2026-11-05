@@ -49,7 +49,7 @@
     - Appends do not interleave mid-record; the file stays well-formed.
     - Each process keeps its own in-memory leaf, so the second writer's entries become a sibling branch off the entry that was last when it opened.
     - The pi-acp side never sees the other branch; a fresh open follows the last-written leaf and `session/load` replays only that branch.
-    - Pi 1.3.0 still appends without a lock (`SessionManager._persist`).
+    - Pi 1.5.0 still appends without a lock (`SessionManager._persist`).
     - Reuse of a live id inside one adapter prevents the adapter from doing this to itself, and a wake waits for the idle stop before relaunching; Pi's own tools on the same file are on their own.
 
 ## Exit criteria
@@ -159,7 +159,7 @@ Pi upstream ships an ACP agent on current schemas with session resume, thought-l
         - Extension source is embedded in the bundle (never naming the dev-only Pi package) and materialized to a temp file at startup so the single-file release bundle works.
         - The subprocess is spawned without `--no-extensions` so the user's own extensions keep loading alongside the gate.
     - The sentinel prefix is a trust boundary, not a security boundary: any extension in the same Pi process can emit one, but the worst case is a spurious prompt for an already-announced id.
-    - Verified live against Pi 1.3.0 (2026-10-19) by the e2e tier: allow once, allow always and reject for a built-in tool, allow once for an MCP tool.
+    - Verified live against Pi 1.5.0 (2026-11-06) by the e2e tier: allow once, allow always and reject for a built-in tool, allow once for an MCP tool.
 - [x] No session modes
     - Pi has no native permission policy to map onto.
     - `modes` is omitted from `session/new`; `session/set_mode` is not handled.
@@ -356,5 +356,10 @@ Pi upstream ships an ACP agent on current schemas with session resume, thought-l
         - `rpc-types.d.ts`, `json-event.d.ts`, the extension types and `docs/rpc.md` are unchanged.
         - OpenCode Zen and Go move to `https://opencode.ai/inference` paths on the same host.
         - A resumed session restores the active tools its transcript records.
+    - 1.3.0 → 1.5.0 on 2026-11-06, all three green on a clean checkout (typecheck, 519 unit, 31/31 live on Node 26.13.0) with no adapter change.
+        - `rpc-types.d.ts`, `json-event.d.ts`, `rpc-mode.js` and the RPC docs are unchanged.
+        - The extension types only gain members: keybinding hints and the `custom()` `blocked` option.
+        - Tool arguments validate through `@earendil-works/pi-schema`, which coerces MCP tool arguments and rewords the failures the model sees.
+        - MCP OAuth defaults to `clientRegistration: auto`.
     - docs/refs.md carries the range.
 - [x] docs/caveats.md holds the gaps that stay open by design (MCP startup status, Pi's own `mcp.json` servers, MCP OAuth, the MCP server environment, unforwarded extension notifications, advertised built-in commands, project trust, session-replacing commands, nested tool calls, warm spare sessions starting early, idle sessions stopping their subprocess), each with the reason.

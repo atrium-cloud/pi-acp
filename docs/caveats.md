@@ -1,6 +1,6 @@
 # Caveats
 
-Known gaps that are not on the roadmap, each with the reason it stays open. Verified against Pi 1.2.0 and ACP SDK 1.5.1 on 2026-10-15.
+Known gaps that are not on the roadmap, each with the reason it stays open. Verified against Pi 1.5.0 and ACP SDK 1.5.1 on 2026-11-06.
 
 ## MCP startup status
 
@@ -40,7 +40,7 @@ A tool that calls other tools through Pi's `ctx.executeTool` (the `codemode` too
 
 ## Warm spare sessions start early
 
-With `PI_ACP_WARM_SPARE_MAX_AGE_MS` set, a `session/new` that matches the spare's cwd and MCP servers gets a Pi subprocess started up to that long before. Until it is taken or reaches that age, the spare is one more Pi subprocess (about 120 MB resident) with its MCP servers connected. Its session header timestamp is the spare's start, and Pi's settings, `AGENTS.md`, skills and prompt templates are as Pi read them then; only the models and thinking levels are re-read at the take. There is one spare, refilled after a prompt with that session's cwd and MCP servers, so a host that alternates between cwds mostly misses it. A spare that is never taken leaves no session file, since Pi writes the file on the first prompt.
+With `PI_ACP_WARM_SPARE_MAX_AGE_MS` set, a `session/new` that matches the spare's cwd and MCP servers gets a Pi subprocess started up to that long before. Until it is taken or reaches that age, the spare is one more Pi subprocess (about 130 MB resident) with its MCP servers connected. Its session header timestamp is the spare's start, and Pi's settings, `AGENTS.md`, skills and prompt templates are as Pi read them then; only the models and thinking levels are re-read at the take. There is one spare, refilled after a prompt with that session's cwd and MCP servers, so a host that alternates between cwds mostly misses it. A spare that is never taken leaves no session file, since Pi writes the file on the first prompt.
 
 
 ## Idle sessions stop their Pi subprocess
