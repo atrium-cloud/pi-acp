@@ -280,6 +280,70 @@ describe('establishSession', () => {
     })
   })
 
+  it('advertises nothing while a model switch moves the level, and answers with the new model and level', async () => {
+    const fake = makeFakePiClient({ ...makeSpec(), setModelLevel: 'high' })
+    const established = await establishSession({ cwd: ABS_CWD, mcpServers: [] }, makeDeps(fake))
+    const notify = vi.mocked(stubNotifier.notify)
+    notify.mockClear()
+
+    const options = await established.connection.applyConfigOption(CONFIG_ID_MODEL, 'deepseek/deepseek-v4-flash-0731')
+
+    expect(notify).not.toHaveBeenCalledWith(acp.methods.client.session.update, {
+      sessionId: 'sess-1',
+      update: expect.objectContaining({ sessionUpdate: 'config_option_update' }),
+    })
+    expect(options).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: CONFIG_ID_MODEL, currentValue: 'deepseek/deepseek-v4-flash-0731' }),
+        expect.objectContaining({ id: CONFIG_ID_THOUGHT_LEVEL, currentValue: 'high' }),
+      ]),
+    )
+  })
+
+  it('holds a level change made during a model switch until the switch lands, so the switch stays unannounced', async () => {
+    const fake = makeFakePiClient({ ...makeSpec(), setModelLevel: 'high' })
+    const established = await establishSession({ cwd: ABS_CWD, mcpServers: [] }, makeDeps(fake))
+    const notify = vi.mocked(stubNotifier.notify)
+    notify.mockClear()
+    const callsBefore = fake.calls.length
+
+    const [, options] = await Promise.all([
+      established.connection.applyConfigOption(CONFIG_ID_MODEL, 'deepseek/deepseek-v4-flash-0731'),
+      established.connection.applyConfigOption(CONFIG_ID_THOUGHT_LEVEL, 'low'),
+    ])
+
+    expect(fake.calls.slice(callsBefore).map((call) => call['type'])).toEqual([
+      'set_model',
+      'get_available_thinking_levels',
+      'get_state',
+      'set_thinking_level',
+      'get_state',
+    ])
+    expect(notify).not.toHaveBeenCalledWith(acp.methods.client.session.update, {
+      sessionId: 'sess-1',
+      update: expect.objectContaining({ sessionUpdate: 'config_option_update' }),
+    })
+    expect(options).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: CONFIG_ID_MODEL, currentValue: 'deepseek/deepseek-v4-flash-0731' }),
+        expect.objectContaining({ id: CONFIG_ID_THOUGHT_LEVEL, currentValue: 'low' }),
+      ]),
+    )
+  })
+
+  it('still runs a config change queued behind one that fails', async () => {
+    const fake = makeFakePiClient(makeSpec())
+    const established = await establishSession({ cwd: ABS_CWD, mcpServers: [] }, makeDeps(fake))
+
+    const refused = established.connection.applyConfigOption(CONFIG_ID_MODEL, 'no-such-model')
+    const queued = established.connection.applyConfigOption(CONFIG_ID_THOUGHT_LEVEL, 'high')
+
+    await expect(refused).rejects.toThrow('no model matches "no-such-model"')
+    await expect(queued).resolves.toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: CONFIG_ID_THOUGHT_LEVEL, currentValue: 'high' })]),
+    )
+  })
+
   it('ignores entry_appended and a turn-scoped event with no active turn', async () => {
     const fake = makeFakePiClient(makeSpec())
     const established = await establishSession({ cwd: ABS_CWD, mcpServers: [] }, makeDeps(fake))

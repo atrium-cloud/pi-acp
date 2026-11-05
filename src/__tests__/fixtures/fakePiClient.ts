@@ -104,6 +104,9 @@ export interface FakePiSpec {
   /** Emits events synchronously while the `prompt` request is in flight (before
    * the ack resolves), to exercise subscribe-before-send ordering. */
   onPrompt?: (emit: (event: JsonAgentSessionEvent) => void) => void
+  /** The level a `set_model` moves the session to, which the fake stores and then
+   * announces before it answers, the way Pi applies the new model's level. */
+  setModelLevel?: string
   /** Reports the id in the header of the file a spawn opens with `--session`, the
    * way Pi adopts the id of the session it opened. Off by default, so a spawn
    * keeps reporting `state.sessionId` and an id mismatch stays exercisable. */
@@ -202,6 +205,10 @@ export function makeFakePiClient(spec: FakePiSpec): FakePiClient {
       case 'set_model': {
         const model = spec.models.find((m) => m.provider === command['provider'] && m.id === command['modelId'])
         state = { ...state, model: model ?? state.model }
+        if (spec.setModelLevel !== undefined) {
+          state = { ...state, thinkingLevel: spec.setModelLevel }
+          emit({ type: 'thinking_level_changed', level: spec.setModelLevel } as never)
+        }
         return { type: 'response', command: 'set_model', success: true, data: model }
       }
       case 'set_thinking_level':

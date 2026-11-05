@@ -127,9 +127,12 @@ export class SessionConnection {
   private commands: readonly AvailableCommand[] = []
   /** Pi's name for the session, kept so a wake can give it back to a Pi that lost it. */
   private sessionName: string | undefined
-  /** A `set_*` may apply before its follow-up re-read lands; when that read
-   * fails the cache no longer reflects Pi, so the next change re-reads first. */
-  private configStale = false
+  /** Which `set_*` may have applied before its follow-up re-read landed; when that
+   * read fails the cache no longer reflects Pi, so the next change re-reads first. */
+  private configStale: 'model' | 'level' | null = null
+  /** The last config change asked for. Each runs after it, since a change's stale
+   * mark, cached lists and re-read belong to it alone. */
+  private lastConfigChange: Promise<unknown> = Promise.resolve()
   private activeTurn: TurnEventSink | null = null
   /** Tool names the client allowed always. */
   private readonly grantedTools = new Set<string>()
@@ -178,7 +181,7 @@ export class SessionConnection {
     this.piClient = launched.piClient
     this.sessionId = state.sessionId
     this.config = this.buildConfig(state, launched.models, launched.levels)
-    this.configStale = false
+    this.configStale = null
     this.commands = launched.commands
     this.sessionName = state.sessionName
     this.needsTitle = isUnnamed(state.sessionName)
@@ -245,7 +248,13 @@ export class SessionConnection {
   }
 
   async applyConfigOption(configId: string, value: string): Promise<SessionConfigOption[]> {
-    return await this.whileBusy(() => this.applyConfigOptionAwake(configId, value))
+    return await this.whileBusy(async () => {
+      const apply = () => this.applyConfigOptionAwake(configId, value)
+      // A failed change is its own caller's to report, and the next still runs.
+      const change = this.lastConfigChange.then(apply, apply)
+      this.lastConfigChange = change
+      return await change
+    })
   }
 
   private async applyConfigOptionAwake(configId: string, value: string): Promise<SessionConfigOption[]> {
@@ -258,7 +267,7 @@ export class SessionConnection {
       if (selection === undefined) throw invalidParams(`no model matches "${value}"`)
       // The set may apply even if the re-read fails, so the cache is marked
       // stale until the rebuild confirms the new current values.
-      this.configStale = true
+      this.configStale = 'model'
       await client.request({ type: 'set_model', provider: selection.provider, modelId: selection.modelId })
       // Levels are per-model, so both are re-read after a model switch.
       const [levels, state] = await Promise.all([
@@ -266,18 +275,18 @@ export class SessionConnection {
         client.request({ type: 'get_state' }),
       ])
       this.config = this.buildConfig(state.data, config.models, levels.data.levels)
-      this.configStale = false
+      this.configStale = null
       return this.config.options
     }
 
     if (configId === CONFIG_ID_THOUGHT_LEVEL) {
       const level = config.levels.find((candidate) => candidate === value)
       if (level === undefined) throw invalidParams(`no thinking level matches "${value}"`)
-      this.configStale = true
+      this.configStale = 'level'
       await client.request({ type: 'set_thinking_level', level })
       const state = await client.request({ type: 'get_state' })
       this.config = this.buildConfig(state.data, config.models, config.levels)
-      this.configStale = false
+      this.configStale = null
       return this.config.options
     }
 
@@ -306,7 +315,7 @@ export class SessionConnection {
       name: model.name,
     }))
     this.config = this.buildConfig(state.data, modelChoices, levels.data.levels)
-    this.configStale = false
+    this.configStale = null
   }
 
   routeEvent(event: JsonAgentSessionEvent): void {
@@ -366,11 +375,13 @@ export class SessionConnection {
   }
 
   /** Rebuilds the option set with the new level (no round-trip; the current model
-   * is cached) and pushes the full set. A client-initiated set already returned
-   * the same set, so the client tolerates this idempotent echo. */
+   * is cached) and pushes the full set. A client-initiated level set already
+   * returned the same set, so the client tolerates this idempotent echo. A model
+   * switch that moves the level goes unannounced: the cached model is the outgoing
+   * one until the switch's re-read, whose answer carries the fresh set. */
   private handleThinkingLevelChanged(event: Extract<JsonAgentSessionEvent, { type: 'thinking_level_changed' }>): void {
     const config = this.config
-    if (config === null) return
+    if (config === null || this.configStale === 'model') return
     const options = buildConfigOptions({
       models: config.models,
       currentModel: config.currentModel,

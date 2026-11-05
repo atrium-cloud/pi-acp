@@ -170,9 +170,9 @@ Pi upstream ships an ACP agent on current schemas with session resume, thought-l
     - Both are re-read after a model switch because the level set is per model; the full set is returned in `SetSessionConfigOptionResponse`.
     - `initialize` is static; options are built per session at `session/new` from `get_state`.
     - Pi persists both as `thinking_level_change` and `model_change` session entries, so a resumed session reports the level and model it last ran with.
-    - A client-initiated set returns the full set, and Pi's `thinking_level_changed` event, when the set changes the level, pushes a `config_option_update` (the Session-level wire events entry) before the response.
-        - A `thought_level` set: the push carries the same set the response returns.
-        - A `model` set: Pi applies the new model's level inside `set_model`, so the push carries the old model and level list; the response that follows carries the new ones.
+    - A client-initiated set returns the full set. Sets on one session run one at a time, in the order they arrive.
+        - A `thought_level` set: Pi's `thinking_level_changed` event pushes a `config_option_update` (the Session-level wire events entry) before the response, carrying the same set the response returns.
+        - A `model` set: Pi applies the new model's level inside `set_model`, and that event pushes nothing, since the cached model is still the outgoing one. The response carries the new model and level list.
 - [x] Slash commands
     - `get_commands` snapshot sent as `available_commands_update`; invoked as `/name args` prompt text.
     - Command metadata comes from `sourceInfo` (`{ path, source, scope, origin }`).
