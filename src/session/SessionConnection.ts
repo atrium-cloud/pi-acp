@@ -41,7 +41,7 @@ import type {
   SessionStats,
 } from '../pi/types.js'
 import { asMessage } from '../server/errors.js'
-import { buildConfigOptions, type ModelChoice, resolveModelSelection } from '../turn/configOptions.js'
+import { buildConfigOptions, type ModelChoice, resolveModelSelection, toModelChoices } from '../turn/configOptions.js'
 import { configOptionUpdate, sessionInfoUpdate, toolKind, toolTitle, turnUsage, usageUpdate } from '../turn/mappers.js'
 import type { FlattenedPrompt } from '../turn/promptContent.js'
 import { type AnnouncedToolCall, type TurnEventSink, TurnHandler } from '../turn/TurnHandler.js'
@@ -118,6 +118,7 @@ const CANCELLED_OUTCOME: PromptOutcome = { stopReason: 'cancelled', usage: undef
 export class SessionConnection {
   private readonly notifier: AgentContext
   private readonly clientSupportsNotices: boolean
+  private readonly hiddenProviders: ReadonlySet<string> | undefined
   private readonly relaunch: Relaunch
   readonly cwd: string
   private piClient: PiClientLike | null = null
@@ -169,10 +170,17 @@ export class SessionConnection {
   private announced = false
   private pendingNotices: SessionUpdate[] = []
 
-  constructor(init: { notifier: AgentContext; cwd: string; clientSupportsNotices: boolean; relaunch: Relaunch }) {
+  constructor(init: {
+    notifier: AgentContext
+    cwd: string
+    clientSupportsNotices: boolean
+    hiddenProviders: ReadonlySet<string> | undefined
+    relaunch: Relaunch
+  }) {
     this.notifier = init.notifier
     this.cwd = init.cwd
     this.clientSupportsNotices = init.clientSupportsNotices
+    this.hiddenProviders = init.hiddenProviders
     this.relaunch = init.relaunch
   }
 
@@ -309,11 +317,7 @@ export class SessionConnection {
       client.request({ type: 'get_available_thinking_levels' }),
       client.request({ type: 'get_state' }),
     ])
-    const modelChoices: ModelChoice[] = models.data.models.map((model) => ({
-      provider: model.provider,
-      id: model.id,
-      name: model.name,
-    }))
+    const modelChoices = toModelChoices(models.data.models, this.hiddenProviders)
     this.config = this.buildConfig(state.data, modelChoices, levels.data.levels)
     this.configStale = null
   }

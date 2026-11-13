@@ -165,7 +165,8 @@ Pi upstream ships an ACP agent on current schemas with session resume, thought-l
     - `modes` is omitted from `session/new`; `session/set_mode` is not handled.
     - The client's own auto-approval is the only policy layer.
 - [x] Config options (`src/turn/configOptions.ts`)
-    - `model`: category `model`, options from `get_available_models` grouped by provider, applied with `set_model`. A value is the bare model id, or `provider/id` when another provider offers the same id.
+    - `model`: category `model`, options from `get_available_models` grouped by provider, applied with `set_model`. A value is always `provider/id`.
+    - `PI_ACP_HIDE_PROVIDERS`, a comma-separated list of Pi provider ids, leaves those providers' models out of the option, and a value naming one is refused. A current model on a hidden provider is still reported as the current value while at least one model is listed.
     - `thought_level`: category `thought_level`, values from `get_available_thinking_levels`, applied with `set_thinking_level`.
     - Both are re-read after a model switch because the level set is per model; the full set is returned in `SetSessionConfigOptionResponse`.
     - `initialize` is static; options are built per session at `session/new` from `get_state`.

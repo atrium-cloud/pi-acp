@@ -89,6 +89,8 @@ export interface PiAcpServerOptions {
   readonly mcpExtensionPath: string
   /** Command names left out of every session's advertised commands. */
   readonly hiddenCommands: ReadonlySet<string>
+  /** Provider ids whose models are left out of every session's model list; undefined hides none. */
+  readonly hiddenProviders?: ReadonlySet<string> | undefined
   readonly logStartupTiming: boolean
   /** Injectable for tests; defaults to spawning a real Pi RPC subprocess. */
   readonly createPiClient?: CreatePiClient | undefined
@@ -466,6 +468,7 @@ export class PiAcpServer {
       gateExtensionPath: this.options.gateExtensionPath,
       mcpExtensionPath: this.options.mcpExtensionPath,
       hiddenCommands: this.options.hiddenCommands,
+      hiddenProviders: this.options.hiddenProviders,
       logStartupTiming: this.options.logStartupTiming,
       createPiClient: this.options.createPiClient,
     }

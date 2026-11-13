@@ -188,14 +188,17 @@ function storedChatModelIds(agentDir: string): string[] {
     .sort()
 }
 
-/** The provider's model ids a session offers, with any disambiguating prefix dropped. */
+/** The provider's model ids a session offers, with the provider prefix dropped. */
 function offeredModelIds(configOptions: readonly SessionConfigOption[] | null | undefined): string[] {
   const select = configOptions?.find((option) => option.id === CONFIG_ID_MODEL)
   if (select?.type !== 'select') throw new Error('model config option missing from session response')
   const prefix = `${PROVIDER}${MODEL_VALUE_SEPARATOR}`
   return select.options
     .flatMap((entry) => ('options' in entry && entry.group === PROVIDER ? entry.options : []))
-    .map((option) => (option.value.startsWith(prefix) ? option.value.slice(prefix.length) : option.value))
+    .map((option) => {
+      if (!option.value.startsWith(prefix)) throw new Error(`model value "${option.value}" lacks the "${prefix}" prefix`)
+      return option.value.slice(prefix.length)
+    })
     .sort()
 }
 

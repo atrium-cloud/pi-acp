@@ -62,16 +62,17 @@ export const STDERR_TAIL_MAX_BYTES = 16_384
 // ── Session config options ────────────────────────────────────────────────────
 //
 // The `id` doubles as the ACP config category ("model", "thought_level"). A model
-// value is the bare model id, prefixed with `<provider>/` only when more than one
-// provider offers that id — Pi's own disambiguation rule. The id itself can
-// contain slashes, so a value is resolved back to a model by matching the whole
-// string, never by splitting it.
+// value is always `<provider>/<id>`, so it stays the same whichever providers are
+// listed. The id itself can contain slashes, so a value is resolved back to a
+// model by matching the whole string, never by splitting it.
 
 export const CONFIG_ID_MODEL = 'model'
 export const CONFIG_ID_THOUGHT_LEVEL = 'thought_level'
 export const CONFIG_NAME_MODEL = 'Model'
 export const CONFIG_NAME_THOUGHT_LEVEL = 'Thinking level'
 export const MODEL_VALUE_SEPARATOR = '/'
+// A comma-separated list of Pi provider ids whose models are left out of the model list.
+export const ENV_HIDE_PROVIDERS = 'PI_ACP_HIDE_PROVIDERS'
 
 // ── Prompt content ─────────────────────────────────────────────────────────────
 //
@@ -91,7 +92,6 @@ export const COMMAND_SOURCE_PROMPT = 'prompt'
 // Pi disables one built-in extension only through its settings file, never a CLI
 // flag, so this comma-separated list of command names drops the advertised commands instead.
 export const ENV_HIDE_COMMANDS = 'PI_ACP_HIDE_COMMANDS'
-export const HIDE_COMMANDS_SEPARATOR = ','
 
 // A prompt template's `argument-hint`, read by Pi's own frontmatter rule.
 export const FRONTMATTER_DELIMITER = '---'
@@ -360,6 +360,8 @@ export const JSONRPC_INTERNAL_ERROR = -32_603
 // Above this, Node's setTimeout overflows its 32-bit delay and fires after ~1ms,
 // turning a "very patient" timeout into "instant".
 const MAX_TIMER_MS = 2_147_483_647
+/** Separates the names in a hide list (`PI_ACP_HIDE_COMMANDS`, `PI_ACP_HIDE_PROVIDERS`). */
+export const HIDE_LIST_SEPARATOR = ','
 
 function readTimerMs(env: NodeJS.ProcessEnv, name: string): number | undefined {
   const raw = env[name]?.trim()
@@ -387,12 +389,20 @@ export function resolveStartupTiming(env: NodeJS.ProcessEnv): boolean {
   return env[ENV_PI_TIMING] === PI_TIMING_ON
 }
 
-export function resolveHiddenCommands(env: NodeJS.ProcessEnv): ReadonlySet<string> {
-  const raw = env[ENV_HIDE_COMMANDS] ?? ''
+function readHideList(env: NodeJS.ProcessEnv, name: string): ReadonlySet<string> {
+  const raw = env[name] ?? ''
   return new Set(
     raw
-      .split(HIDE_COMMANDS_SEPARATOR)
-      .map((name) => name.trim())
-      .filter((name) => name !== ''),
+      .split(HIDE_LIST_SEPARATOR)
+      .map((entry) => entry.trim())
+      .filter((entry) => entry !== ''),
   )
+}
+
+export function resolveHiddenCommands(env: NodeJS.ProcessEnv): ReadonlySet<string> {
+  return readHideList(env, ENV_HIDE_COMMANDS)
+}
+
+export function resolveHiddenProviders(env: NodeJS.ProcessEnv): ReadonlySet<string> {
+  return readHideList(env, ENV_HIDE_PROVIDERS)
 }

@@ -27,7 +27,7 @@ import type { PiLaunch } from '../pi/errors.js'
 import { PiRpcClient } from '../pi/PiRpcClient.js'
 import { parsePiStartupTimings, startupTimingLogLine } from '../pi/startupTimings.js'
 import { asMessage } from '../server/errors.js'
-import type { ModelChoice } from '../turn/configOptions.js'
+import { toModelChoices } from '../turn/configOptions.js'
 import { type CreatePiClient, type LaunchedPi, type RelaunchTarget, SessionConnection } from './SessionConnection.js'
 import { stripBom } from './sessionDirectory.js'
 
@@ -53,6 +53,8 @@ export interface SessionSetupDeps {
   readonly mcpExtensionPath: string
   /** Command names left out of the advertised commands. */
   readonly hiddenCommands: ReadonlySet<string>
+  /** Provider ids whose models are left out of the model list; undefined hides none. */
+  readonly hiddenProviders?: ReadonlySet<string> | undefined
   readonly logStartupTiming: boolean
   /** Injectable for tests; defaults to spawning a real Pi RPC subprocess. */
   readonly createPiClient?: CreatePiClient | undefined
@@ -102,6 +104,7 @@ export async function establishSession(
     notifier: deps.notifier,
     cwd: request.cwd,
     clientSupportsNotices: deps.clientSupportsNotices,
+    hiddenProviders: deps.hiddenProviders,
     relaunch: (target) => launchPi(connection, plan, target, 'wake'),
   })
   const target: LaunchTarget =
@@ -174,11 +177,7 @@ async function launchPi(
       piClient.request({ type: 'get_available_thinking_levels' }),
       piClient.request({ type: 'get_commands' }),
     ])
-    const modelChoices: ModelChoice[] = models.data.models.map((model) => ({
-      provider: model.provider,
-      id: model.id,
-      name: model.name,
-    }))
+    const modelChoices = toModelChoices(models.data.models, deps.hiddenProviders)
     const availableCommands = await mapCommands(commands.data.commands, deps.hiddenCommands)
     const metadataDoneAt = performance.now()
     // Pi prints its blocks before it answers get_state, but on stderr, a separate

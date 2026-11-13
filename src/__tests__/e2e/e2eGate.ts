@@ -15,7 +15,7 @@
 import type { SessionConfigOption } from '@agentclientprotocol/sdk'
 import { describe } from 'vitest'
 
-import { CONFIG_ID_MODEL } from '../../constants.js'
+import { CONFIG_ID_MODEL, MODEL_VALUE_SEPARATOR } from '../../constants.js'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -24,10 +24,8 @@ export const RUN_E2E_VALUE = 'true'
 const RUN_E2E_TRUTHY: readonly string[] = [RUN_E2E_VALUE, '1']
 
 /** The live model this tier pins (.rules), selected through the adapter's own
- * model config option rather than by writing Pi config behind its back. A model
- * value is the bare id unless another provider offers the same id, so the exact
- * string depends on the host's model list and must be read back from the
- * adapter's own option set. */
+ * model config option rather than by writing Pi config behind its back. The
+ * value is read back from the adapter's own option set, which proves Pi offers it. */
 export const E2E_PROVIDER_SLUG = 'openrouter'
 export const E2E_MODEL_ID = 'deepseek/deepseek-v4.1-flash'
 
@@ -37,8 +35,7 @@ export function pinnedModelValue(configOptions: readonly SessionConfigOption[] |
   return modelValue(configOptions, E2E_PROVIDER_SLUG, E2E_MODEL_ID)
 }
 
-/** Finds one provider's model in a returned config-option set: the bare id, or
- * the provider-prefixed form inside that provider's group when the id is shared. */
+/** Finds one provider's model in a returned config-option set, inside that provider's group. */
 export function modelValue(
   configOptions: readonly SessionConfigOption[] | null | undefined,
   provider: string,
@@ -47,11 +44,9 @@ export function modelValue(
   const select = configOptions?.find((option) => option.id === CONFIG_ID_MODEL)
   if (select?.type !== 'select') throw new Error('model config option missing from session response')
   for (const entry of select.options) {
-    // A bare id proves the provider only inside its own group: another provider
-    // offering the same id uniquely would carry the same bare value.
     if (!('options' in entry) || entry.group !== provider) continue
     for (const option of entry.options) {
-      if (option.value === modelId || option.value.endsWith(`/${modelId}`)) return option.value
+      if (option.value === `${provider}${MODEL_VALUE_SEPARATOR}${modelId}`) return option.value
     }
   }
   throw new Error(`model ${provider}/${modelId} not offered by the host's Pi`)

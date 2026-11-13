@@ -59,17 +59,17 @@ const EXPECTED_OPTIONS = [
     id: CONFIG_ID_MODEL,
     name: 'Model',
     category: CONFIG_ID_MODEL,
-    currentValue: 'claude-sonnet-5',
+    currentValue: 'anthropic/claude-sonnet-5',
     options: [
       {
         group: 'openrouter',
         name: 'openrouter',
-        options: [{ value: 'deepseek/deepseek-v4-flash-0731', name: 'DeepSeek V4 Flash' }],
+        options: [{ value: 'openrouter/deepseek/deepseek-v4-flash-0731', name: 'DeepSeek V4 Flash' }],
       },
       {
         group: 'anthropic',
         name: 'anthropic',
-        options: [{ value: 'claude-sonnet-5', name: 'Claude Sonnet 5' }],
+        options: [{ value: 'anthropic/claude-sonnet-5', name: 'Claude Sonnet 5' }],
       },
     ],
   },
@@ -179,6 +179,20 @@ describe('establishSession', () => {
     ])
   })
 
+  it('leaves a hidden provider out of the model option, also after a refresh, and refuses its values', async () => {
+    const fake = makeFakePiClient(makeSpec())
+    const established = await establishSession(
+      { cwd: ABS_CWD, mcpServers: [] },
+      { ...makeDeps(fake), hiddenProviders: new Set(['openrouter']) },
+    )
+    const anthropicOnly = { currentValue: 'anthropic/claude-sonnet-5', options: [{ group: 'anthropic' }] }
+    expect(established.configOptions[0]).toMatchObject(anthropicOnly)
+    expect((await established.connection.refreshConfig())[0]).toMatchObject(anthropicOnly)
+    await expect(
+      established.connection.applyConfigOption(CONFIG_ID_MODEL, 'openrouter/deepseek/deepseek-v4-flash-0731'),
+    ).rejects.toThrow('no model matches')
+  })
+
   it('rejects a relative cwd with invalid params', async () => {
     const fake = makeFakePiClient(makeSpec())
     await expect(establishSession({ cwd: 'relative/path', mcpServers: [] }, makeDeps(fake))).rejects.toMatchObject({
@@ -286,7 +300,7 @@ describe('establishSession', () => {
     const notify = vi.mocked(stubNotifier.notify)
     notify.mockClear()
 
-    const options = await established.connection.applyConfigOption(CONFIG_ID_MODEL, 'deepseek/deepseek-v4-flash-0731')
+    const options = await established.connection.applyConfigOption(CONFIG_ID_MODEL, 'openrouter/deepseek/deepseek-v4-flash-0731')
 
     expect(notify).not.toHaveBeenCalledWith(acp.methods.client.session.update, {
       sessionId: 'sess-1',
@@ -294,7 +308,7 @@ describe('establishSession', () => {
     })
     expect(options).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ id: CONFIG_ID_MODEL, currentValue: 'deepseek/deepseek-v4-flash-0731' }),
+        expect.objectContaining({ id: CONFIG_ID_MODEL, currentValue: 'openrouter/deepseek/deepseek-v4-flash-0731' }),
         expect.objectContaining({ id: CONFIG_ID_THOUGHT_LEVEL, currentValue: 'high' }),
       ]),
     )
@@ -308,7 +322,7 @@ describe('establishSession', () => {
     const callsBefore = fake.calls.length
 
     const [, options] = await Promise.all([
-      established.connection.applyConfigOption(CONFIG_ID_MODEL, 'deepseek/deepseek-v4-flash-0731'),
+      established.connection.applyConfigOption(CONFIG_ID_MODEL, 'openrouter/deepseek/deepseek-v4-flash-0731'),
       established.connection.applyConfigOption(CONFIG_ID_THOUGHT_LEVEL, 'low'),
     ])
 
@@ -325,7 +339,7 @@ describe('establishSession', () => {
     })
     expect(options).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ id: CONFIG_ID_MODEL, currentValue: 'deepseek/deepseek-v4-flash-0731' }),
+        expect.objectContaining({ id: CONFIG_ID_MODEL, currentValue: 'openrouter/deepseek/deepseek-v4-flash-0731' }),
         expect.objectContaining({ id: CONFIG_ID_THOUGHT_LEVEL, currentValue: 'low' }),
       ]),
     )

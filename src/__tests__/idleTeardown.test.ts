@@ -20,7 +20,7 @@ import { encodeSentinelTitle } from '../permissions/gate.js'
 import type { RpcExtensionUIRequest } from '../pi/types.js'
 import type { CreatePiClient, PiClientLike, SessionConnection } from '../session/SessionConnection.js'
 import { establishSession } from '../session/sessionSetup.js'
-import { buildConfigOptions } from '../turn/configOptions.js'
+import { buildConfigOptions, encodeModelValue } from '../turn/configOptions.js'
 import type { FlattenedPrompt } from '../turn/promptContent.js'
 import { type AcpTestFixture, createAcpTestFixture } from './acpTestFixture.js'
 import { type FakePiClient, type FakePiSpec, type FakeState, makeFakePiClient, UNREAD_SOURCE_INFO } from './fixtures/fakePiClient.js'
@@ -459,7 +459,7 @@ describe('restoring a woken session', () => {
   it('re-applies the model, then the level, then the name a Pi opened by id lost', async () => {
     const spawner = makeSpawner([{}, {}])
     const connection = await connect(spawner)
-    await connection.applyConfigOption(CONFIG_ID_MODEL, OPUS.id)
+    await connection.applyConfigOption(CONFIG_ID_MODEL, encodeModelValue(OPUS))
     await connection.applyConfigOption(CONFIG_ID_THOUGHT_LEVEL, SET_LEVEL)
     await prompt(connection, NAME_PROMPT)
     await idleOut()
@@ -502,7 +502,7 @@ describe('restoring a woken session', () => {
     const notifier = makeNotifier()
     const spawner = makeSpawner([{}, { spec: { failOn: 'set_model' } }])
     const connection = await connect(spawner, notifier)
-    await connection.applyConfigOption(CONFIG_ID_MODEL, OPUS.id)
+    await connection.applyConfigOption(CONFIG_ID_MODEL, encodeModelValue(OPUS))
     await idleOut()
     notifier.notify.mockClear()
 

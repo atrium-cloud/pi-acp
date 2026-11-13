@@ -1,11 +1,16 @@
 import { describe, expect, it } from 'vitest'
 
 import { CONFIG_ID_MODEL, CONFIG_ID_THOUGHT_LEVEL } from '../constants.js'
-import { buildConfigOptions, encodeModelValue, resolveModelSelection } from '../turn/configOptions.js'
+import { buildConfigOptions, encodeModelValue, resolveModelSelection, toModelChoices } from '../turn/configOptions.js'
 
 const MODELS = [
   { provider: 'openrouter', id: 'deepseek/deepseek-v4-flash-0731', name: 'DeepSeek V4 Flash' },
   { provider: 'anthropic', id: 'claude-sonnet-5', name: 'Claude Sonnet 5' },
+]
+const SHARED = [
+  { provider: 'opencode-go', id: 'glm-5.3', name: 'GLM 5.3' },
+  { provider: 'openrouter', id: 'glm-5.3', name: 'GLM 5.3' },
+  { provider: 'cerebras', id: 'gpt-oss-120b', name: 'GPT OSS 120B' },
 ]
 
 describe('buildConfigOptions', () => {
@@ -22,17 +27,17 @@ describe('buildConfigOptions', () => {
         id: CONFIG_ID_MODEL,
         name: 'Model',
         category: CONFIG_ID_MODEL,
-        currentValue: 'claude-sonnet-5',
+        currentValue: 'anthropic/claude-sonnet-5',
         options: [
           {
             group: 'openrouter',
             name: 'openrouter',
-            options: [{ value: 'deepseek/deepseek-v4-flash-0731', name: 'DeepSeek V4 Flash' }],
+            options: [{ value: 'openrouter/deepseek/deepseek-v4-flash-0731', name: 'DeepSeek V4 Flash' }],
           },
           {
             group: 'anthropic',
             name: 'anthropic',
-            options: [{ value: 'claude-sonnet-5', name: 'Claude Sonnet 5' }],
+            options: [{ value: 'anthropic/claude-sonnet-5', name: 'Claude Sonnet 5' }],
           },
         ],
       },
@@ -51,25 +56,34 @@ describe('buildConfigOptions', () => {
     ])
   })
 
-  it('prefixes the provider only when another provider offers the same id', () => {
-    const shared = [
-      { provider: 'opencode-go', id: 'glm-5.3', name: 'GLM 5.3' },
-      { provider: 'openrouter', id: 'glm-5.3', name: 'GLM 5.3' },
-      { provider: 'cerebras', id: 'gpt-oss-120b', name: 'GPT OSS 120B' },
-    ]
+  it('leaves hidden providers out of the list and refuses their values', () => {
+    const shared = toModelChoices(SHARED, new Set(['opencode-go']))
     const options = buildConfigOptions({
       models: shared,
+      currentModel: { provider: 'openrouter', id: 'glm-5.3' },
+      levels: [],
+      currentLevel: 'off',
+    })
+    expect(options[0]).toMatchObject({
+      currentValue: 'openrouter/glm-5.3',
+      options: [
+        { group: 'openrouter', options: [{ value: 'openrouter/glm-5.3' }] },
+        { group: 'cerebras', options: [{ value: 'cerebras/gpt-oss-120b' }] },
+      ],
+    })
+    expect(resolveModelSelection('opencode-go/glm-5.3', shared)).toBeUndefined()
+  })
+
+  it('reports a current model on a hidden provider as the current value, outside the options', () => {
+    const options = buildConfigOptions({
+      models: toModelChoices(SHARED, new Set(['opencode-go'])),
       currentModel: { provider: 'opencode-go', id: 'glm-5.3' },
       levels: [],
       currentLevel: 'off',
     })
     expect(options[0]).toMatchObject({
       currentValue: 'opencode-go/glm-5.3',
-      options: [
-        { group: 'opencode-go', options: [{ value: 'opencode-go/glm-5.3' }] },
-        { group: 'openrouter', options: [{ value: 'openrouter/glm-5.3' }] },
-        { group: 'cerebras', options: [{ value: 'gpt-oss-120b' }] },
-      ],
+      options: [{ group: 'openrouter' }, { group: 'cerebras' }],
     })
   })
 
@@ -90,24 +104,20 @@ describe('buildConfigOptions', () => {
 })
 
 describe('resolveModelSelection', () => {
-  it('round-trips a bare unique id back to provider + modelId, id slashes intact', () => {
-    const value = encodeModelValue(MODELS[0]!, MODELS)
-    expect(value).toBe('deepseek/deepseek-v4-flash-0731')
+  it('round-trips a provider-prefixed value back to provider + modelId, id slashes intact', () => {
+    const value = encodeModelValue(MODELS[0]!)
+    expect(value).toBe('openrouter/deepseek/deepseek-v4-flash-0731')
     expect(resolveModelSelection(value, MODELS)).toEqual({
       provider: 'openrouter',
       modelId: 'deepseek/deepseek-v4-flash-0731',
     })
   })
 
-  it('round-trips a provider-prefixed value for an id shared across providers', () => {
-    const shared = [
-      { provider: 'opencode-go', id: 'glm-5.3', name: 'GLM 5.3' },
-      { provider: 'openrouter', id: 'glm-5.3', name: 'GLM 5.3' },
-    ]
-    for (const model of shared) {
-      const value = encodeModelValue(model, shared)
-      expect(value).toBe(`${model.provider}/glm-5.3`)
-      expect(resolveModelSelection(value, shared)).toEqual({ provider: model.provider, modelId: 'glm-5.3' })
+  it('round-trips each provider of an id shared across providers', () => {
+    for (const model of SHARED) {
+      const value = encodeModelValue(model)
+      expect(value).toBe(`${model.provider}/${model.id}`)
+      expect(resolveModelSelection(value, SHARED)).toEqual({ provider: model.provider, modelId: model.id })
     }
   })
 

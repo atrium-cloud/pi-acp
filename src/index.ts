@@ -8,6 +8,7 @@ import {
   AGENT_NAME,
   AGENT_VERSION,
   resolveHiddenCommands,
+  resolveHiddenProviders,
   resolveIdleTimeoutMs,
   resolveRpcTimeoutMs,
   resolveStartupTiming,
@@ -56,6 +57,7 @@ async function main(): Promise<void> {
     // Loaded only by the catalog refresher's own Pi, never by a session.
     catalogRefreshExtensionPath: materializeCatalogRefreshExtension(),
     hiddenCommands: resolveHiddenCommands(process.env),
+    hiddenProviders: resolveHiddenProviders(process.env),
     logStartupTiming,
   })
 
