@@ -49,6 +49,7 @@ describe('initialize (over an ACP connection)', () => {
           close: {},
           delete: {},
         },
+        _meta: { acpStack: { launchEnv: {} } },
       },
     })
   })

@@ -14,7 +14,7 @@ The release is a single executable, `pi-acp`; put it on PATH or point your ACP c
 - `PI_ACP_PI_BIN`: the `pi` executable to launch; unset from a checkout.
 - `PI_ACP_RPC_TIMEOUT_MS`: bound on each Pi RPC round-trip; default 30000.
 - `PI_ACP_HIDE_COMMANDS`: comma-separated command names to leave out of the advertised slash commands, for example `llama`.
-- `PI_ACP_HIDE_PROVIDERS`: comma-separated Pi provider ids whose models are left out of the model option, for example `opencode`.
+- `PI_ACP_HIDE_PROVIDERS`: comma-separated Pi provider ids whose models are left out of the model option, for example `opencode`; a launch env request replaces the list.
 - `PI_ACP_WARM_SPARE_MAX_AGE_MS`: keeps one Pi subprocess started ahead for the next `session/new` with the same cwd and MCP servers, stopped at this age; off when unset.
 - `PI_ACP_IDLE_TIMEOUT_MS`: stops a session's Pi subprocess once the session has had no request in flight for this long, and relaunches it on the session's next prompt, config change or load; off when unset.
 - `PI_TIMING`: Pi's own startup profiling switch; with it set to `1`, pi-acp also logs the Pi launch and a startup timing line for each session start and each wake to stderr.
@@ -24,6 +24,8 @@ The release is a single executable, `pi-acp`; put it on PATH or point your ACP c
 The adapter supports rich prompts, streamed message and tool updates, permissions, model and thinking-level configuration, slash commands, MCP servers (stdio, streamable HTTP) through Pi's own MCP support, session list/resume/load/close/delete, and forks either from the last settled turn or from an earlier prompt the client names.
 
 The adapter refreshes Pi's model catalog in a Pi subprocess of its own, 60 s after it starts and hourly after that, so each session started afterward offers the models Pi saved from the latest refresh.
+
+A parent process can change provider credentials without restarting the adapter: the `_acpStack/launch_env` request, advertised as `agentCapabilities._meta.acpStack.launchEnv`, sets the env and hidden providers of every later Pi launch. Each session's Pi is stopped once no request is in flight, and the session's next prompt, config change or load relaunches it on the new env.
 
 Audio prompts, session modes, and Pi interactions that need its own terminal UI are not exposed. See [docs/caveats.md](docs/caveats.md) for the gaps that stay open by design and [docs/todos.md](docs/todos.md) for the roadmap.
 

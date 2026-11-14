@@ -185,6 +185,14 @@ describe('PiRpcClient startup', () => {
     expect(readMarker(sessionMarker)).toContain('stdin-end')
     expect(existsSync(launchMarker)).toBe(false)
   })
+
+  it('removes an inherited variable the per-session env leaves undefined', async () => {
+    const marker = markerPath()
+    const client = createClient({ launchEnv: { FAKE_PI_MARKER: marker }, env: { FAKE_PI_MARKER: undefined } })
+    await client.start()
+    await client.stop()
+    expect(existsSync(marker)).toBe(false)
+  })
 })
 
 describe('PiRpcClient correlation', () => {

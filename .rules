@@ -158,5 +158,5 @@ References:
     - Adapter tests default to the snapshot style: scripted gateway events in, recorded ACP transcript out, with no network and no real Pi instances.
     - Refrain from claiming an ACP feature is supported before it passes against a real client end-to-end.
 - Security
-    - Credentials never travel over ACP; the gateway child inherits them from the Pi environment.
+    - Provider environment values reach Pi and the gateway child only through the process environment. The stack that spawned the adapter may replace them for later launches with the `_acpStack/launch_env` request; its params are never logged, persisted or echoed in an error.
     - Do not log prompt text, file contents, or secret values by default.

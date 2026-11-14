@@ -66,6 +66,16 @@ export interface PiClientLike {
 
 export type CreatePiClient = (options: PiRpcClientOptions) => PiClientLike
 
+/** What every Pi launch takes beyond the adapter's own env: `unset` names are
+ * removed from the inherited env, then `env` is set over it. A parent process
+ * replaces the whole of it; until then it carries the start-time hide list. */
+export interface LaunchEnvironment {
+  readonly env: Readonly<Record<string, string>>
+  readonly unset: readonly string[]
+  /** Provider ids whose models are left out of the model list; undefined hides none. */
+  readonly hiddenProviders: ReadonlySet<string> | undefined
+}
+
 /** A started Pi subprocess and what a session is built from. */
 export interface LaunchedPi {
   readonly piClient: PiClientLike
@@ -73,6 +83,7 @@ export interface LaunchedPi {
   readonly models: readonly ModelChoice[]
   readonly levels: readonly ThinkingLevelValue[]
   readonly commands: readonly AvailableCommand[]
+  readonly environment: LaunchEnvironment
 }
 
 /** Where a wake points Pi: the session's file once Pi has written one, else its
@@ -118,10 +129,13 @@ const CANCELLED_OUTCOME: PromptOutcome = { stopReason: 'cancelled', usage: undef
 export class SessionConnection {
   private readonly notifier: AgentContext
   private readonly clientSupportsNotices: boolean
-  private readonly hiddenProviders: ReadonlySet<string> | undefined
+  /** Read at use, since a parent process can replace it while the session lives. */
+  private readonly launchEnvironment: () => LaunchEnvironment
   private readonly relaunch: Relaunch
   readonly cwd: string
   private piClient: PiClientLike | null = null
+  /** The launch env the attached subprocess was started with. */
+  private launchedOn: LaunchEnvironment | null = null
   private sessionId = ''
   private config: ConfigState | null = null
   /** The advertised commands as last read from Pi; resume and load re-announce them. */
@@ -174,19 +188,20 @@ export class SessionConnection {
     notifier: AgentContext
     cwd: string
     clientSupportsNotices: boolean
-    hiddenProviders: ReadonlySet<string> | undefined
+    launchEnvironment: () => LaunchEnvironment
     relaunch: Relaunch
   }) {
     this.notifier = init.notifier
     this.cwd = init.cwd
     this.clientSupportsNotices = init.clientSupportsNotices
-    this.hiddenProviders = init.hiddenProviders
+    this.launchEnvironment = init.launchEnvironment
     this.relaunch = init.relaunch
   }
 
   attach(launched: LaunchedPi): void {
     const { state } = launched
     this.piClient = launched.piClient
+    this.launchedOn = launched.environment
     this.sessionId = state.sessionId
     this.config = this.buildConfig(state, launched.models, launched.levels)
     this.configStale = null
@@ -317,7 +332,7 @@ export class SessionConnection {
       client.request({ type: 'get_available_thinking_levels' }),
       client.request({ type: 'get_state' }),
     ])
-    const modelChoices = toModelChoices(models.data.models, this.hiddenProviders)
+    const modelChoices = toModelChoices(models.data.models, this.launchEnvironment().hiddenProviders)
     this.config = this.buildConfig(state.data, modelChoices, levels.data.levels)
     this.configStale = null
   }
@@ -769,6 +784,13 @@ export class SessionConnection {
 
   // ── Idle teardown and wake ──────────────────────────────────────────────────
 
+  /** Stops a subprocess started on an earlier launch env, so the next request
+   * wakes the session on the current one. One in use is stopped once its last
+   * request ends, and a dormant one already wakes on the current env. */
+  relaunchIfStale(): void {
+    if (this.launchedOn !== this.launchEnvironment()) this.tearDownIfIdle()
+  }
+
   private async whileBusy<T>(work: () => Promise<T>): Promise<T> {
     this.clearIdleTimer()
     this.busy++
@@ -776,6 +798,7 @@ export class SessionConnection {
       return await work()
     } finally {
       this.busy--
+      this.relaunchIfStale()
       this.armIdleTimer()
     }
   }
@@ -802,6 +825,7 @@ export class SessionConnection {
   private tearDownIfIdle(): void {
     const client = this.piClient
     if (!this.isIdle || client === null) return
+    this.clearIdleTimer()
     this.dormant = true
     this.piClient = null
     this.teardown = client.stop().catch((error: unknown) => {
@@ -896,7 +920,9 @@ export class SessionConnection {
     if (!sameJson(this.commands, seen.commands)) {
       this.emit({ sessionUpdate: 'available_commands_update', availableCommands: [...this.commands] })
     }
-    // A prompt cancelled during the wake has already left, so nothing else re-arms it.
+    // A prompt cancelled during the wake has already left, so nothing else re-arms it
+    // or catches a launch env that arrived while this subprocess started.
+    this.relaunchIfStale()
     this.armIdleTimer()
     return launched.piClient
   }

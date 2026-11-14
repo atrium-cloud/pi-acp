@@ -37,7 +37,11 @@ import {
   CATALOG_REFRESH_STARTUP_DELAY_MS,
   JSONRPC_INTERNAL_ERROR,
   JSONRPC_INVALID_PARAMS,
+  LAUNCH_ENV_METHOD,
+  LAUNCH_ENV_NAME_PATTERN,
+  LAUNCH_ENV_VALUE_PATTERN,
   META_KEY_BREAKPOINT_NAMESPACE,
+  META_KEY_LAUNCH_ENV,
   META_KEY_MESSAGE_ID,
   PROTOCOL_VERSION,
   SESSION_LIST_CURSOR_PATTERN,
@@ -62,7 +66,7 @@ import {
   writeMessageMap,
 } from '../session/sessionDirectory.js'
 import { CatalogRefresher } from '../session/catalogRefresh.js'
-import type { CreatePiClient, SessionConnection } from '../session/SessionConnection.js'
+import type { CreatePiClient, LaunchEnvironment, SessionConnection } from '../session/SessionConnection.js'
 import {
   defaultCreatePiClient,
   type EstablishedSession,
@@ -71,6 +75,7 @@ import {
   type SessionSetupDeps,
   type SessionSetupRequest,
   validateSessionRequest,
+  withLaunchEnv,
 } from '../session/sessionSetup.js'
 import { deriveTitle } from '../session/title.js'
 import { WarmSpare } from '../session/warmSpare.js'
@@ -89,7 +94,8 @@ export interface PiAcpServerOptions {
   readonly mcpExtensionPath: string
   /** Command names left out of every session's advertised commands. */
   readonly hiddenCommands: ReadonlySet<string>
-  /** Provider ids whose models are left out of every session's model list; undefined hides none. */
+  /** Provider ids whose models are left out of every session's model list until
+   * a launch env request replaces the list; undefined hides none. */
   readonly hiddenProviders?: ReadonlySet<string> | undefined
   readonly logStartupTiming: boolean
   /** Injectable for tests; defaults to spawning a real Pi RPC subprocess. */
@@ -121,10 +127,14 @@ export class PiAcpServer {
   private readonly catalogRefresher: CatalogRefresher | undefined
   private stopped = false
   private clientSupportsNotices = false
+  /** Replaced whole by each launch env request; every later Pi launch reads it. */
+  private launchEnvironment: LaunchEnvironment
 
   constructor(options: PiAcpServerOptions) {
     this.options = options
+    this.launchEnvironment = { env: {}, unset: [], hiddenProviders: options.hiddenProviders }
     this.warmSpare = options.warmSpareMaxAgeMs === undefined ? undefined : new WarmSpare(options.warmSpareMaxAgeMs)
+    const createPiClient = options.createPiClient ?? defaultCreatePiClient
     this.catalogRefresher =
       options.catalogRefreshExtensionPath === undefined
         ? undefined
@@ -136,7 +146,7 @@ export class PiAcpServer {
             extensionPath: options.catalogRefreshExtensionPath,
             startupDelayMs: options.catalogRefreshStartupDelayMs ?? CATALOG_REFRESH_STARTUP_DELAY_MS,
             intervalMs: options.catalogRefreshIntervalMs ?? CATALOG_REFRESH_INTERVAL_MS,
-            createPiClient: options.createPiClient ?? defaultCreatePiClient,
+            createPiClient: (refreshOptions) => createPiClient(withLaunchEnv(refreshOptions, this.launchEnvironment)),
           })
     this.catalogRefresher?.start()
   }
@@ -159,6 +169,7 @@ export class PiAcpServer {
       .onNotification(acp.methods.agent.session.cancel, (context) => {
         this.cancel(context.params)
       })
+      .onRequest(LAUNCH_ENV_METHOD, parseLaunchEnvRequest, (context) => this.setLaunchEnvironment(context.params))
   }
 
   /** Stops every session subprocess, the warm spare and the catalog refresher;
@@ -198,8 +209,21 @@ export class PiAcpServer {
           close: {},
           delete: {},
         },
+        _meta: { [META_KEY_BREAKPOINT_NAMESPACE]: { [META_KEY_LAUNCH_ENV]: {} } },
       },
     }
+  }
+
+  /** Every later Pi launch takes `environment`. A session's subprocess started on
+   * the previous one is stopped once idle, and its next request wakes it on this
+   * one; the warm spare is dropped. */
+  setLaunchEnvironment(environment: LaunchEnvironment): Record<string, never> {
+    // A parent replays its applies, so a request matching the current state restarts nothing.
+    if (sameLaunchEnvironment(this.launchEnvironment, environment)) return {}
+    this.launchEnvironment = environment
+    this.warmSpare?.discard()
+    for (const session of this.sessions.values()) session.connection.relaunchIfStale()
+    return {}
   }
 
   async newSession(context: { params: NewSessionRequest; client: AgentContext }): Promise<NewSessionResponse> {
@@ -456,6 +480,8 @@ export class PiAcpServer {
     }
     this.sessions.set(established.sessionId, session)
     if (this.options.idleTimeoutMs !== undefined) session.connection.enableIdleTeardown(this.options.idleTimeoutMs)
+    // A launch env that arrived while this one was starting was not sent to it.
+    session.connection.relaunchIfStale()
     return session
   }
 
@@ -468,7 +494,7 @@ export class PiAcpServer {
       gateExtensionPath: this.options.gateExtensionPath,
       mcpExtensionPath: this.options.mcpExtensionPath,
       hiddenCommands: this.options.hiddenCommands,
-      hiddenProviders: this.options.hiddenProviders,
+      launchEnvironment: () => this.launchEnvironment,
       logStartupTiming: this.options.logStartupTiming,
       createPiClient: this.options.createPiClient,
     }
@@ -494,6 +520,57 @@ function readMessageIdMeta(meta: unknown): string | undefined {
   if (typeof stack !== 'object' || stack === null) return undefined
   const messageId = (stack as Record<string, unknown>)[META_KEY_MESSAGE_ID]
   return typeof messageId === 'string' ? messageId : undefined
+}
+
+/** All three keys are required, and each replaces its whole part of the state.
+ * The params carry key material, so a refusal names the key and never a value. */
+function parseLaunchEnvRequest(params: unknown): LaunchEnvironment {
+  const record: Record<string, unknown> = isRecord(params) ? params : {}
+  const env = record['env']
+  const unset = record['unset']
+  const hideProviders = record['hideProviders']
+  if (!isEnvMap(env)) throw invalidParams(`${LAUNCH_ENV_METHOD}: env must map variable names to string values`)
+  if (!isStringList(unset) || !unset.every(isEnvName)) {
+    throw invalidParams(`${LAUNCH_ENV_METHOD}: unset must be an array of variable names`)
+  }
+  if (!isStringList(hideProviders)) throw invalidParams(`${LAUNCH_ENV_METHOD}: hideProviders must be an array of strings`)
+  return { env, unset, hiddenProviders: new Set(hideProviders) }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function isStringList(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((entry) => typeof entry === 'string')
+}
+
+function isEnvName(name: string): boolean {
+  return LAUNCH_ENV_NAME_PATTERN.test(name)
+}
+
+function isEnvMap(value: unknown): value is Record<string, string> {
+  return (
+    isRecord(value) &&
+    Object.entries(value).every(
+      ([name, entry]) => isEnvName(name) && typeof entry === 'string' && LAUNCH_ENV_VALUE_PATTERN.test(entry),
+    )
+  )
+}
+
+/** `unset` and the hide list compare as sets; an absent hide list hides none. */
+function sameLaunchEnvironment(left: LaunchEnvironment, right: LaunchEnvironment): boolean {
+  const names = Object.keys(left.env)
+  return (
+    names.length === Object.keys(right.env).length &&
+    names.every((name) => left.env[name] === right.env[name]) &&
+    sameSet(new Set(left.unset), new Set(right.unset)) &&
+    sameSet(left.hiddenProviders ?? new Set(), right.hiddenProviders ?? new Set())
+  )
+}
+
+function sameSet(left: ReadonlySet<string>, right: ReadonlySet<string>): boolean {
+  return left.size === right.size && [...left].every((entry) => right.has(entry))
 }
 
 /** The parent entries a breakpoint fork keeps: the ancestor path of the named

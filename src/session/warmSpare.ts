@@ -41,6 +41,8 @@ export class WarmSpare {
   private held: HeldSpare | null = null
   private building = false
   private stopped = false
+  /** Bumped by `discard`; a build that started before it stops its spare on landing. */
+  private generation = 0
 
   constructor(maxAgeMs: number) {
     this.maxAgeMs = maxAgeMs
@@ -85,13 +87,21 @@ export class WarmSpare {
     if (this.held !== null) await this.release(this.held)
   }
 
+  /** Drops the held spare and one still building, which were started on a launch
+   * env that is no longer current; the next prompt refills as usual. */
+  discard(): void {
+    this.generation++
+    if (this.held !== null) void this.release(this.held)
+  }
+
   private async build(request: SessionSetupRequest, deps: SessionSetupDeps): Promise<void> {
     // Aged from the spawn, since Pi reads its settings and resources as it starts.
     const startedAt = performance.now()
+    const generation = this.generation
     try {
       const key = warmSpareKey(request)
       const established = await establishSession(request, deps, { kind: 'spare' })
-      if (this.stopped) {
+      if (this.stopped || generation !== this.generation) {
         await stopSpare(established.connection)
         return
       }

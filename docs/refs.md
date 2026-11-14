@@ -9,6 +9,7 @@
     - Generated types: `node_modules/@agentclientprotocol/sdk/dist/schema/types.gen.d.ts`
     - Authoritative method list: `dist/acp.d.ts` `methods`
     - `session/fork` (experimental): head-only by default, or cut at an earlier prompt named by `_meta.acpStack.messageId`, a `_meta` extension (docs/todos.md, the Fork entry under Delivered)
+    - `_acpStack/launch_env`: an extension request, registered with the SDK's custom-method `onRequest` and advertised as `agentCapabilities._meta.acpStack.launchEnv` (docs/todos.md, the Launch env entry under Delivered)
     - `SessionConfigOptionCategory` includes `thought_level` (docs/todos.md, the Config options entry under Delivered)
     - `notice` session update (experimental): sent only to a client that advertises `clientCapabilities.session.notices` (docs/todos.md, the Other extension UI requests entry)
     - Session notices RFD: https://agentclientprotocol.com/rfds/session-notices

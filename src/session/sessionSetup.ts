@@ -24,14 +24,31 @@ import {
 import type { McpServerSpec } from '../mcp/servers.js'
 import { translateMcpServers } from '../mcp/servers.js'
 import type { PiLaunch } from '../pi/errors.js'
-import { PiRpcClient } from '../pi/PiRpcClient.js'
+import { PiRpcClient, type PiRpcClientOptions } from '../pi/PiRpcClient.js'
 import { parsePiStartupTimings, startupTimingLogLine } from '../pi/startupTimings.js'
 import { asMessage } from '../server/errors.js'
 import { toModelChoices } from '../turn/configOptions.js'
-import { type CreatePiClient, type LaunchedPi, type RelaunchTarget, SessionConnection } from './SessionConnection.js'
+import {
+  type CreatePiClient,
+  type LaunchedPi,
+  type LaunchEnvironment,
+  type RelaunchTarget,
+  SessionConnection,
+} from './SessionConnection.js'
 import { stripBom } from './sessionDirectory.js'
 
+/** A launch whose deps carry no launch env: the adapter's own env, hiding nothing. */
+const INHERITED_LAUNCH_ENVIRONMENT: LaunchEnvironment = { env: {}, unset: [], hiddenProviders: undefined }
+
 export const defaultCreatePiClient: CreatePiClient = (options) => new PiRpcClient(options)
+
+/** `options` with the launch env laid under the spawn's own env. An undefined
+ * value removes the inherited variable, since Node's spawn leaves it out. */
+export function withLaunchEnv(options: PiRpcClientOptions, environment: LaunchEnvironment): PiRpcClientOptions {
+  const unset = Object.fromEntries(environment.unset.map((name) => [name, undefined]))
+  const env = { ...unset, ...environment.env, ...options.env }
+  return Object.keys(env).length > 0 ? { ...options, env } : options
+}
 
 /** The `-e` args every Pi the adapter starts loads: the gate. The user's own
  * extensions load alongside it (no --no-extensions). */
@@ -53,8 +70,9 @@ export interface SessionSetupDeps {
   readonly mcpExtensionPath: string
   /** Command names left out of the advertised commands. */
   readonly hiddenCommands: ReadonlySet<string>
-  /** Provider ids whose models are left out of the model list; undefined hides none. */
-  readonly hiddenProviders?: ReadonlySet<string> | undefined
+  /** Read at each launch, so a wake started after a parent's change takes the new
+   * one; absent launches on the adapter's own env, hiding nothing. */
+  readonly launchEnvironment?: (() => LaunchEnvironment) | undefined
   readonly logStartupTiming: boolean
   /** Injectable for tests; defaults to spawning a real Pi RPC subprocess. */
   readonly createPiClient?: CreatePiClient | undefined
@@ -104,7 +122,7 @@ export async function establishSession(
     notifier: deps.notifier,
     cwd: request.cwd,
     clientSupportsNotices: deps.clientSupportsNotices,
-    hiddenProviders: deps.hiddenProviders,
+    launchEnvironment: deps.launchEnvironment ?? (() => INHERITED_LAUNCH_ENVIRONMENT),
     relaunch: (target) => launchPi(connection, plan, target, 'wake'),
   })
   const target: LaunchTarget =
@@ -133,13 +151,14 @@ async function launchPi(
   const startedAt = performance.now()
   const { deps, mcpServers } = plan
   const createPiClient = deps.createPiClient ?? defaultCreatePiClient
+  const environment = deps.launchEnvironment?.() ?? INHERITED_LAUNCH_ENVIRONMENT
   const args = piExtensionArgs(deps)
   // Only a session that asked for servers loads the MCP extension; it reads the
   // list from the environment and deletes it before anything can inherit it.
   if (mcpServers.length > 0) args.push('-e', deps.mcpExtensionPath)
   if (target.kind === 'file') args.push(PI_SESSION_ARG, target.sessionFile)
   if (target.kind === 'id') args.push(PI_SESSION_ID_ARG, target.sessionId)
-  const piClient = createPiClient({
+  const options: PiRpcClientOptions = {
     launch: deps.launch,
     cwd: plan.cwd,
     args,
@@ -155,7 +174,8 @@ async function launchPi(
     onNotify: (notifyRequest) => {
       connection.handleNotify(notifyRequest)
     },
-  })
+  }
+  const piClient = createPiClient(withLaunchEnv(options, environment))
 
   // start() self-cleans a failure inside itself; a failure in the follow-up
   // fetches would otherwise leave a live subprocess nobody holds.
@@ -177,7 +197,7 @@ async function launchPi(
       piClient.request({ type: 'get_available_thinking_levels' }),
       piClient.request({ type: 'get_commands' }),
     ])
-    const modelChoices = toModelChoices(models.data.models, deps.hiddenProviders)
+    const modelChoices = toModelChoices(models.data.models, environment.hiddenProviders)
     const availableCommands = await mapCommands(commands.data.commands, deps.hiddenCommands)
     const metadataDoneAt = performance.now()
     // Pi prints its blocks before it answers get_state, but on stderr, a separate
@@ -195,7 +215,7 @@ async function launchPi(
         }),
       )
     }
-    return { piClient, state, models: modelChoices, levels: levels.data.levels, commands: availableCommands }
+    return { piClient, state, models: modelChoices, levels: levels.data.levels, commands: availableCommands, environment }
   } catch (error) {
     await piClient.stop()
     throw error

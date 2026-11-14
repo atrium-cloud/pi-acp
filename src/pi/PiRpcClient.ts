@@ -73,6 +73,7 @@ export interface PiRpcClientOptions {
   readonly cwd: string
   /** Appended after the launch's own args. */
   readonly args?: readonly string[]
+  /** Laid over the inherited env and the launch's own; an undefined value removes that variable. */
   readonly env?: NodeJS.ProcessEnv
   readonly timeoutMs?: number
   readonly stdinEndGraceMs?: number

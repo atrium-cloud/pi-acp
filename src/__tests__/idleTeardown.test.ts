@@ -12,6 +12,7 @@ import {
   CONFIG_ID_MODEL,
   CONFIG_ID_THOUGHT_LEVEL,
   idleTeardownLogLine,
+  JSONRPC_INVALID_PARAMS,
   PI_SESSION_ARG,
   PI_SESSION_ID_ARG,
   PROTOCOL_VERSION,
@@ -53,6 +54,13 @@ const SET_COMMANDS = ['set_model', 'set_thinking_level', 'set_session_name']
 const IDLE_LOG_PREFIX = idleTeardownLogLine(SESSION_ID, '')
 const WAKE_EXIT_MESSAGE = 'Pi exited during the wake'
 const START_FAILURE_MESSAGE = 'Pi failed to start'
+/** The literal a parent process sends, deliberately not the adapter's constant. */
+const LAUNCH_ENV_METHOD = '_acpStack/launch_env'
+const FAKE_KEY = 'sk-example-not-a-real-key'
+const DEEPSEEK = { provider: 'deepseek', id: 'deepseek-v4.1-flash', name: 'DeepSeek V4.1 Flash' }
+/** The parent removed the deepseek credential and added an openrouter one. */
+const LAUNCH_ENV = { env: { OPENROUTER_API_KEY: FAKE_KEY }, unset: ['DEEPSEEK_API_KEY'], hideProviders: ['deepseek'] }
+const LAUNCH_ENV_SPAWN = { DEEPSEEK_API_KEY: undefined, OPENROUTER_API_KEY: FAKE_KEY }
 
 type Emit = Parameters<NonNullable<FakePiSpec['onPrompt']>>[0]
 
@@ -925,5 +933,52 @@ describe('idle teardown through the server', () => {
     await scenario.client.request(acp.methods.agent.session.close, { sessionId: created.sessionId })
 
     expect(spawner.spawned()).toBe(1)
+  })
+
+  function promptOver(scenario: AcpTestFixture, sessionId: string): Promise<acp.PromptResponse> {
+    return scenario.client.request(acp.methods.agent.session.prompt, { sessionId, prompt: [{ type: 'text', text: GO.message }] })
+  }
+
+  it('relaunches an idle session on a new launch env at its next prompt, hiding the providers it names', async () => {
+    const spec = { models: [SONNET, DEEPSEEK] }
+    const spawner = makeSpawner([{ spec }, { spec }])
+    const scenario = await open(spawner, {})
+    const created = await newSession(scenario)
+
+    const malformed = { ...LAUNCH_ENV, env: { OPENROUTER_API_KEY: `${FAKE_KEY}\u0000` } }
+    await expect(scenario.client.request(LAUNCH_ENV_METHOD, malformed)).rejects.toMatchObject({
+      code: JSONRPC_INVALID_PARAMS,
+      message: `${LAUNCH_ENV_METHOD}: env must map variable names to string values`,
+    })
+    await expect(scenario.client.request(LAUNCH_ENV_METHOD, LAUNCH_ENV)).resolves.toStrictEqual({})
+    expect(spawner.fake(0).wasStopped()).toBe(true)
+
+    await promptOver(scenario, created.sessionId)
+    expect(spawner.fake(1).spawns).toStrictEqual([{ cwd: CWD, args: [PI_SESSION_ID_ARG, SESSION_ID], env: LAUNCH_ENV_SPAWN }])
+    expect(commandTypes(spawner.fake(1))).toContain('prompt')
+    // A replay of the same state stops nothing.
+    await expect(scenario.client.request(LAUNCH_ENV_METHOD, LAUNCH_ENV)).resolves.toStrictEqual({})
+    expect(spawner.fake(1).wasStopped()).toBe(false)
+    const resumed = await scenario.client.request(acp.methods.agent.session.resume, { sessionId: created.sessionId, cwd: CWD })
+    expect(resumed.configOptions).toEqual(
+      buildConfigOptions({ models: [SONNET], currentModel: SONNET, levels: LEVELS, currentLevel: DEFAULT_LEVEL }),
+    )
+  })
+
+  it('keeps a mid-turn session on its Pi until the turn resolves, then relaunches it on the new launch env', async () => {
+    const spawner = makeSpawner([{ spec: { onPrompt: startOnly } }, {}])
+    const scenario = await open(spawner, {})
+    const created = await newSession(scenario)
+    const turn = promptOver(scenario, created.sessionId)
+    await vi.waitFor(() => expect(commandTypes(spawner.fake(0))).toContain('prompt'))
+
+    await expect(scenario.client.request(LAUNCH_ENV_METHOD, LAUNCH_ENV)).resolves.toStrictEqual({})
+    expect(spawner.stops(0)).toBe(0)
+    finishTurn(spawner.fake(0))
+    await expect(turn).resolves.toMatchObject({ stopReason: 'end_turn' })
+    expect(spawner.stops(0)).toBe(1)
+
+    await promptOver(scenario, created.sessionId)
+    expect(spawner.fake(1).spawns).toStrictEqual([{ cwd: CWD, args: [PI_SESSION_ID_ARG, SESSION_ID], env: LAUNCH_ENV_SPAWN }])
   })
 })

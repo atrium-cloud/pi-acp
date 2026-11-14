@@ -344,6 +344,18 @@ export const MESSAGE_MAP_VERSION = 1
 export const MESSAGE_MAP_KEY_VERSION = 'version'
 export const MESSAGE_MAP_KEY_MESSAGES = 'messages'
 
+// ── Launch env (extension request) ────────────────────────────────────────────
+//
+// A parent process replaces the provider env every later Pi launch takes, without
+// restarting the adapter. Advertised as `agentCapabilities._meta.acpStack.launchEnv`.
+
+export const META_KEY_LAUNCH_ENV = 'launchEnv'
+export const LAUNCH_ENV_METHOD = '_acpStack/launch_env'
+// Node's spawn refuses a NUL byte with an error that quotes the value, so a name
+// or value holding one is refused before it gets there.
+export const LAUNCH_ENV_NAME_PATTERN = /^[^=\0]+$/
+export const LAUNCH_ENV_VALUE_PATTERN = /^[^\0]*$/
+
 // ── ACP / JSON-RPC ────────────────────────────────────────────────────────────
 //
 // The SDK's RequestError statics bury the message as literal "Internal error",
