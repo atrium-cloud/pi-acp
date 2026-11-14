@@ -1,5 +1,5 @@
-import * as acp from '@agentclientprotocol/sdk'
-import type { AgentContext, SessionUpdate, StopReason } from '@agentclientprotocol/sdk'
+import * as acp from '@agentclientprotocol/sdk/unstable'
+import type { AgentContext, SessionUpdate, StopReason } from '@agentclientprotocol/sdk/unstable'
 
 import { AGENT_NAME, AGENT_START_GRACE_MS, JSONRPC_INTERNAL_ERROR } from '../constants.js'
 import type { JsonAgentSessionEvent, PromptDisposition } from '../pi/types.js'

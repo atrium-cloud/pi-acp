@@ -2,7 +2,7 @@ import { rm, unlink } from 'node:fs/promises'
 import { isAbsolute, resolve } from 'node:path'
 import { performance } from 'node:perf_hooks'
 
-import * as acp from '@agentclientprotocol/sdk'
+import * as acp from '@agentclientprotocol/sdk/unstable'
 import type {
   AgentContext,
   CancelNotification,
@@ -27,7 +27,7 @@ import type {
   SessionInfo,
   SetSessionConfigOptionRequest,
   SetSessionConfigOptionResponse,
-} from '@agentclientprotocol/sdk'
+} from '@agentclientprotocol/sdk/unstable'
 
 import {
   AGENT_NAME,

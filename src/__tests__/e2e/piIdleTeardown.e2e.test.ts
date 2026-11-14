@@ -9,8 +9,8 @@
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import * as acp from '@agentclientprotocol/sdk'
-import type { McpServer, PromptResponse, RequestPermissionResponse, SessionConfigOption } from '@agentclientprotocol/sdk'
+import * as acp from '@agentclientprotocol/sdk/unstable'
+import type { McpServer, PromptResponse, RequestPermissionResponse, SessionConfigOption } from '@agentclientprotocol/sdk/unstable'
 import { afterAll, afterEach, beforeAll, expect, it, vi } from 'vitest'
 
 import {

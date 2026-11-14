@@ -14,8 +14,8 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import * as acp from '@agentclientprotocol/sdk'
-import type { RequestPermissionResponse } from '@agentclientprotocol/sdk'
+import * as acp from '@agentclientprotocol/sdk/unstable'
+import type { RequestPermissionResponse } from '@agentclientprotocol/sdk/unstable'
 
 import { AGENT_NAME } from '../constants.js'
 import { PiAcpServer } from '../server/PiAcpServer.js'

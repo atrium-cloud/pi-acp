@@ -15,8 +15,8 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { deflateSync } from 'node:zlib'
 
-import * as acp from '@agentclientprotocol/sdk'
-import type { ClientCapabilities, McpServer, PromptResponse, RequestPermissionResponse } from '@agentclientprotocol/sdk'
+import * as acp from '@agentclientprotocol/sdk/unstable'
+import type { ClientCapabilities, McpServer, PromptResponse, RequestPermissionResponse } from '@agentclientprotocol/sdk/unstable'
 import { afterAll, afterEach, beforeAll, expect, it } from 'vitest'
 
 import {

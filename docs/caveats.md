@@ -1,6 +1,6 @@
 # Caveats
 
-Known gaps that are not on the roadmap, each with the reason it stays open. Verified against Pi 1.5.0 and ACP SDK 1.5.1 on 2026-11-06.
+Known gaps that are not on the roadmap, each with the reason it stays open. Verified against Pi 1.5.0 on 2026-11-06; the live tier passed on ACP SDK 2.6.0 on 2026-11-15.
 
 ## MCP startup status
 

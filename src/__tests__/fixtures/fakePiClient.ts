@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import type { Usage } from '@agentclientprotocol/sdk'
+import type { Usage } from '@agentclientprotocol/sdk/unstable'
 
 import { PI_SESSION_ARG } from '../../constants.js'
 import type { RpcNotifyRequest, StartupTiming } from '../../pi/PiRpcClient.js'

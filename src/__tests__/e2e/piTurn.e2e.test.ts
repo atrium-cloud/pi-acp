@@ -9,7 +9,7 @@
 
 import { rmSync } from 'node:fs'
 
-import * as acp from '@agentclientprotocol/sdk'
+import * as acp from '@agentclientprotocol/sdk/unstable'
 import { afterEach, expect, it, vi } from 'vitest'
 
 import {

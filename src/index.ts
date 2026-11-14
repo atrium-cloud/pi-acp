@@ -2,7 +2,7 @@
 
 import { Readable, Writable } from 'node:stream'
 
-import * as acp from '@agentclientprotocol/sdk'
+import * as acp from '@agentclientprotocol/sdk/unstable'
 
 import {
   AGENT_NAME,

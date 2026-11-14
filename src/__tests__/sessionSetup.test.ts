@@ -2,8 +2,8 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import * as acp from '@agentclientprotocol/sdk'
-import type { AgentContext, AvailableCommand, McpServer } from '@agentclientprotocol/sdk'
+import * as acp from '@agentclientprotocol/sdk/unstable'
+import type { AgentContext, AvailableCommand, McpServer } from '@agentclientprotocol/sdk/unstable'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
@@ -15,6 +15,7 @@ import {
   extensionNotifyLogLine,
   JSONRPC_INVALID_PARAMS,
   PI_SESSION_ARG,
+  PROTOCOL_VERSION,
 } from '../constants.js'
 import { PiAcpServer } from '../server/PiAcpServer.js'
 import type { SessionDirs } from '../session/sessionDirectory.js'
@@ -625,6 +626,7 @@ describe('session/new over the wire', () => {
     return acp
       .client({ name: 'test-client' })
       .connectWith(app, async (context) => {
+        await context.request(acp.methods.agent.initialize, { protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} })
         const session = await context.buildSession(ABS_CWD).start()
         return session.nextUpdate()
       })

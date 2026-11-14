@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
-import type { McpServer } from '@agentclientprotocol/sdk'
+import type { McpServer } from '@agentclientprotocol/sdk/unstable'
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 
 import { ENV_MCP_SERVERS, MCP_EXTENSION_FILENAME } from '../constants.js'

@@ -1,8 +1,8 @@
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
-import * as acp from '@agentclientprotocol/sdk'
-import type { AgentContext } from '@agentclientprotocol/sdk'
+import * as acp from '@agentclientprotocol/sdk/unstable'
+import type { AgentContext } from '@agentclientprotocol/sdk/unstable'
 import { afterEach, beforeEach, describe, expect, it, type Mock, type MockInstance, vi } from 'vitest'
 
 import { AGENT_NAME, BUILTIN_COMMANDS, extensionNotifyLogLine, NOTICE_SEVERITY_DEFAULT, PROTOCOL_VERSION } from '../constants.js'

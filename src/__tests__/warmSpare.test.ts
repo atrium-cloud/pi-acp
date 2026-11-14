@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
-import * as acp from '@agentclientprotocol/sdk'
+import * as acp from '@agentclientprotocol/sdk/unstable'
 import { afterEach, beforeEach, describe, expect, it, type MockInstance, vi } from 'vitest'
 
 import { AGENT_NAME, BUILTIN_COMMANDS, PI_SESSION_ARG, PROTOCOL_VERSION, warmSpareLogLine } from '../constants.js'

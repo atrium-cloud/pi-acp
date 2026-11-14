@@ -1,6 +1,6 @@
 import { performance } from 'node:perf_hooks'
 
-import type { SessionConfigOption } from '@agentclientprotocol/sdk'
+import type { SessionConfigOption } from '@agentclientprotocol/sdk/unstable'
 
 import { warmSpareLogLine } from '../constants.js'
 import { asMessage } from '../server/errors.js'

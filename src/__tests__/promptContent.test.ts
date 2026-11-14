@@ -1,4 +1,4 @@
-import type { ContentBlock } from '@agentclientprotocol/sdk'
+import type { ContentBlock } from '@agentclientprotocol/sdk/unstable'
 import { describe, expect, it } from 'vitest'
 
 import { flattenPromptContent } from '../turn/promptContent.js'

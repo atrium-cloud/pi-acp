@@ -1,4 +1,4 @@
-import type { AgentContext, NewSessionRequest } from '@agentclientprotocol/sdk'
+import type { AgentContext, NewSessionRequest } from '@agentclientprotocol/sdk/unstable'
 import { describe, expect, it, vi } from 'vitest'
 
 import { CONFIG_ID_MODEL, CONFIG_ID_THOUGHT_LEVEL } from '../constants.js'

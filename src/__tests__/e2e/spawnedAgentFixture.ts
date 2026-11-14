@@ -25,7 +25,7 @@ import { dirname, join, resolve } from 'node:path'
 import { Readable, Writable } from 'node:stream'
 import { fileURLToPath } from 'node:url'
 
-import * as acp from '@agentclientprotocol/sdk'
+import * as acp from '@agentclientprotocol/sdk/unstable'
 import type {
   ClientCapabilities,
   McpServer,
@@ -33,7 +33,7 @@ import type {
   RequestPermissionResponse,
   SessionNotification,
   SessionUpdate,
-} from '@agentclientprotocol/sdk'
+} from '@agentclientprotocol/sdk/unstable'
 import { vi } from 'vitest'
 
 import {

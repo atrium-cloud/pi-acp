@@ -5,13 +5,18 @@
 - Repo: https://github.com/agentclientprotocol/agent-client-protocol
 - Schema (latest release): https://github.com/agentclientprotocol/agent-client-protocol/releases/latest/download/schema.json
 - Protocol docs: https://agentclientprotocol.com/protocol
-- TypeScript SDK: `@agentclientprotocol/sdk` 1.5.1
-    - Generated types: `node_modules/@agentclientprotocol/sdk/dist/schema/types.gen.d.ts`
-    - Authoritative method list: `dist/acp.d.ts` `methods`
-    - `session/fork` (experimental): head-only by default, or cut at an earlier prompt named by `_meta.acpStack.messageId`, a `_meta` extension (docs/todos.md, the Fork entry under Delivered)
+- TypeScript SDK: `@agentclientprotocol/sdk` 2.6.0 (schema v1.31.0), imported from `@agentclientprotocol/sdk/unstable` everywhere
+    - The default entrypoint carries stable v1 only (since 2.0.0); `/unstable` is the full v1 surface and still speaks protocol version 1
+    - Unstable v1 surface the adapter uses: `session/fork`, `PromptResponse.usage`, `configOptions` on the `session/new`, `session/load` and `session/resume` responses
+    - The SDK refuses every request that precedes a successful `initialize` with `invalid_request`, `_acpStack/launch_env` included (`dist/v1/acp.js` `agentInitializationGate`)
+    - The SDK client reports a `resource_not_found` answer to `session/close` and `session/delete` as success (`dist/core/jsonrpc.js` `treatSessionNotFoundAsSuccess`, applied to the outgoing request); the adapter still answers `resource_not_found` on the wire
+    - Migration guide: `node_modules/@agentclientprotocol/sdk/MIGRATION_STABLE_UNSTABLE.md`
+    - Generated types: `node_modules/@agentclientprotocol/sdk/dist/v1/unstable/schema/types.gen.d.ts`
+    - Authoritative method list: `dist/v1/acp.d.ts` `methods`, which `dist/v1/unstable/acp.d.ts` re-exports
+    - `session/fork` (unstable): head-only by default, or cut at an earlier prompt named by `_meta.acpStack.messageId`, a `_meta` extension (docs/todos.md, the Fork entry under Delivered)
     - `_acpStack/launch_env`: an extension request, registered with the SDK's custom-method `onRequest` and advertised as `agentCapabilities._meta.acpStack.launchEnv` (docs/todos.md, the Launch env entry under Delivered)
     - `SessionConfigOptionCategory` includes `thought_level` (docs/todos.md, the Config options entry under Delivered)
-    - `notice` session update (experimental): sent only to a client that advertises `clientCapabilities.session.notices` (docs/todos.md, the Other extension UI requests entry)
+    - `notice` session update (stable since schema v1.25.0): sent only to a client that advertises `clientCapabilities.session.notices` (docs/todos.md, the Other extension UI requests entry)
     - Session notices RFD: https://agentclientprotocol.com/rfds/session-notices
     - `ToolCall.name` (stable since 1.5.0): Pi's tool name, on the `tool_call` only
     - `ndJsonStream` caps one incoming message at `maxMessageBytes` (since 1.5.1, default 32 MiB); the adapter passes no override, and a larger message errors the stream, which ends the connection
@@ -73,7 +78,7 @@ Shell tools (`bash`, `powershell`) render as terminal entries via the Zed `_meta
 
 - The adapter speaks no MCP itself since Pi 0.99.0: it hands the ACP `mcpServers` to Pi's built-in support through `pi.registerMcpServer` (docs/todos.md, the MCP entry under Delivered; the upstream files are listed under Pi Agent above).
 - Specification: https://modelcontextprotocol.io/specification
-- `@modelcontextprotocol/server` 2.3.1, a dev dependency for the stdio probe server the e2e tier spawns (`src/__tests__/fixtures/mcp-probe-server.mjs`)
+- `@modelcontextprotocol/server` 2.4.0, a dev dependency for the stdio probe server the e2e tier spawns (`src/__tests__/fixtures/mcp-probe-server.mjs`)
 
 ## Reference adapters
 

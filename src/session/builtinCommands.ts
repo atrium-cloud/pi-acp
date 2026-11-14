@@ -1,4 +1,4 @@
-import type { StopReason, Usage } from '@agentclientprotocol/sdk'
+import type { StopReason, Usage } from '@agentclientprotocol/sdk/unstable'
 
 import {
   BUILTIN_COMMAND_COMPACT,

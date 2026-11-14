@@ -12,8 +12,8 @@ import { mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync } from 'no
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import * as acp from '@agentclientprotocol/sdk'
-import type { PromptResponse, SessionConfigOption } from '@agentclientprotocol/sdk'
+import * as acp from '@agentclientprotocol/sdk/unstable'
+import type { PromptResponse, SessionConfigOption } from '@agentclientprotocol/sdk/unstable'
 import { afterAll, afterEach, beforeAll, expect, it } from 'vitest'
 
 import {
@@ -248,7 +248,7 @@ describeE2E('pi live session lifecycle', () => {
   )
 
   it(
-    'deletes a stored session and then reports it missing to list, resume and delete',
+    'deletes a stored session and then reports it missing to list and resume',
     async () => {
       const agent = live()
       const sessionId = await openPinnedSession(agent)
@@ -263,9 +263,9 @@ describeE2E('pi live session lifecycle', () => {
       await expect(
         agent.agent.request(acp.methods.agent.session.resume, { sessionId, cwd: agent.workspace, mcpServers: [] }),
       ).rejects.toMatchObject({ code: JSONRPC_RESOURCE_NOT_FOUND })
-      await expect(agent.agent.request(acp.methods.agent.session.delete, { sessionId })).rejects.toMatchObject({
-        code: JSONRPC_RESOURCE_NOT_FOUND,
-      })
+      // The adapter answers resource_not_found, which the SDK client (2.x)
+      // reports as success for `session/delete` and `session/close`.
+      await expect(agent.agent.request(acp.methods.agent.session.delete, { sessionId })).resolves.toEqual({})
     },
     E2E_TURN_TIMEOUT_MS,
   )

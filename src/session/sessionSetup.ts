@@ -2,8 +2,8 @@ import { readFile } from 'node:fs/promises'
 import { isAbsolute } from 'node:path'
 import { performance } from 'node:perf_hooks'
 
-import * as acp from '@agentclientprotocol/sdk'
-import type { AgentContext, AvailableCommand, McpServer } from '@agentclientprotocol/sdk'
+import * as acp from '@agentclientprotocol/sdk/unstable'
+import type { AgentContext, AvailableCommand, McpServer } from '@agentclientprotocol/sdk/unstable'
 import { parse as parseYaml } from 'yaml'
 
 import {

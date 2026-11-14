@@ -1,4 +1,4 @@
-import type { McpServer } from '@agentclientprotocol/sdk'
+import type { McpServer } from '@agentclientprotocol/sdk/unstable'
 import { describe, expect, it } from 'vitest'
 
 import { JSONRPC_INVALID_PARAMS } from '../constants.js'

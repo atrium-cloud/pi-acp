@@ -1,4 +1,4 @@
-import type { AgentContext } from '@agentclientprotocol/sdk'
+import type { AgentContext } from '@agentclientprotocol/sdk/unstable'
 import { describe, expect, it, vi } from 'vitest'
 
 import type { CreatePiClient, PiClientLike, SessionConnection } from '../session/SessionConnection.js'

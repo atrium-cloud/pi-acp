@@ -1,4 +1,4 @@
-import type { SessionConfigOption, SessionConfigSelectGroup } from '@agentclientprotocol/sdk'
+import type { SessionConfigOption, SessionConfigSelectGroup } from '@agentclientprotocol/sdk/unstable'
 
 import {
   CONFIG_ID_MODEL,

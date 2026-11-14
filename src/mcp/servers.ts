@@ -1,5 +1,5 @@
-import * as acp from '@agentclientprotocol/sdk'
-import type { EnvVariable, HttpHeader, McpServer, McpServerHttp, McpServerStdio } from '@agentclientprotocol/sdk'
+import * as acp from '@agentclientprotocol/sdk/unstable'
+import type { EnvVariable, HttpHeader, McpServer, McpServerHttp, McpServerStdio } from '@agentclientprotocol/sdk/unstable'
 
 import {
   JSONRPC_INVALID_PARAMS,

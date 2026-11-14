@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs'
 
-import * as acp from '@agentclientprotocol/sdk'
-import type { AgentContext, AvailableCommand, SessionConfigOption, SessionUpdate, StopReason, Usage } from '@agentclientprotocol/sdk'
+import * as acp from '@agentclientprotocol/sdk/unstable'
+import type { AgentContext, AvailableCommand, SessionConfigOption, SessionUpdate, StopReason, Usage } from '@agentclientprotocol/sdk/unstable'
 
 import {
   AGENT_NAME,

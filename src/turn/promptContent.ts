@@ -1,5 +1,5 @@
-import * as acp from '@agentclientprotocol/sdk'
-import type { ContentBlock } from '@agentclientprotocol/sdk'
+import * as acp from '@agentclientprotocol/sdk/unstable'
+import type { ContentBlock } from '@agentclientprotocol/sdk/unstable'
 
 import { JSONRPC_INVALID_PARAMS, PROMPT_BLOCK_SEPARATOR } from '../constants.js'
 

@@ -1,5 +1,5 @@
-import * as acp from '@agentclientprotocol/sdk'
-import type { AgentContext } from '@agentclientprotocol/sdk'
+import * as acp from '@agentclientprotocol/sdk/unstable'
+import type { AgentContext } from '@agentclientprotocol/sdk/unstable'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { PERMISSION_REQUEST_TIMEOUT_MS } from '../constants.js'

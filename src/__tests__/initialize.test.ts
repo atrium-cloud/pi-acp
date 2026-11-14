@@ -1,4 +1,4 @@
-import * as acp from '@agentclientprotocol/sdk'
+import * as acp from '@agentclientprotocol/sdk/unstable'
 import { describe, expect, it } from 'vitest'
 
 import {
@@ -89,12 +89,13 @@ describe('authenticate', () => {
     const app = makeServer().register(acp.agent({ name: AGENT_NAME }))
     const error = await acp
       .client({ name: 'test-client' })
-      .connectWith(app, (context) =>
-        context.request(acp.methods.agent.authenticate, { methodId: 'whatever' }).then(
+      .connectWith(app, async (context) => {
+        await context.request(acp.methods.agent.initialize, INIT_REQUEST)
+        return context.request(acp.methods.agent.authenticate, { methodId: 'whatever' }).then(
           () => undefined,
           (caught: unknown) => caught,
-        ),
-      )
+        )
+      })
     expect(error).toMatchObject({ code: JSONRPC_INVALID_PARAMS })
     expect((error as Error).message).toMatch(/no authentication methods are advertised/)
   })

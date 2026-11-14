@@ -1,4 +1,4 @@
-import * as acp from '@agentclientprotocol/sdk'
+import * as acp from '@agentclientprotocol/sdk/unstable'
 
 import { JSONRPC_INTERNAL_ERROR } from '../constants.js'
 

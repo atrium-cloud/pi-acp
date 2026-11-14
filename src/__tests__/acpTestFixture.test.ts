@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs'
 
-import * as acp from '@agentclientprotocol/sdk'
+import * as acp from '@agentclientprotocol/sdk/unstable'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import {

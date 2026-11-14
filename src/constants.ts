@@ -1,5 +1,5 @@
-import { PROTOCOL_VERSION as ACP_PROTOCOL_VERSION } from '@agentclientprotocol/sdk'
-import type { AvailableCommand, NoticeSeverity, ToolKind } from '@agentclientprotocol/sdk'
+import { PROTOCOL_VERSION as ACP_PROTOCOL_VERSION } from '@agentclientprotocol/sdk/unstable'
+import type { AvailableCommand, NoticeSeverity, ToolKind } from '@agentclientprotocol/sdk/unstable'
 
 // Static JSON import (not createRequire): the release artifact is the bundle
 // alone, with no package.json beside it, so a runtime `require('../package.json')`

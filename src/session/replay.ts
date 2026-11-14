@@ -1,4 +1,4 @@
-import type { ContentBlock, SessionUpdate } from '@agentclientprotocol/sdk'
+import type { ContentBlock, SessionUpdate } from '@agentclientprotocol/sdk/unstable'
 
 import type { RpcResponse } from '../pi/types.js'
 import { toolCallEnded, toolCallStarted } from '../turn/mappers.js'

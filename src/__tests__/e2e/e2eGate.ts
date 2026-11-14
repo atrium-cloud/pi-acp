@@ -12,7 +12,7 @@
  * loud signal that this machine's Pi is not authorized for the pinned provider.
  */
 
-import type { SessionConfigOption } from '@agentclientprotocol/sdk'
+import type { SessionConfigOption } from '@agentclientprotocol/sdk/unstable'
 import { describe } from 'vitest'
 
 import { CONFIG_ID_MODEL, MODEL_VALUE_SEPARATOR } from '../../constants.js'

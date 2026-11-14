@@ -207,7 +207,7 @@ Pi upstream ships an ACP agent on current schemas with session resume, thought-l
 - [x] Other extension UI requests
     - `confirm`, `input`, `editor`, and non-sentinel `select` are answered `cancelled: true` immediately (fail closed, never auto-answered, never wedged) — `editor` too, since Pi never auto-resolves it.
         - Form-elicitation mapping when the client advertises `elicitation.form` is DEFERRED; the compliant fallback (cancelled) ships. The SDK surface exists (`AgentContext.createElicitation`, gated on `ClientCapabilities.elicitation`).
-    - `notify` is logged to stderr, and also sent as a `notice` session update when the client advertised `clientCapabilities.session.notices` (experimental in ACP v1).
+    - `notify` is logged to stderr, and also sent as a `notice` session update when the client advertised `clientCapabilities.session.notices` (stable in ACP v1 since schema v1.25.0).
         - `severity` is Pi's `notifyType`, `info` when absent; `title` is the message; no `description`.
         - A blank message sends no notice, since a notice needs a title.
         - A notify during session setup is queued and sent right after the command snapshot, since the client drops an update for a session id it does not know yet.
@@ -257,7 +257,7 @@ Pi upstream ships an ACP agent on current schemas with session resume, thought-l
     - Forking into another `cwd` is supported and lands the file under that cwd's session directory; the parent's own cwd is never checked, since cross-project forking is the point of the method.
     - A parent Pi never flushed (no turn ever started) has no file and is `resource_not_found`, the same reading `session/resume` and `session/delete` take.
     - The fork is returned live and promptable (`{ sessionId, configOptions }`, commands announced after the response, as on `session/new`); history is not replayed, since replay is `session/load`'s contract.
-    - `sessionCapabilities.fork` is advertised even though the ACP SDK marks the method experimental.
+    - `sessionCapabilities.fork` is advertised; the method is in the SDK's unstable v1 profile, which the adapter imports.
     - Without a breakpoint the fork starts from the parent's last file entry.
     - Breakpoint fork: a client can name an earlier prompt to cut at, through a `_meta` extension.
         - `initialize` advertises it as `sessionCapabilities.fork._meta.acpStack.messageId`, an empty object, the shape a client probes for.
@@ -321,7 +321,7 @@ Pi upstream ships an ACP agent on current schemas with session resume, thought-l
 - [x] E2E harness (`src/__tests__/e2e/`): the built `dist/index.js` driven as a real ACP client against a real Pi.
     - Uses the host's own Pi credentials; only the session store is redirected to scratch (`PI_CODING_AGENT_SESSION_DIR`).
     - `RUN_PI_E2E=true` (`pnpm run test:e2e`); model `openrouter/deepseek/deepseek-v4.1-flash` (moved from `deepseek-v4-flash-0731` on 2026-09-30, at a third of the output price).
-    - 31 cases across turns, config, lifecycle, fork, permissions, prompt content, MCP stdio, extension commands, prompt template hints, built-in commands, notices, warm spare, idle teardown, catalog refresh. 31/31 live against Pi 1.5.0 (2026-11-06).
+    - 31 cases across turns, config, lifecycle, fork, permissions, prompt content, MCP stdio, extension commands, prompt template hints, built-in commands, notices, warm spare, idle teardown, catalog refresh. 31/31 live against Pi 1.5.0 and ACP SDK 2.6.0 (2026-11-15).
     - The catalog refresh cases are hermetic: the adapter inherits no host environment beyond `PATH` and `TMPDIR`, gets a scratch agent dir as its home, a fake key, and a local forward proxy that terminates TLS for the hosts they use under a certificate only the child trusts and refuses any other, so they spend no tokens and reach no vendor host.
     - The three cancel cases hold the turn open with a `sleep 30` bash call and cancel on the `tool_call` update: a long streamed reply can arrive from the provider as one burst with the settle right behind it, which is how they failed on 2026-09-21.
 - [x] Distribution: one `pi-acp.zip` (the `pi-acp` executable, a hashbang bundle, plus LICENSE and NOTICE) on GitHub Releases, no npm. Needs Node 22.19+ on PATH and `PI_ACP_PI_BIN`.
@@ -368,4 +368,10 @@ Pi upstream ships an ACP agent on current schemas with session resume, thought-l
         - Tool arguments validate through `@earendil-works/pi-schema`, which coerces MCP tool arguments and rewords the failures the model sees.
         - MCP OAuth defaults to `clientRegistration: auto`.
     - docs/refs.md carries the range.
+- [x] ACP SDK 1.5.1 → 2.6.0 on 2026-11-15 (typecheck, 524 unit, 31/31 live against Pi 1.5.0), still ACP protocol version 1.
+    - Every import moved to `@agentclientprotocol/sdk/unstable`: fork, turn usage and `configOptions` on session responses are in the unstable v1 profile.
+    - The SDK refuses a request that precedes `initialize`, `_acpStack/launch_env` included; the wire tests initialize first.
+    - The SDK client reports `resource_not_found` on `session/delete` and `session/close` as success; the adapter's answer is unchanged.
+    - 2.7.0 (schema v1.32.0, unstable additions only) is left for the next drift check: it was under pnpm's minimum release age.
+    - Draft ACP v2 stays out until a client negotiates it; it carries the steering surface (`session/prompt` acked on insertion, held prompts, `state_update`).
 - [x] docs/caveats.md holds the gaps that stay open by design (MCP startup status, Pi's own `mcp.json` servers, MCP OAuth, the MCP server environment, unforwarded extension notifications, advertised built-in commands, project trust, session-replacing commands, nested tool calls, warm spare sessions starting early, idle sessions stopping their subprocess), each with the reason.

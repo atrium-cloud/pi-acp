@@ -1,4 +1,4 @@
-import type { SessionConfigOption, SessionUpdate, ToolCallContent, ToolCallLocation, ToolKind, Usage } from '@agentclientprotocol/sdk'
+import type { SessionConfigOption, SessionUpdate, ToolCallContent, ToolCallLocation, ToolKind, Usage } from '@agentclientprotocol/sdk/unstable'
 
 import {
   SHELL_EMPTY_OUTPUT_PLACEHOLDER,

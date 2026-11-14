@@ -5,8 +5,8 @@
  * e2eGate.ts).
  */
 
-import * as acp from '@agentclientprotocol/sdk'
-import type { PromptResponse } from '@agentclientprotocol/sdk'
+import * as acp from '@agentclientprotocol/sdk/unstable'
+import type { PromptResponse } from '@agentclientprotocol/sdk/unstable'
 import { afterAll, beforeAll, expect, it, vi } from 'vitest'
 
 import { AGENT_NAME, ENV_PI_TIMING, ENV_WARM_SPARE_MAX_AGE_MS, PI_TIMING_ON } from '../../constants.js'
