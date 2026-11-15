@@ -35,6 +35,7 @@ import {
   AGENT_VERSION,
   CATALOG_REFRESH_INTERVAL_MS,
   CATALOG_REFRESH_STARTUP_DELAY_MS,
+  ENV_PROVIDER_MODELS,
   JSONRPC_INTERNAL_ERROR,
   JSONRPC_INVALID_PARAMS,
   LAUNCH_ENV_METHOD,
@@ -43,7 +44,9 @@ import {
   META_KEY_BREAKPOINT_NAMESPACE,
   META_KEY_LAUNCH_ENV,
   META_KEY_MESSAGE_ID,
+  parseProviderModels,
   PROTOCOL_VERSION,
+  type ProviderModels,
   SESSION_LIST_CURSOR_PATTERN,
   SESSION_LIST_PAGE_SIZE,
 } from '../constants.js'
@@ -97,6 +100,9 @@ export interface PiAcpServerOptions {
   /** Provider ids whose models are left out of every session's model list until
    * a launch env request replaces the list; undefined hides none. */
   readonly hiddenProviders?: ReadonlySet<string> | undefined
+  /** The start-time `PI_ACP_PROVIDER_MODELS`, kept until a launch env request sets
+   * or unsets it; undefined narrows nothing. */
+  readonly providerModels?: ProviderModels | undefined
   readonly logStartupTiming: boolean
   /** Injectable for tests; defaults to spawning a real Pi RPC subprocess. */
   readonly createPiClient?: CreatePiClient | undefined
@@ -132,7 +138,12 @@ export class PiAcpServer {
 
   constructor(options: PiAcpServerOptions) {
     this.options = options
-    this.launchEnvironment = { env: {}, unset: [], hiddenProviders: options.hiddenProviders }
+    this.launchEnvironment = {
+      env: {},
+      unset: [],
+      hiddenProviders: options.hiddenProviders,
+      providerModels: options.providerModels,
+    }
     this.warmSpare = options.warmSpareMaxAgeMs === undefined ? undefined : new WarmSpare(options.warmSpareMaxAgeMs)
     const createPiClient = options.createPiClient ?? defaultCreatePiClient
     this.catalogRefresher =
@@ -169,7 +180,11 @@ export class PiAcpServer {
       .onNotification(acp.methods.agent.session.cancel, (context) => {
         this.cancel(context.params)
       })
-      .onRequest(LAUNCH_ENV_METHOD, parseLaunchEnvRequest, (context) => this.setLaunchEnvironment(context.params))
+      .onRequest(
+        LAUNCH_ENV_METHOD,
+        (params) => parseLaunchEnvRequest(params, this.options.providerModels),
+        (context) => this.setLaunchEnvironment(context.params),
+      )
   }
 
   /** Stops every session subprocess, the warm spare and the catalog refresher;
@@ -523,8 +538,9 @@ function readMessageIdMeta(meta: unknown): string | undefined {
 }
 
 /** All three keys are required, and each replaces its whole part of the state.
- * The params carry key material, so a refusal names the key and never a value. */
-function parseLaunchEnvRequest(params: unknown): LaunchEnvironment {
+ * The params carry key material, so a refusal names the key and never a value.
+ * `PI_ACP_PROVIDER_MODELS` in neither `env` nor `unset` keeps the start-time value Pi inherits. */
+function parseLaunchEnvRequest(params: unknown, inheritedProviderModels: ProviderModels | undefined): LaunchEnvironment {
   const record: Record<string, unknown> = isRecord(params) ? params : {}
   const env = record['env']
   const unset = record['unset']
@@ -534,7 +550,12 @@ function parseLaunchEnvRequest(params: unknown): LaunchEnvironment {
     throw invalidParams(`${LAUNCH_ENV_METHOD}: unset must be an array of variable names`)
   }
   if (!isStringList(hideProviders)) throw invalidParams(`${LAUNCH_ENV_METHOD}: hideProviders must be an array of strings`)
-  return { env, unset, hiddenProviders: new Set(hideProviders) }
+  const providerModels = Object.hasOwn(env, ENV_PROVIDER_MODELS)
+    ? parseProviderModels(env[ENV_PROVIDER_MODELS], (message) => invalidParams(`${LAUNCH_ENV_METHOD}: env ${message}`))
+    : unset.includes(ENV_PROVIDER_MODELS)
+      ? undefined
+      : inheritedProviderModels
+  return { env, unset, hiddenProviders: new Set(hideProviders), providerModels }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

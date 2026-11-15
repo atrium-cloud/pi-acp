@@ -28,6 +28,7 @@ import {
   PERMISSION_REQUEST_TIMEOUT_MS,
   PI_COMPACTION_CANCELLED,
   PROMPT_ACK_TIMEOUT_MS,
+  type ProviderModels,
 } from '../constants.js'
 import { buildPermissionOptions, decodeSentinelTitle } from '../permissions/gate.js'
 import { PiRpcError } from '../pi/errors.js'
@@ -74,6 +75,8 @@ export interface LaunchEnvironment {
   readonly unset: readonly string[]
   /** Provider ids whose models are left out of the model list; undefined hides none. */
   readonly hiddenProviders: ReadonlySet<string> | undefined
+  /** `PI_ACP_PROVIDER_MODELS` as this env leaves it; undefined narrows nothing. */
+  readonly providerModels: ProviderModels | undefined
 }
 
 /** A started Pi subprocess and what a session is built from. */
@@ -406,6 +409,7 @@ export class SessionConnection {
       currentModel: config.currentModel,
       levels: config.levels,
       currentLevel: event.level,
+      providerModels: this.launchEnvironment().providerModels,
     })
     this.config = { ...config, currentLevel: event.level, options }
     this.emit(configOptionUpdate(options))
@@ -988,7 +992,13 @@ export class SessionConnection {
     levels: readonly ThinkingLevelValue[],
   ): ConfigState {
     const currentModel = state.model === undefined ? undefined : { provider: state.model.provider, id: state.model.id }
-    const options = buildConfigOptions({ models, currentModel, levels, currentLevel: state.thinkingLevel })
+    const options = buildConfigOptions({
+      models,
+      currentModel,
+      levels,
+      currentLevel: state.thinkingLevel,
+      providerModels: this.launchEnvironment().providerModels,
+    })
     return { models, levels, currentModel, currentLevel: state.thinkingLevel, options }
   }
 

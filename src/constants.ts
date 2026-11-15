@@ -73,6 +73,10 @@ export const CONFIG_NAME_THOUGHT_LEVEL = 'Thinking level'
 export const MODEL_VALUE_SEPARATOR = '/'
 // A comma-separated list of Pi provider ids whose models are left out of the model list.
 export const ENV_HIDE_PROVIDERS = 'PI_ACP_HIDE_PROVIDERS'
+// A JSON object of Pi provider id to the model ids its own listing returned; a listed
+// provider offers only those models, plus the session's current one.
+export const ENV_PROVIDER_MODELS = 'PI_ACP_PROVIDER_MODELS'
+const PROVIDER_MODELS_SHAPE ='a JSON object mapping provider ids to non-empty arrays of model ids'
 
 // ── Prompt content ─────────────────────────────────────────────────────────────
 //
@@ -417,4 +421,38 @@ export function resolveHiddenCommands(env: NodeJS.ProcessEnv): ReadonlySet<strin
 
 export function resolveHiddenProviders(env: NodeJS.ProcessEnv): ReadonlySet<string> {
   return readHideList(env, ENV_HIDE_PROVIDERS)
+}
+
+export type ProviderModels = ReadonlyMap<string, ReadonlySet<string>>
+
+export function resolveProviderModels(env: NodeJS.ProcessEnv): ProviderModels | undefined {
+  return parseProviderModels(env[ENV_PROVIDER_MODELS], (message) => new Error(message))
+}
+
+/** Undefined when unset or empty. `fail` builds the refusal, whose message never
+ * quotes the value, since a launch env request's params are never echoed. */
+export function parseProviderModels(
+  raw: string | undefined,
+  fail: (message: string) => Error,
+): ProviderModels | undefined {
+  if (raw === undefined || raw === '') return undefined
+  const malformed = (): Error => fail(`${ENV_PROVIDER_MODELS} must be ${PROVIDER_MODELS_SHAPE}`)
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    throw malformed()
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) throw malformed()
+  const providerModels = new Map<string, ReadonlySet<string>>()
+  const entries: [string, unknown][] = Object.entries(parsed)
+  for (const [provider, ids] of entries) {
+    if (!isModelIdList(ids)) throw malformed()
+    providerModels.set(provider, new Set(ids))
+  }
+  return providerModels
+}
+
+function isModelIdList(value: unknown): value is string[] {
+  return Array.isArray(value) && value.length > 0 && value.every((id) => typeof id === 'string')
 }

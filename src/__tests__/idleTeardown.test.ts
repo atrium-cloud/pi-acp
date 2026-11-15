@@ -61,6 +61,8 @@ const DEEPSEEK = { provider: 'deepseek', id: 'deepseek-v4.1-flash', name: 'DeepS
 /** The parent removed the deepseek credential and added an openrouter one. */
 const LAUNCH_ENV = { env: { OPENROUTER_API_KEY: FAKE_KEY }, unset: ['DEEPSEEK_API_KEY'], hideProviders: ['deepseek'] }
 const LAUNCH_ENV_SPAWN = { DEEPSEEK_API_KEY: undefined, OPENROUTER_API_KEY: FAKE_KEY }
+/** The parent's probe of the anthropic endpoint listed one model. */
+const PROBED_LAUNCH_ENV = { env: { PI_ACP_PROVIDER_MODELS: JSON.stringify({ anthropic: [OPUS.id] }) }, unset: [], hideProviders: [] }
 
 type Emit = Parameters<NonNullable<FakePiSpec['onPrompt']>>[0]
 
@@ -963,6 +965,32 @@ describe('idle teardown through the server', () => {
     expect(resumed.configOptions).toEqual(
       buildConfigOptions({ models: [SONNET], currentModel: SONNET, levels: LEVELS, currentLevel: DEFAULT_LEVEL }),
     )
+  })
+
+  it('advertises only the probed models a launch env request sets, from the relaunch on, without refusing others', async () => {
+    const spec = { models: [SONNET, OPUS, HAIKU] }
+    const spawner = makeSpawner([{ spec }, { spec }])
+    const scenario = await open(spawner, {})
+    const created = await newSession(scenario)
+    expect(created.configOptions?.[0]).toMatchObject({ options: [{ options: [{}, {}, {}] }] })
+
+    const malformed = { ...PROBED_LAUNCH_ENV, env: { PI_ACP_PROVIDER_MODELS: `anthropic=${OPUS.id}` } }
+    await expect(scenario.client.request(LAUNCH_ENV_METHOD, malformed)).rejects.toMatchObject({
+      code: JSONRPC_INVALID_PARAMS,
+      message: `${LAUNCH_ENV_METHOD}: env PI_ACP_PROVIDER_MODELS must be a JSON object mapping provider ids to non-empty arrays of model ids`,
+    })
+    expect(spawner.fake(0).wasStopped()).toBe(false)
+    await expect(scenario.client.request(LAUNCH_ENV_METHOD, PROBED_LAUNCH_ENV)).resolves.toStrictEqual({})
+
+    await promptOver(scenario, created.sessionId)
+    const resumed = await scenario.client.request(acp.methods.agent.session.resume, { sessionId: created.sessionId, cwd: CWD })
+    expect(resumed.configOptions?.[0]).toMatchObject({ options: [{ options: [{ name: SONNET.name }, { name: OPUS.name }] }] })
+    const switched = await scenario.client.request(acp.methods.agent.session.setConfigOption, {
+      sessionId: created.sessionId,
+      configId: CONFIG_ID_MODEL,
+      value: encodeModelValue(HAIKU),
+    })
+    expect(switched.configOptions[0]).toMatchObject({ options: [{ options: [{ name: OPUS.name }, { name: HAIKU.name }] }] })
   })
 
   it('keeps a mid-turn session on its Pi until the turn resolves, then relaunches it on the new launch env', async () => {

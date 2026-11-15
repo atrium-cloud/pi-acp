@@ -38,7 +38,7 @@ import {
 import { stripBom } from './sessionDirectory.js'
 
 /** A launch whose deps carry no launch env: the adapter's own env, hiding nothing. */
-const INHERITED_LAUNCH_ENVIRONMENT: LaunchEnvironment = { env: {}, unset: [], hiddenProviders: undefined }
+const INHERITED_LAUNCH_ENVIRONMENT: LaunchEnvironment = { env: {}, unset: [], hiddenProviders: undefined, providerModels: undefined }
 
 export const defaultCreatePiClient: CreatePiClient = (options) => new PiRpcClient(options)
 

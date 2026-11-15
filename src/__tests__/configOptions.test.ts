@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { CONFIG_ID_MODEL, CONFIG_ID_THOUGHT_LEVEL } from '../constants.js'
+import { CONFIG_ID_MODEL, CONFIG_ID_THOUGHT_LEVEL, resolveProviderModels } from '../constants.js'
 import { buildConfigOptions, encodeModelValue, resolveModelSelection, toModelChoices } from '../turn/configOptions.js'
 
 const MODELS = [
@@ -12,6 +12,15 @@ const SHARED = [
   { provider: 'openrouter', id: 'glm-5.3', name: 'GLM 5.3' },
   { provider: 'cerebras', id: 'gpt-oss-120b', name: 'GPT OSS 120B' },
 ]
+const CATALOG = [
+  { provider: 'opencode', id: 'glm-5.3', name: 'GLM 5.3' },
+  { provider: 'opencode', id: 'kimi-k2.6', name: 'Kimi K2.6' },
+  { provider: 'opencode', id: 'qwen3.5-coder', name: 'Qwen3.5 Coder' },
+  { provider: 'opencode-go', id: 'glm-5.3-flash', name: 'GLM 5.3 Flash' },
+  { provider: 'openrouter', id: 'glm-5.3', name: 'GLM 5.3' },
+]
+/** The variable as a parent process sets it, read by the adapter's own startup parse. */
+const probed = (value: Record<string, string[]>) => resolveProviderModels({ PI_ACP_PROVIDER_MODELS: JSON.stringify(value) })
 
 describe('buildConfigOptions', () => {
   it('builds the full model + thought_level select set, models grouped by provider', () => {
@@ -84,6 +93,40 @@ describe('buildConfigOptions', () => {
     expect(options[0]).toMatchObject({
       currentValue: 'opencode-go/glm-5.3',
       options: [{ group: 'openrouter' }, { group: 'cerebras' }],
+    })
+  })
+
+  it('narrows a listed provider to its probed ids, drops one left with none, and leaves the rest whole', () => {
+    const options = buildConfigOptions({
+      models: CATALOG,
+      currentModel: { provider: 'openrouter', id: 'glm-5.3' },
+      levels: [],
+      currentLevel: 'off',
+      providerModels: probed({ opencode: ['glm-5.3', 'kimi-k2.6'], 'opencode-go': ['glm-5.4-flash'] }),
+    })
+    expect(options[0]).toMatchObject({
+      options: [
+        { group: 'opencode', options: [{ value: 'opencode/glm-5.3' }, { value: 'opencode/kimi-k2.6' }] },
+        { group: 'openrouter', options: [{ value: 'openrouter/glm-5.3' }] },
+      ],
+    })
+  })
+
+  it('keeps the current model listed when its id is outside its provider probed ids', () => {
+    const options = buildConfigOptions({
+      models: CATALOG,
+      currentModel: { provider: 'opencode', id: 'qwen3.5-coder' },
+      levels: [],
+      currentLevel: 'off',
+      providerModels: probed({ opencode: ['glm-5.3'] }),
+    })
+    expect(options[0]).toMatchObject({
+      currentValue: 'opencode/qwen3.5-coder',
+      options: [
+        { group: 'opencode', options: [{ value: 'opencode/glm-5.3' }, { value: 'opencode/qwen3.5-coder' }] },
+        { group: 'opencode-go' },
+        { group: 'openrouter' },
+      ],
     })
   })
 

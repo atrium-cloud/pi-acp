@@ -6,6 +6,7 @@ import {
   CONFIG_NAME_MODEL,
   CONFIG_NAME_THOUGHT_LEVEL,
   MODEL_VALUE_SEPARATOR,
+  type ProviderModels,
 } from '../constants.js'
 
 export interface ModelChoice {
@@ -20,6 +21,8 @@ export interface ConfigOptionsInput {
   readonly currentModel: { readonly provider: string; readonly id: string } | undefined
   readonly levels: readonly string[]
   readonly currentLevel: string
+  /** From `PI_ACP_PROVIDER_MODELS`; absent narrows nothing. */
+  readonly providerModels?: ProviderModels | undefined
 }
 
 /** The adapter's model list from Pi's `get_available_models`, without the
@@ -41,13 +44,20 @@ export function encodeModelValue(model: { readonly provider: string; readonly id
  * delta). A `select` needs a required `currentValue`, so an option is omitted
  * rather than synthesizing one: no current model, no model listed, or no
  * thinking levels. Models are grouped by provider, and a current model outside
- * the list is still reported as the current value. */
+ * the list is still reported as the current value. A provider in `providerModels`
+ * offers only those ids and the current model; a set still resolves against `models`. */
 export function buildConfigOptions(input: ConfigOptionsInput): SessionConfigOption[] {
   const options: SessionConfigOption[] = []
+  const current = input.currentModel
+  const advertised = input.models.filter((model) => {
+    const probed = input.providerModels?.get(model.provider)
+    if (probed === undefined || probed.has(model.id)) return true
+    return current !== undefined && current.provider === model.provider && current.id === model.id
+  })
 
-  if (input.currentModel !== undefined && input.models.length > 0) {
+  if (current !== undefined && advertised.length > 0) {
     const groups: SessionConfigSelectGroup[] = []
-    for (const model of input.models) {
+    for (const model of advertised) {
       let group = groups.find((candidate) => candidate.group === model.provider)
       if (group === undefined) {
         group = { group: model.provider, name: model.provider, options: [] }
@@ -60,7 +70,7 @@ export function buildConfigOptions(input: ConfigOptionsInput): SessionConfigOpti
       id: CONFIG_ID_MODEL,
       name: CONFIG_NAME_MODEL,
       category: CONFIG_ID_MODEL,
-      currentValue: encodeModelValue(input.currentModel),
+      currentValue: encodeModelValue(current),
       options: groups,
     })
   }
