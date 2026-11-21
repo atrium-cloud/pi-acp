@@ -182,7 +182,13 @@ describe('establishSession', () => {
 
   it('leaves a hidden provider out of the model option, also after a refresh, and refuses its values', async () => {
     const fake = makeFakePiClient(makeSpec())
-    const environment = { env: {}, unset: [], hiddenProviders: new Set(['openrouter']), providerModels: undefined }
+    const environment = {
+      env: {},
+      unset: [],
+      hiddenProviders: new Set(['openrouter']),
+      providerModels: undefined,
+      manualSessionTitles: false,
+    }
     const established = await establishSession(
       { cwd: ABS_CWD, mcpServers: [] },
       { ...makeDeps(fake), launchEnvironment: () => environment },

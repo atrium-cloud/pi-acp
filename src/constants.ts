@@ -300,6 +300,10 @@ export const idleTeardownLogLine = (sessionId: string, message: string): string 
 // A nameless session is titled from the first user message's first line, so Pi's
 // own session picker shows the same name. Pi rejects an empty-trim name.
 export const SESSION_TITLE_MAX_CHARS = 80
+// With this set to `1`, for a client that names its sessions itself, the adapter
+// derives no name and `session/list` titles an unnamed session `null`.
+export const ENV_MANUAL_SESSION_TITLES = 'PI_ACP_MANUAL_SESSION_TITLES'
+export const MANUAL_SESSION_TITLES_ON = '1'
 
 // ── Pi session store ──────────────────────────────────────────────────────────
 //
@@ -421,6 +425,17 @@ export function resolveHiddenCommands(env: NodeJS.ProcessEnv): ReadonlySet<strin
 
 export function resolveHiddenProviders(env: NodeJS.ProcessEnv): ReadonlySet<string> {
   return readHideList(env, ENV_HIDE_PROVIDERS)
+}
+
+export function resolveManualSessionTitles(env: NodeJS.ProcessEnv): boolean {
+  return parseManualSessionTitles(env[ENV_MANUAL_SESSION_TITLES], (message) => new Error(message))
+}
+
+/** Off when unset or empty; any value but `1` is refused through `fail`. */
+export function parseManualSessionTitles(raw: string | undefined, fail: (message: string) => Error): boolean {
+  if (raw === undefined || raw === '') return false
+  if (raw === MANUAL_SESSION_TITLES_ON) return true
+  throw fail(`${ENV_MANUAL_SESSION_TITLES} must be ${MANUAL_SESSION_TITLES_ON} or unset`)
 }
 
 export type ProviderModels = ReadonlyMap<string, ReadonlySet<string>>

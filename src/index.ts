@@ -10,6 +10,7 @@ import {
   resolveHiddenCommands,
   resolveHiddenProviders,
   resolveIdleTimeoutMs,
+  resolveManualSessionTitles,
   resolveProviderModels,
   resolveRpcTimeoutMs,
   resolveStartupTiming,
@@ -49,6 +50,7 @@ async function main(): Promise<void> {
     warmSpareMaxAgeMs: resolveWarmSpareMaxAgeMs(process.env),
     idleTimeoutMs: resolveIdleTimeoutMs(process.env),
     providerModels: resolveProviderModels(process.env),
+    manualSessionTitles: resolveManualSessionTitles(process.env),
     // The subprocess inherits this environment, so both sides resolve the same
     // store; a later env change does not move it under a running adapter.
     sessionDirs: resolveSessionDirs(process.env),

@@ -77,6 +77,8 @@ export interface LaunchEnvironment {
   readonly hiddenProviders: ReadonlySet<string> | undefined
   /** `PI_ACP_PROVIDER_MODELS` as this env leaves it; undefined narrows nothing. */
   readonly providerModels: ProviderModels | undefined
+  /** `PI_ACP_MANUAL_SESSION_TITLES` as this env leaves it. */
+  readonly manualSessionTitles: boolean
 }
 
 /** A started Pi subprocess and what a session is built from. */
@@ -720,9 +722,10 @@ export class SessionConnection {
   /** Titles a nameless session from the first line of the prompt's first text
    * block (never an inlined resource's `uri:` header). Skipped when that trims
    * empty (an image- or resource-only prompt), since Pi rejects an empty name.
-   * Fire-and-forget: the resulting `session_info_changed` drives the update. */
+   * Fire-and-forget: the resulting `session_info_changed` drives the update.
+   * Manual session titles leave the naming to the client. */
   private async maybeSetTitle(client: PiClientLike, firstText: string): Promise<void> {
-    if (!this.needsTitle) return
+    if (!this.needsTitle || this.launchEnvironment().manualSessionTitles) return
     const title = deriveTitle(firstText)
     if (title === '') return
     this.needsTitle = false

@@ -35,6 +35,7 @@ import {
   AGENT_VERSION,
   CATALOG_REFRESH_INTERVAL_MS,
   CATALOG_REFRESH_STARTUP_DELAY_MS,
+  ENV_MANUAL_SESSION_TITLES,
   ENV_PROVIDER_MODELS,
   JSONRPC_INTERNAL_ERROR,
   JSONRPC_INVALID_PARAMS,
@@ -44,6 +45,7 @@ import {
   META_KEY_BREAKPOINT_NAMESPACE,
   META_KEY_LAUNCH_ENV,
   META_KEY_MESSAGE_ID,
+  parseManualSessionTitles,
   parseProviderModels,
   PROTOCOL_VERSION,
   type ProviderModels,
@@ -103,6 +105,9 @@ export interface PiAcpServerOptions {
   /** The start-time `PI_ACP_PROVIDER_MODELS`, kept until a launch env request sets
    * or unsets it; undefined narrows nothing. */
   readonly providerModels?: ProviderModels | undefined
+  /** The start-time `PI_ACP_MANUAL_SESSION_TITLES`, kept until a launch env request
+   * sets or unsets it; absent leaves automatic naming on. */
+  readonly manualSessionTitles?: boolean | undefined
   readonly logStartupTiming: boolean
   /** Injectable for tests; defaults to spawning a real Pi RPC subprocess. */
   readonly createPiClient?: CreatePiClient | undefined
@@ -143,6 +148,7 @@ export class PiAcpServer {
       unset: [],
       hiddenProviders: options.hiddenProviders,
       providerModels: options.providerModels,
+      manualSessionTitles: options.manualSessionTitles === true,
     }
     this.warmSpare = options.warmSpareMaxAgeMs === undefined ? undefined : new WarmSpare(options.warmSpareMaxAgeMs)
     const createPiClient = options.createPiClient ?? defaultCreatePiClient
@@ -182,7 +188,7 @@ export class PiAcpServer {
       })
       .onRequest(
         LAUNCH_ENV_METHOD,
-        (params) => parseLaunchEnvRequest(params, this.options.providerModels),
+        (params) => parseLaunchEnvRequest(params, this.options),
         (context) => this.setLaunchEnvironment(context.params),
       )
   }
@@ -277,7 +283,7 @@ export class PiAcpServer {
     const page = sessions.slice(offset, offset + SESSION_LIST_PAGE_SIZE)
     const nextOffset = offset + page.length
     return {
-      sessions: page.map(toSessionInfo),
+      sessions: page.map((info) => toSessionInfo(info, this.launchEnvironment.manualSessionTitles)),
       ...(nextOffset < sessions.length ? { nextCursor: String(nextOffset) } : {}),
     }
   }
@@ -539,8 +545,12 @@ function readMessageIdMeta(meta: unknown): string | undefined {
 
 /** All three keys are required, and each replaces its whole part of the state.
  * The params carry key material, so a refusal names the key and never a value.
- * `PI_ACP_PROVIDER_MODELS` in neither `env` nor `unset` keeps the start-time value Pi inherits. */
-function parseLaunchEnvRequest(params: unknown, inheritedProviderModels: ProviderModels | undefined): LaunchEnvironment {
+ * `PI_ACP_PROVIDER_MODELS` or `PI_ACP_MANUAL_SESSION_TITLES` in neither `env` nor
+ * `unset` keeps the start-time value Pi inherits. */
+function parseLaunchEnvRequest(
+  params: unknown,
+  inherited: Pick<PiAcpServerOptions, 'providerModels' | 'manualSessionTitles'>,
+): LaunchEnvironment {
   const record: Record<string, unknown> = isRecord(params) ? params : {}
   const env = record['env']
   const unset = record['unset']
@@ -550,12 +560,16 @@ function parseLaunchEnvRequest(params: unknown, inheritedProviderModels: Provide
     throw invalidParams(`${LAUNCH_ENV_METHOD}: unset must be an array of variable names`)
   }
   if (!isStringList(hideProviders)) throw invalidParams(`${LAUNCH_ENV_METHOD}: hideProviders must be an array of strings`)
+  const refuse = (message: string): acp.RequestError => invalidParams(`${LAUNCH_ENV_METHOD}: env ${message}`)
   const providerModels = Object.hasOwn(env, ENV_PROVIDER_MODELS)
-    ? parseProviderModels(env[ENV_PROVIDER_MODELS], (message) => invalidParams(`${LAUNCH_ENV_METHOD}: env ${message}`))
+    ? parseProviderModels(env[ENV_PROVIDER_MODELS], refuse)
     : unset.includes(ENV_PROVIDER_MODELS)
       ? undefined
-      : inheritedProviderModels
-  return { env, unset, hiddenProviders: new Set(hideProviders), providerModels }
+      : inherited.providerModels
+  const manualSessionTitles = Object.hasOwn(env, ENV_MANUAL_SESSION_TITLES)
+    ? parseManualSessionTitles(env[ENV_MANUAL_SESSION_TITLES], refuse)
+    : !unset.includes(ENV_MANUAL_SESSION_TITLES) && inherited.manualSessionTitles === true
+  return { env, unset, hiddenProviders: new Set(hideProviders), providerModels, manualSessionTitles }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -634,20 +648,21 @@ function writeSurvivingMessageMap(
   writeMessageMap(messageMapPathFor(forkPath), surviving)
 }
 
-function toSessionInfo(info: SessionFileInfo): SessionInfo {
+function toSessionInfo(info: SessionFileInfo, manualSessionTitles: boolean): SessionInfo {
   return {
     sessionId: info.id,
     cwd: info.cwd,
-    title: sessionTitle(info),
+    title: sessionTitle(info, manualSessionTitles),
     updatedAt: info.modified.toISOString(),
   }
 }
 
 /** Pi's own session picker shows the name when there is one and the opening user
- * message otherwise; `null` for a session with neither. */
-function sessionTitle(info: SessionFileInfo): string | null {
+ * message otherwise; `null` for a session with neither, or with no name under
+ * manual session titles. */
+function sessionTitle(info: SessionFileInfo, manualSessionTitles: boolean): string | null {
   if (info.name !== undefined) return info.name
-  if (info.firstMessage === undefined) return null
+  if (manualSessionTitles || info.firstMessage === undefined) return null
   return deriveTitle(info.firstMessage) || null
 }
 

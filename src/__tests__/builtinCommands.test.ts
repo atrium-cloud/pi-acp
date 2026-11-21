@@ -1,3 +1,6 @@
+import { mkdirSync, writeFileSync } from 'node:fs'
+import { basename, join } from 'node:path'
+
 import * as acp from '@agentclientprotocol/sdk/unstable'
 import type { AgentContext } from '@agentclientprotocol/sdk/unstable'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -11,8 +14,12 @@ import {
   builtinTextName,
   builtinTextNameNormalized,
   builtinTextNameSet,
+  ENV_MANUAL_SESSION_TITLES,
   JSONRPC_INTERNAL_ERROR,
+  JSONRPC_INVALID_PARAMS,
   JSONRPC_INVALID_REQUEST,
+  LAUNCH_ENV_METHOD,
+  MANUAL_SESSION_TITLES_ON,
   META_KEY_BREAKPOINT_NAMESPACE,
   META_KEY_MESSAGE_ID,
   PI_COMPACTION_CANCELLED,
@@ -21,6 +28,7 @@ import {
 } from '../constants.js'
 import { PiRpcError } from '../pi/errors.js'
 import { type BuiltinCommand, formatSessionInfo, parseBuiltinCommand } from '../session/builtinCommands.js'
+import { sessionDirForCwd } from '../session/sessionDirectory.js'
 import { establishSession } from '../session/sessionSetup.js'
 import {
   type AcpTestFixture,
@@ -504,5 +512,71 @@ describe('a running built-in', () => {
     await connection.stop()
 
     await expect(pending).rejects.toThrow(/closed while a turn was in progress/)
+  })
+})
+
+// ── Manual session titles ─────────────────────────────────────────────────────
+
+const MANUAL_TITLES_LAUNCH_ENV = { env: { [ENV_MANUAL_SESSION_TITLES]: MANUAL_SESSION_TITLES_ON }, unset: [], hideProviders: [] }
+const STORED_TIME = '2026-01-01T00:00:00.000Z'
+const USER_ENTRY = { type: 'message', id: 'u1', parentId: null, timestamp: STORED_TIME, message: { role: 'user', content: 'fix the parser' } }
+
+const settledTurn: NonNullable<FakePiSpec['onPrompt']> = (emit) => {
+  emit({ type: 'agent_start' } as never)
+  emit({ type: 'message_end', message: USER_ENTRY.message } as never)
+  emit({ type: 'message_end', message: { role: 'assistant', stopReason: 'stop' } } as never)
+  emit({ type: 'agent_settled', aborted: false } as never)
+}
+
+/** A session started after a parent turned manual titles on with a launch env request. */
+async function startManualSession(): Promise<AcpTestFixture> {
+  fixture = createAcpTestFixture({ onPrompt: settledTurn })
+  await fixture.client.request(acp.methods.agent.initialize, INIT_REQUEST)
+  await fixture.client.request(LAUNCH_ENV_METHOD, MANUAL_TITLES_LAUNCH_ENV)
+  await fixture.client.request(acp.methods.agent.session.new, { cwd: CWD, mcpServers: [] })
+  await fixture.flushAnnouncements()
+  fixture.clearTranscript()
+  return fixture
+}
+
+/** Writes the session file Pi keeps for the session, then lists the titles. */
+async function listAfterStoring(scenario: AcpTestFixture, entries: readonly unknown[]): Promise<unknown[]> {
+  const dir = sessionDirForCwd(scenario.sessionRoot, CWD)
+  mkdirSync(dir, { recursive: true })
+  const header = { type: 'session', version: 3, id: TEST_SESSION_ID, timestamp: STORED_TIME, cwd: CWD }
+  const lines = [header, ...entries].map((entry) => JSON.stringify(entry))
+  writeFileSync(join(dir, basename(SESSION_FILE)), `${lines.join('\n')}\n`)
+  const listed = await scenario.client.request(acp.methods.agent.session.list, { cwd: CWD })
+  return listed.sessions.map((session) => session.title)
+}
+
+describe('manual session titles', () => {
+  it('names nothing after a settled prompt and lists the unnamed session with a null title', async () => {
+    const scenario = await startManualSession()
+    const malformed = { ...MANUAL_TITLES_LAUNCH_ENV, env: { [ENV_MANUAL_SESSION_TITLES]: 'true' } }
+    await expect(scenario.client.request(LAUNCH_ENV_METHOD, malformed)).rejects.toMatchObject({
+      code: JSONRPC_INVALID_PARAMS,
+      message: `${LAUNCH_ENV_METHOD}: env ${ENV_MANUAL_SESSION_TITLES} must be ${MANUAL_SESSION_TITLES_ON} or unset`,
+    })
+
+    await expect(prompt(scenario, 'fix the parser')).resolves.toMatchObject({ stopReason: 'end_turn' })
+
+    expect(sentTypes(scenario)).not.toContain('set_session_name')
+    expect(await listAfterStoring(scenario, [USER_ENTRY])).toEqual([null])
+  })
+
+  it('still names the session with /name and lists it by that name', async () => {
+    const scenario = await startManualSession()
+
+    await prompt(scenario, `/name ${SESSION_NAME}`)
+    await scenario.flushAnnouncements()
+
+    expect(scenario.fake.calls.find((call) => call['type'] === 'set_session_name')).toEqual({
+      type: 'set_session_name',
+      name: SESSION_NAME,
+    })
+    expect(scenario.transcript()).toEqual([agentText(builtinTextNameSet(SESSION_NAME))])
+    const named = { type: 'session_info', id: 'info', parentId: null, timestamp: STORED_TIME, name: SESSION_NAME }
+    expect(await listAfterStoring(scenario, [named])).toEqual([SESSION_NAME])
   })
 })

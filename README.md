@@ -16,6 +16,7 @@ The release is a single executable, `pi-acp`; put it on PATH or point your ACP c
 - `PI_ACP_HIDE_COMMANDS`: comma-separated command names to leave out of the advertised slash commands, for example `llama`.
 - `PI_ACP_HIDE_PROVIDERS`: comma-separated Pi provider ids whose models are left out of the model option, for example `opencode`; a launch env request replaces the list.
 - `PI_ACP_PROVIDER_MODELS`: a JSON object mapping Pi provider ids to the model ids each one offers, for example `{"opencode":["glm-5.3","kimi-k2.6"]}`; a listed provider's models in the model option are those ids plus the session's current model, and a launch env request sets or unsets it like any other variable.
+- `PI_ACP_MANUAL_SESSION_TITLES`: set to `1`, pi-acp leaves an unnamed session unnamed and lists it with a `null` title, so only `/name` or a Pi extension names a session; unset, pi-acp names an unnamed session from the first line of its first prompt; a launch env request sets or unsets it like any other variable.
 - `PI_ACP_WARM_SPARE_MAX_AGE_MS`: keeps one Pi subprocess started ahead for the next `session/new` with the same cwd and MCP servers, stopped at this age; off when unset.
 - `PI_ACP_IDLE_TIMEOUT_MS`: stops a session's Pi subprocess once the session has had no request in flight for this long, and relaunches it on the session's next prompt, config change or load; off when unset.
 - `PI_TIMING`: Pi's own startup profiling switch; with it set to `1`, pi-acp also logs the Pi launch and a startup timing line for each session start and each wake to stderr.
