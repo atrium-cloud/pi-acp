@@ -41,8 +41,9 @@ export const NODE_COMPILE_CACHE_DIR_NAME = 'node-compile-cache'
 export const DEFAULT_RPC_TIMEOUT_MS = 30_000
 export const ENV_RPC_TIMEOUT_MS = 'PI_ACP_RPC_TIMEOUT_MS'
 
-// Teardown: stdin-close is Pi's lossless exit (flush then exit 0); SIGTERM skips
-// the flush. Stdin grace is generous — on Windows SIGTERM is effectively a kill.
+// Teardown: closing stdin starts Pi's orderly shutdown, which waits for pending work.
+// A single SIGTERM does not interrupt it, so only the final kill cuts it short.
+// Stdin grace is generous because on Windows SIGTERM is effectively a kill.
 export const STDIN_END_GRACE_MS = 5_000
 export const SIGTERM_GRACE_MS = 1_000
 

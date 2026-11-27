@@ -241,7 +241,7 @@ export class SessionConnection {
 
   /** Sends the command snapshot after `session/new` has returned. It is deferred
    * a macrotask because the SDK client only attaches its session-update queue
-   * inside the `session/new` response callback (acp.js SessionUpdateRouter), so an
+   * inside the `session/new` response callback (bindings.js SessionUpdateRouter), so an
    * update sent before that response lands is dropped for an unknown session.
    * Notices held back during setup follow it, in arrival order. */
   announceCommands(): void {

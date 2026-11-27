@@ -191,6 +191,9 @@ export function createAcpTestFixture(spec: Partial<FakePiSpec> = {}, options: Ac
       records.length = 0
     },
     async flushAnnouncements(): Promise<void> {
+      // The adapter's announcement timer, then one more timer turn: the SDK reads one
+      // message per event-loop task, and those tasks drain before a timer fires.
+      await new Promise((resolve) => setTimeout(resolve, 0))
       await new Promise((resolve) => setTimeout(resolve, 0))
     },
     setPermissionResponse(response: RequestPermissionResponse | Promise<RequestPermissionResponse>): void {
