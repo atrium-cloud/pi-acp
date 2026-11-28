@@ -1,17 +1,13 @@
 import { createReadStream, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { readdir, stat } from 'node:fs/promises'
 import { homedir as osHomedir } from 'node:os'
-import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
+import { basename, isAbsolute, join, resolve } from 'node:path'
 import { createInterface } from 'node:readline'
 
 import {
   DEFAULT_PI_AGENT_DIR_SEGMENTS,
   ENV_PI_AGENT_DIR,
   ENV_PI_SESSION_DIR,
-  MESSAGE_MAP_KEY_MESSAGES,
-  MESSAGE_MAP_KEY_VERSION,
-  MESSAGE_MAP_SUFFIX,
-  MESSAGE_MAP_VERSION,
   PI_SESSIONS_DIR_NAME,
   PI_SETTINGS_FILE_NAME,
   SESSION_DIR_WRAP,
@@ -445,64 +441,11 @@ export function isUserMessageEntry(entry: SessionFileEntry): boolean {
   return isMessageWithContent(message) && message.role === ROLE_USER
 }
 
-// ── Breakpoint fork ───────────────────────────────────────────────────────────
+// ── Cursor fork ───────────────────────────────────────────────────────────────
 //
-// ACP names no message, so a client that wants to fork from an earlier prompt
-// passes an id it minted itself. The sidecar remembers which Pi entry each id
-// landed on, and the cut follows Pi's entry tree rather than file order: a
-// session that has already been forked on the Pi side holds sibling branches
-// whose entries sit between an ancestor and the named prompt.
-
-/** `<stem>.acp.json` for `<stem>.jsonl`. Throws if `sessionPath` lacks the .jsonl suffix. */
-export function messageMapPathFor(sessionPath: string): string {
-  if (!sessionPath.endsWith(SESSION_FILE_EXTENSION)) {
-    throw new Error(`Session path "${sessionPath}" does not end in ${SESSION_FILE_EXTENSION}`)
-  }
-  return `${sessionPath.slice(0, -SESSION_FILE_EXTENSION.length)}${MESSAGE_MAP_SUFFIX}`
-}
-
-/** ACP message id -> Pi entry id. `null` when the sidecar does not exist. A
- * malformed file or a version other than MESSAGE_MAP_VERSION throws (fail fast). */
-export function readMessageMap(sidecarPath: string): Readonly<Record<string, string>> | null {
-  if (!existsSync(sidecarPath)) return null
-
-  const text = stripBom(readFileSync(sidecarPath, FILE_ENCODING))
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(text)
-  } catch (error) {
-    throw new Error(`Message map "${sidecarPath}" is not valid JSON: ${(error as Error).message}`)
-  }
-  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-    throw new Error(`Message map "${sidecarPath}" is not a JSON object`)
-  }
-
-  const record = parsed as Record<string, unknown>
-  const version = record[MESSAGE_MAP_KEY_VERSION]
-  if (version !== MESSAGE_MAP_VERSION) {
-    throw new Error(
-      `Message map "${sidecarPath}" has ${MESSAGE_MAP_KEY_VERSION} ${String(version)}, expected ${MESSAGE_MAP_VERSION}`,
-    )
-  }
-
-  const messages = record[MESSAGE_MAP_KEY_MESSAGES]
-  if (typeof messages !== 'object' || messages === null || Array.isArray(messages)) {
-    throw new Error(`Message map "${sidecarPath}" has no ${MESSAGE_MAP_KEY_MESSAGES} object`)
-  }
-  for (const [messageId, entryId] of Object.entries(messages)) {
-    if (typeof entryId !== 'string') {
-      throw new Error(`Message map "${sidecarPath}" maps "${messageId}" to a non-string entry id`)
-    }
-  }
-  return messages as Record<string, string>
-}
-
-/** Rewrites the whole sidecar in one sync write. Creates the parent dir if needed. */
-export function writeMessageMap(sidecarPath: string, messages: Readonly<Record<string, string>>): void {
-  mkdirSync(dirname(sidecarPath), { recursive: true })
-  const body = JSON.stringify({ [MESSAGE_MAP_KEY_VERSION]: MESSAGE_MAP_VERSION, [MESSAGE_MAP_KEY_MESSAGES]: messages })
-  writeFileSync(sidecarPath, `${body}${ENTRY_LINE_SEPARATOR}`, { encoding: FILE_ENCODING })
-}
+// A cursor names the user entry it lies before, and the cut follows Pi's entry
+// tree rather than file order: a session that has already been forked on the Pi
+// side holds sibling branches whose entries sit between an ancestor and that entry.
 
 /** The ids of the user message entries on the branch that ends at `leafId`,
  * oldest first; none when the tree is empty. */
@@ -532,7 +475,7 @@ function branchUserEntries(entries: readonly SessionFileEntry[], leafId: string 
   return [...branchEntriesBefore(entries, leafId), leaf].filter(isUserMessageEntry)
 }
 
-/** The cut for a breakpoint fork: the ancestors of `entryId` (its parent up to
+/** The cut for a fork at a cursor: the ancestors of `entryId` (its parent up to
  * the root) as the non-header entries in file order filtered to that set. The
  * last element is the named entry's parent, which Pi adopts as the leaf. Empty
  * when `entryId` is the root. Throws when `entryId` is not in `entries` or the

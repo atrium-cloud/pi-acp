@@ -43,6 +43,7 @@ async function connect(spec: FakePiSpec, requestImpl: RequestImpl): Promise<Conn
     rpcTimeoutMs: 1_000,
     notifier,
     clientSupportsNotices: false,
+    clientSupportsCursors: false,
     mcpExtensionPath: MCP_EXTENSION_PATH,
     hiddenCommands: new Set(),
     logStartupTiming: false,

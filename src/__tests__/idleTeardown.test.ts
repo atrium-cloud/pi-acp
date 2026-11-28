@@ -240,6 +240,7 @@ async function connect(
       rpcTimeoutMs: RPC_TIMEOUT_MS,
       notifier: notifier.context,
       clientSupportsNotices: false,
+      clientSupportsCursors: false,
       mcpExtensionPath: MCP_EXTENSION_PATH,
       hiddenCommands: new Set(),
       logStartupTiming,

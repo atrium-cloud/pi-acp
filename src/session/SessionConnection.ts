@@ -45,11 +45,13 @@ import { asMessage } from '../server/errors.js'
 import { buildConfigOptions, type ModelChoice, resolveModelSelection, toModelChoices } from '../turn/configOptions.js'
 import { configOptionUpdate, sessionInfoUpdate, toolKind, toolTitle, turnUsage, usageUpdate } from '../turn/mappers.js'
 import type { FlattenedPrompt } from '../turn/promptContent.js'
+import { type CursorEntity, cursorEntityOf, forkCursorUpdate } from '../turn/cursors.js'
 import { type AnnouncedToolCall, type TurnEventSink, TurnHandler } from '../turn/TurnHandler.js'
 import { type BuiltinCommand, BuiltinCommandRun, formatSessionInfo, parseBuiltinCommand } from './builtinCommands.js'
-import { replayUpdates } from './replay.js'
-import { isUserMessageEntry, messageMapPathFor, readMessageMap, type SessionFileEntry, writeMessageMap } from './sessionDirectory.js'
+import { type ReplayIds, replayUpdates } from './replay.js'
+import { branchUserEntryIds, branchUserEntryMatcher } from './sessionDirectory.js'
 import { deriveTitle } from './title.js'
+import { uuidv7 } from './uuidv7.js'
 
 // The exact `set_thinking_level` payload type, without importing the Pi package's
 // `ThinkingLevel` name (it is not re-exported from the package root).
@@ -114,17 +116,14 @@ interface WakeWaiter {
   readonly fail: (error: Error) => void
 }
 
-/** The result of one `session/prompt`. `acknowledgedMessageId` is the client's own
- * breakpoint message id, echoed back only once it is recorded against a Pi entry
- * id, so a client that sees no echo knows the prompt cannot be forked from.
- * `usage` is set only when a turn or compaction ran and both stats reads held. */
+/** The result of one `session/prompt`. `usage` is set only when a turn or
+ * compaction ran and both stats reads held. */
 export interface PromptOutcome {
   readonly stopReason: StopReason
   readonly usage: Usage | undefined
-  readonly acknowledgedMessageId: string | undefined
 }
 
-const CANCELLED_OUTCOME: PromptOutcome = { stopReason: 'cancelled', usage: undefined, acknowledgedMessageId: undefined }
+const CANCELLED_OUTCOME: PromptOutcome = { stopReason: 'cancelled', usage: undefined }
 
 /** Persistent per-session object, created at `session/new` and living until the
  * client closes it or the connection ends. It owns the single exhaustive router
@@ -134,6 +133,7 @@ const CANCELLED_OUTCOME: PromptOutcome = { stopReason: 'cancelled', usage: undef
 export class SessionConnection {
   private readonly notifier: AgentContext
   private readonly clientSupportsNotices: boolean
+  private readonly clientSupportsCursors: boolean
   /** Read at use, since a parent process can replace it while the session lives. */
   private readonly launchEnvironment: () => LaunchEnvironment
   private readonly relaunch: Relaunch
@@ -178,12 +178,11 @@ export class SessionConnection {
   private readonly wakeWaiters = new Set<WakeWaiter>()
   /** True until this session gets a name; the first prompt derives one. */
   private needsTitle = false
-  /** Pi's own file for this session, undefined when Pi persists nothing; without
-   * it there is nowhere to put the sidecar, so nothing is ever recorded. */
+  /** Pi's own file for this session, undefined when Pi persists nothing. */
   private sessionFile: string | undefined
-  /** The breakpoint map, read from the sidecar at most once per connection (a
-   * resumed or forked session inherits one) and rewritten whole after that. */
-  private messageMap: Readonly<Record<string, string>> | null = null
+  /** The last anchorable entity this client was sent; a live prompt's cursor
+   * lies after it. */
+  private lastEntity: CursorEntity | undefined
   /** False until the first command snapshot goes out; a notice that arrives
    * before then waits in `pendingNotices`, since the client could not route it. */
   private announced = false
@@ -193,12 +192,14 @@ export class SessionConnection {
     notifier: AgentContext
     cwd: string
     clientSupportsNotices: boolean
+    clientSupportsCursors: boolean
     launchEnvironment: () => LaunchEnvironment
     relaunch: Relaunch
   }) {
     this.notifier = init.notifier
     this.cwd = init.cwd
     this.clientSupportsNotices = init.clientSupportsNotices
+    this.clientSupportsCursors = init.clientSupportsCursors
     this.launchEnvironment = init.launchEnvironment
     this.relaunch = init.relaunch
   }
@@ -269,10 +270,24 @@ export class SessionConnection {
     await this.whileBusy(async () => {
       const client = await this.awakeClient()
       const history = await client.request({ type: 'get_messages' })
-      for (const update of replayUpdates(history.data.messages, this.cwd)) {
+      const ids = this.clientSupportsCursors ? await this.replayIds(client) : undefined
+      // The replay rebuilds what the client holds, so its anchors start over.
+      this.lastEntity = undefined
+      for (const update of replayUpdates(history.data.messages, this.cwd, ids)) {
+        this.track(update)
         await this.notifier.notify(acp.methods.client.session.update, { sessionId: this.sessionId, update })
       }
     })
+  }
+
+  private async replayIds(client: PiClientLike): Promise<ReplayIds> {
+    const tree = (await client.request({ type: 'get_entries' })).data
+    return { userEntryId: branchUserEntryMatcher(tree.entries, tree.leafId), mintMessageId: uuidv7 }
+  }
+
+  private track(update: SessionUpdate): void {
+    // Always a fresh object, so identity tells whether a turn reported any entity.
+    this.lastEntity = cursorEntityOf(update) ?? this.lastEntity
   }
 
   async applyConfigOption(configId: string, value: string): Promise<SessionConfigOption[]> {
@@ -419,6 +434,7 @@ export class SessionConnection {
 
   private emit(update: SessionUpdate): void {
     if (this.exitError || this.closing) return
+    this.track(update)
     void this.notifier
       .notify(acp.methods.client.session.update, { sessionId: this.sessionId, update })
       .catch((error: unknown) => {
@@ -430,10 +446,10 @@ export class SessionConnection {
    * close during the wake answers `cancelled` without sending the prompt; the
    * turn checks run only once the wake lands, so two prompts racing one wake
    * cannot both start a turn. */
-  async runPrompt(prompt: FlattenedPrompt, signal: AbortSignal, messageId?: string): Promise<PromptOutcome> {
+  async runPrompt(prompt: FlattenedPrompt, signal: AbortSignal): Promise<PromptOutcome> {
     return await this.whileBusy(async () => {
       if (this.dormant && (signal.aborted || !(await this.awaitWake(signal)))) return CANCELLED_OUTCOME
-      return await this.runLivePrompt(prompt, signal, messageId)
+      return await this.runLivePrompt(prompt, signal)
     })
   }
 
@@ -442,7 +458,7 @@ export class SessionConnection {
    * ahead of the `await request` continuation — subscribing after would miss it.
    * Both cancel paths (`session/cancel` and the prompt's own `$/cancel_request`
    * abort signal) converge on `cancel()`. */
-  private async runLivePrompt(prompt: FlattenedPrompt, signal: AbortSignal, messageId?: string): Promise<PromptOutcome> {
+  private async runLivePrompt(prompt: FlattenedPrompt, signal: AbortSignal): Promise<PromptOutcome> {
     const client = this.liveClient()
     if (this.activeTurn !== null) {
       throw new acp.RequestError(JSONRPC_INVALID_REQUEST, 'a turn is already in progress for this session')
@@ -454,11 +470,15 @@ export class SessionConnection {
     const builtin = parseBuiltinCommand(prompt.message)
     if (builtin !== undefined) return await this.runBuiltinCommand(client, builtin, signal)
 
+    // Read before the turn's own output moves it: the prompt lies after this entity.
+    const entityBeforePrompt = this.lastEntity
     const turn = new TurnHandler({
       notifier: this.notifier,
       sessionId: this.sessionId,
       cwd: this.cwd,
       requestAbort: () => this.requestAbort(),
+      mintMessageId: this.clientSupportsCursors ? uuidv7 : undefined,
+      onUpdate: (update) => this.track(update),
     })
     this.activeTurn = turn
     const onAbort = (): void => this.cancel()
@@ -487,17 +507,21 @@ export class SessionConnection {
       // Nothing left to name or meter on a session whose subprocess is stopping,
       // nor on a prompt an extension command handled without running a turn:
       // its text is the command line, not a title, and no tokens were spent.
-      if (this.closing || !turn.startedTurn) return { stopReason: reason, usage: undefined, acknowledgedMessageId: undefined }
+      if (this.closing || !turn.startedTurn) return { stopReason: reason, usage: undefined }
       await this.maybeSetTitle(client, prompt.firstText)
       const usage = await this.reportEndOfTurnUsage(client, await before)
       // Only a reported user message is in Pi's tree; before that report the last
       // user entry is the previous prompt's.
-      const acknowledgedMessageId =
-        messageId === undefined || !turn.reportedUserMessage ? undefined : await this.recordMessageId(client, messageId)
-      return { stopReason: reason, usage, acknowledgedMessageId }
+      if (turn.reportedUserMessage && entityBeforePrompt !== undefined) {
+        await this.announcePromptCursor(client, entityBeforePrompt)
+      }
+      return { stopReason: reason, usage }
     } finally {
       signal.removeEventListener('abort', onAbort)
       this.activeTurn = null
+      // A prompt Pi stored whose turn showed the client nothing now lies after
+      // that entity, unseen, so the entity no longer marks where the next begins.
+      if (turn.reportedUserMessage && this.lastEntity === entityBeforePrompt) this.lastEntity = undefined
     }
   }
 
@@ -512,7 +536,7 @@ export class SessionConnection {
     try {
       run.track(this.executeBuiltinCommand(client, command, run))
       const stopReason = await run.settled
-      return { stopReason, usage: run.usage, acknowledgedMessageId: undefined }
+      return { stopReason, usage: run.usage }
     } finally {
       signal.removeEventListener('abort', onAbort)
       this.activeTurn = null
@@ -609,32 +633,20 @@ export class SessionConnection {
     }
   }
 
-  /** Binds the client's breakpoint message id to the Pi entry id of the prompt
-   * this turn just ran, so a later fork can cut the tree there. Called once Pi
-   * has reported the turn's user message, which it appends to the file (creating
-   * it on a first turn) before the report reaches stdout, so the turn's prompt is
-   * the last user message entry in file order. Returns the id only once the
-   * sidecar holds it: an unrecorded prompt must not be echoed as forkable, so
-   * every failure here degrades to no echo rather than failing the turn. */
-  private async recordMessageId(client: PiClientLike, messageId: string): Promise<string | undefined> {
-    const sessionFile = this.sessionFile
-    if (sessionFile === undefined) return undefined
-    const sidecarPath = messageMapPathFor(sessionFile)
+  /** Announces the fork cursor before the prompt this turn just ran. Called once
+   * Pi has reported the turn's user message, which it appends before the report
+   * reaches stdout, so the prompt is the last user message on the branch. v1
+   * never reports a prompt to its sender, hence the anchor after `entity`. A
+   * failure costs the cursor until the next replay, never the turn. */
+  private async announcePromptCursor(client: PiClientLike, entity: CursorEntity): Promise<void> {
+    if (!this.clientSupportsCursors || this.sessionFile === undefined) return
     try {
-      const entries = await client.request({ type: 'get_entries' })
-      const entryId = lastUserEntryId(entries.data.entries)
+      const tree = (await client.request({ type: 'get_entries' })).data
+      const entryId = branchUserEntryIds(tree.entries, tree.leafId).at(-1)
       if (entryId === undefined) throw new Error('the session tree holds no user message entry')
-      const loaded = this.messageMap ?? readMessageMap(sidecarPath) ?? {}
-      this.messageMap = loaded
-      const messages = { ...loaded, [messageId]: entryId }
-      writeMessageMap(sidecarPath, messages)
-      this.messageMap = messages
-      return messageId
+      this.emit(forkCursorUpdate(entryId, entity, 'after'))
     } catch (error) {
-      console.error(
-        `[${AGENT_NAME}] [${this.sessionId}] failed to record breakpoint message id "${messageId}": ${asMessage(error)}`,
-      )
-      return undefined
+      console.error(`[${AGENT_NAME}] [${this.sessionId}] failed to announce the prompt's cursor: ${asMessage(error)}`)
     }
   }
 
@@ -1014,14 +1026,6 @@ export class SessionConnection {
     if (this.config === null) throw new Error('session connection used before attach()')
     return this.config
   }
-}
-
-function lastUserEntryId(entries: readonly SessionFileEntry[]): string | undefined {
-  for (let index = entries.length - 1; index >= 0; index--) {
-    const entry = entries[index]
-    if (entry !== undefined && isUserMessageEntry(entry) && typeof entry.id === 'string') return entry.id
-  }
-  return undefined
 }
 
 function isUnnamed(name: string | undefined): boolean {

@@ -13,7 +13,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import * as acp from '@agentclientprotocol/sdk/unstable'
-import type { PromptResponse, SessionConfigOption } from '@agentclientprotocol/sdk/unstable'
+import type { CursorUpdate, PromptResponse, SessionConfigOption } from '@agentclientprotocol/sdk/unstable'
 import { afterAll, afterEach, beforeAll, expect, it } from 'vitest'
 
 import {
@@ -25,13 +25,12 @@ import {
   CONFIG_ID_MODEL,
   CONFIG_ID_THOUGHT_LEVEL,
   JSONRPC_INVALID_PARAMS,
-  META_KEY_BREAKPOINT_NAMESPACE,
-  META_KEY_MESSAGE_ID,
   PERMISSION_OPTION_ALLOW_ONCE,
   SESSION_ENTRY_TYPE_HEADER,
   SESSION_FILE_EXTENSION,
 } from '../../constants.js'
 import { deriveTitle } from '../../session/title.js'
+import { cursorIdForEntry } from '../../turn/cursors.js'
 import { describeE2E, E2E_SETUP_TIMEOUT_MS, E2E_TURN_TIMEOUT_MS, pinnedModelValue } from './e2eGate.js'
 import type { SpawnedAgent } from './spawnedAgentFixture.js'
 import { createSpawnedAgent, openPinnedSession } from './spawnedAgentFixture.js'
@@ -59,7 +58,7 @@ const JSONRPC_RESOURCE_NOT_FOUND = -32_002
 const SCRATCH_PREFIX = 'pi-acp-e2e-cwd-'
 const NO_SESSION_ID = 'pi-e2e-no-such-session'
 
-/** Three breakpoint-fork turns, one marker each. None is a substring of another,
+/** Three cursor-fork turns, one marker each. None is a substring of another,
  * so a replayed transcript either carries a turn or it does not. */
 const CUT_MARKER_FIRST = 'pi-e2e-cut-alpha'
 const CUT_MARKER_SECOND = 'pi-e2e-cut-bravo'
@@ -95,7 +94,7 @@ describeE2E('pi live session lifecycle', () => {
   let otherWorkspace: string | null = null
 
   beforeAll(async () => {
-    agent = await createSpawnedAgent()
+    agent = await createSpawnedAgent({ clientCapabilities: { session: { cursors: {} } } })
     // Resolved for the same reason the fixture resolves its own scratch: the
     // fork's header cwd is compared to this string without following symlinks.
     otherWorkspace = realpathSync(mkdtempSync(join(tmpdir(), SCRATCH_PREFIX)))
@@ -122,16 +121,8 @@ describeE2E('pi live session lifecycle', () => {
     return otherWorkspace
   }
 
-  /** `messageId` is the client-minted breakpoint id, sent exactly as a client
-   * sends it; omitted, the prompt carries no `_meta` at all. */
-  async function promptOn(sessionId: string, text: string, messageId?: string): Promise<PromptResponse> {
-    return await live().agent.request(acp.methods.agent.session.prompt, {
-      sessionId,
-      prompt: [{ type: 'text', text }],
-      ...(messageId === undefined
-        ? {}
-        : { _meta: { [META_KEY_BREAKPOINT_NAMESPACE]: { [META_KEY_MESSAGE_ID]: messageId } } }),
-    })
+  async function promptOn(sessionId: string, text: string): Promise<PromptResponse> {
+    return await live().agent.request(acp.methods.agent.session.prompt, { sessionId, prompt: [{ type: 'text', text }] })
   }
 
   function selectOption(
@@ -349,27 +340,28 @@ describeE2E('pi live session lifecycle', () => {
   )
 
   it(
-    'forks a parent at an earlier prompt named by a breakpoint message id',
+    'forks a parent at the cursor announced for an earlier prompt',
     async () => {
       const agent = live()
       const parentId = await openPinnedSession(agent)
 
-      // Each prompt carries its own minted id, and the response's echo is what
-      // tells the client that id is forkable at all.
-      const firstMessageId = randomUUID()
-      const first = await promptOn(parentId, CUT_PROMPT_FIRST, firstMessageId)
-      expect(first.stopReason).toBe('end_turn')
-      expect(echoedMessageId(first._meta)).toBe(firstMessageId)
+      // The first prompt follows nothing the client holds, so it has no cursor.
+      expect((await promptOn(parentId, CUT_PROMPT_FIRST)).stopReason).toBe('end_turn')
+      expect(cursorUpdates(agent, parentId)).toEqual([])
 
-      const secondMessageId = randomUUID()
-      const second = await promptOn(parentId, CUT_PROMPT_SECOND, secondMessageId)
-      expect(second.stopReason).toBe('end_turn')
-      expect(echoedMessageId(second._meta)).toBe(secondMessageId)
+      // The second is announced after the first turn's last entity.
+      expect((await promptOn(parentId, CUT_PROMPT_SECOND)).stopReason).toBe('end_turn')
+      await agent.waitForUpdate(parentId, (update) => update.sessionUpdate === 'cursor_update', E2E_TURN_TIMEOUT_MS)
+      const [cursor, ...others] = cursorUpdates(agent, parentId)
+      expect(others).toEqual([])
+      expect(cursor?.capabilities).toEqual({ fork: {} })
+      expect(cursor?.anchor).toMatchObject({ position: 'after' })
+      if (cursor === undefined) throw new Error('e2e: the second prompt announced no cursor')
 
       const forked = await agent.agent.request(acp.methods.agent.session.fork, {
         sessionId: parentId,
         cwd: agent.workspace,
-        _meta: { [META_KEY_BREAKPOINT_NAMESPACE]: { [META_KEY_MESSAGE_ID]: secondMessageId } },
+        cursorId: cursor.cursorId,
       })
       expect(forked.sessionId).not.toBe(parentId)
       expect(forked.configOptions).toBeDefined()
@@ -391,6 +383,15 @@ describeE2E('pi live session lifecycle', () => {
       expect(replayed).toContain(CUT_MARKER_FIRST)
       expect(replayed).not.toContain(CUT_MARKER_SECOND)
 
+      // A replay reports the user message itself, so its cursor lies before it.
+      const replayedUserMessageId = agent
+        .sessionUpdates(forked.sessionId)
+        .flatMap((update) => (update.sessionUpdate === 'user_message_chunk' ? [update.messageId] : []))[0]
+      expect(typeof replayedUserMessageId).toBe('string')
+      expect(cursorUpdates(agent, forked.sessionId).map((update) => update.anchor)).toEqual([
+        { type: 'user_message', messageId: replayedUserMessageId, position: 'before' },
+      ])
+
       // Both sessions stay live, and the parent keeps the turn the fork dropped.
       expect((await promptOn(forked.sessionId, CUT_PROMPT_THIRD)).stopReason).toBe('end_turn')
       expect((await promptOn(parentId, CUT_PROMPT_FIRST)).stopReason).toBe('end_turn')
@@ -404,17 +405,17 @@ describeE2E('pi live session lifecycle', () => {
   )
 
   it(
-    'rejects a breakpoint fork naming a message id the adapter never recorded',
+    'rejects a fork at a cursor the session never announced',
     async () => {
       const agent = live()
       const parentId = await openPinnedSession(agent)
-      expect((await promptOn(parentId, ECHO_PROMPT, randomUUID())).stopReason).toBe('end_turn')
+      expect((await promptOn(parentId, ECHO_PROMPT)).stopReason).toBe('end_turn')
 
       await expect(
         agent.agent.request(acp.methods.agent.session.fork, {
           sessionId: parentId,
           cwd: agent.workspace,
-          _meta: { [META_KEY_BREAKPOINT_NAMESPACE]: { [META_KEY_MESSAGE_ID]: randomUUID() } },
+          cursorId: cursorIdForEntry(randomUUID()),
         }),
       ).rejects.toMatchObject({ code: JSONRPC_INVALID_PARAMS })
     },
@@ -457,11 +458,11 @@ describeE2E('pi live session lifecycle', () => {
       expect((await promptOn(sessionId, ECHO_PROMPT)).stopReason).toBe('end_turn')
 
       const textBefore = agent.agentText(sessionId).length
-      const response = await promptOn(sessionId, '/session', randomUUID())
+      const response = await promptOn(sessionId, '/session')
 
       expect(response.stopReason).toBe('end_turn')
       // No user entry was appended, so there is nothing to fork from.
-      expect(echoedMessageId(response._meta)).toBeUndefined()
+      expect(cursorUpdates(agent, sessionId)).toEqual([])
       const info = agent.agentText(sessionId).slice(textBefore)
       expect(info).toContain(`File: ${sessionFilePath(agent.sessionDir, sessionId)}`)
       expect(info).toContain(`ID: ${sessionId}`)
@@ -519,13 +520,9 @@ function userMessageText(agent: SpawnedAgent, sessionId: string): string {
     .join('\n')
 }
 
-/** The breakpoint id a prompt response echoed back, or undefined when the
- * adapter recorded nothing for that prompt. */
-function echoedMessageId(meta: PromptResponse['_meta']): string | undefined {
-  const stack = meta?.[META_KEY_BREAKPOINT_NAMESPACE]
-  if (typeof stack !== 'object' || stack === null) return undefined
-  const messageId = (stack as { readonly [key: string]: unknown })[META_KEY_MESSAGE_ID]
-  return typeof messageId === 'string' ? messageId : undefined
+/** The cursors one session announced, in order. */
+function cursorUpdates(agent: SpawnedAgent, sessionId: string): CursorUpdate[] {
+  return agent.sessionUpdates(sessionId).flatMap((update) => (update.sessionUpdate === 'cursor_update' ? [update] : []))
 }
 
 /** One line of a session file, read as the transcript rather than as a type. */

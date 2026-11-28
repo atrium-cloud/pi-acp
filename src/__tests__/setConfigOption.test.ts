@@ -31,6 +31,7 @@ async function connectionFor(spec: FakePiSpec) {
     rpcTimeoutMs: 1_000,
     notifier: stubNotifier,
     clientSupportsNotices: false,
+    clientSupportsCursors: false,
     mcpExtensionPath: MCP_EXTENSION_PATH,
     hiddenCommands: new Set(),
     logStartupTiming: false,

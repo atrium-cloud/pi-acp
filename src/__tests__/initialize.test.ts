@@ -6,8 +6,6 @@ import {
   AGENT_TITLE,
   AGENT_VERSION,
   JSONRPC_INVALID_PARAMS,
-  META_KEY_BREAKPOINT_NAMESPACE,
-  META_KEY_MESSAGE_ID,
   PROTOCOL_VERSION,
 } from '../constants.js'
 import { PiAcpServer } from '../server/PiAcpServer.js'
@@ -45,7 +43,7 @@ describe('initialize (over an ACP connection)', () => {
         sessionCapabilities: {
           list: {},
           resume: {},
-          fork: { _meta: { [META_KEY_BREAKPOINT_NAMESPACE]: { [META_KEY_MESSAGE_ID]: {} } } },
+          fork: {},
           close: {},
           delete: {},
         },
@@ -54,19 +52,13 @@ describe('initialize (over an ACP connection)', () => {
     })
   })
 
-  it('answers a client that advertises session.notices with the same capabilities', async () => {
+  it('answers a client that advertises session.notices and session.cursors with the same capabilities', async () => {
     const plain = await callInitialize(makeServer())
-    const withNotices = await callInitialize(makeServer(), {
+    const withSessionCapabilities = await callInitialize(makeServer(), {
       ...INIT_REQUEST,
-      clientCapabilities: { session: { notices: {} } },
+      clientCapabilities: { session: { notices: {}, cursors: {} } },
     })
-    expect(withNotices).toEqual(plain)
-  })
-
-  it('advertises the breakpoint fork marker as a JSON object', async () => {
-    const result = await callInitialize(makeServer())
-    const fork = result.agentCapabilities?.sessionCapabilities?.fork
-    expect(fork?._meta).toMatchObject({ [META_KEY_BREAKPOINT_NAMESPACE]: { [META_KEY_MESSAGE_ID]: {} } })
+    expect(withSessionCapabilities).toEqual(plain)
   })
 })
 

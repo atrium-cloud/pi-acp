@@ -17,7 +17,7 @@ export interface FakeState {
   thinkingLevel: string
   model?: { provider: string; id: string; name: string } | undefined
   sessionName?: string
-  /** Pi's own file for the session; a session without one records no breakpoints. */
+  /** Pi's own file for the session; a session without one announces no prompt cursors. */
   sessionFile?: string
 }
 
@@ -272,7 +272,7 @@ export function makeFakePiClient(spec: FakePiSpec): FakePiClient {
     if (spec.sessionIdFromSessionFile && sessionArgIndex !== -1) {
       const sessionFile = args[sessionArgIndex + 1]
       const sessionId = readHeaderSessionId(sessionFile)
-      // Pi reports the file it opened, so the session finds its own sidecar.
+      // Pi reports the file it opened, as `get_state` does after `--session`.
       state = { ...state, sessionId, ...(sessionFile === undefined ? {} : { sessionFile }) }
     }
     onEvent = options.onEvent

@@ -1,4 +1,4 @@
-import { rm, unlink } from 'node:fs/promises'
+import { unlink } from 'node:fs/promises'
 import { isAbsolute, resolve } from 'node:path'
 import { performance } from 'node:perf_hooks'
 
@@ -42,13 +42,13 @@ import {
   LAUNCH_ENV_METHOD,
   LAUNCH_ENV_NAME_PATTERN,
   LAUNCH_ENV_VALUE_PATTERN,
-  META_KEY_BREAKPOINT_NAMESPACE,
   META_KEY_LAUNCH_ENV,
-  META_KEY_MESSAGE_ID,
+  META_KEY_LAUNCH_ENV_NAMESPACE,
   parseManualSessionTitles,
   parseProviderModels,
   PROTOCOL_VERSION,
   type ProviderModels,
+  SESSION_ENTRY_TYPE_HEADER,
   SESSION_LIST_CURSOR_PATTERN,
   SESSION_LIST_PAGE_SIZE,
 } from '../constants.js'
@@ -56,11 +56,9 @@ import type { PiLaunch } from '../pi/errors.js'
 import { startupTimingLogLine } from '../pi/startupTimings.js'
 import {
   branchEntriesBefore,
+  branchUserEntryIds,
   findSessionFile,
-  isUserMessageEntry,
   listSessions as listStoredSessions,
-  messageMapPathFor,
-  readMessageMap,
   readSessionEntries,
   readSessionInfo,
   type SessionDirs,
@@ -68,7 +66,6 @@ import {
   type SessionFileInfo,
   settledEntries,
   writeForkFile,
-  writeMessageMap,
 } from '../session/sessionDirectory.js'
 import { CatalogRefresher } from '../session/catalogRefresh.js'
 import type { CreatePiClient, LaunchEnvironment, SessionConnection } from '../session/SessionConnection.js'
@@ -84,6 +81,7 @@ import {
 } from '../session/sessionSetup.js'
 import { deriveTitle } from '../session/title.js'
 import { WarmSpare } from '../session/warmSpare.js'
+import { entryIdOfCursor } from '../turn/cursors.js'
 import { flattenPromptContent } from '../turn/promptContent.js'
 import { toRequestError } from './errors.js'
 
@@ -138,6 +136,7 @@ export class PiAcpServer {
   private readonly catalogRefresher: CatalogRefresher | undefined
   private stopped = false
   private clientSupportsNotices = false
+  private clientSupportsCursors = false
   /** Replaced whole by each launch env request; every later Pi launch reads it. */
   private launchEnvironment: LaunchEnvironment
 
@@ -210,6 +209,7 @@ export class PiAcpServer {
 
   initialize(params: InitializeRequest): InitializeResponse {
     this.clientSupportsNotices = (params.clientCapabilities?.session?.notices ?? null) !== null
+    this.clientSupportsCursors = (params.clientCapabilities?.session?.cursors ?? null) !== null
     return {
       protocolVersion: PROTOCOL_VERSION,
       agentInfo: { name: AGENT_NAME, title: AGENT_TITLE, version: AGENT_VERSION },
@@ -224,13 +224,11 @@ export class PiAcpServer {
         sessionCapabilities: {
           list: {},
           resume: {},
-          // The breakpoint extension: a client may name a recorded
-          // prompt in `session/fork` and the fork is cut just before it.
-          fork: { _meta: { [META_KEY_BREAKPOINT_NAMESPACE]: { [META_KEY_MESSAGE_ID]: {} } } },
+          fork: {},
           close: {},
           delete: {},
         },
-        _meta: { [META_KEY_BREAKPOINT_NAMESPACE]: { [META_KEY_LAUNCH_ENV]: {} } },
+        _meta: { [META_KEY_LAUNCH_ENV_NAMESPACE]: { [META_KEY_LAUNCH_ENV]: {} } },
       },
     }
   }
@@ -324,31 +322,20 @@ export class PiAcpServer {
     // not exist — the same reading `session/resume` and `session/delete` take.
     if (parentPath === null) throw acp.RequestError.resourceNotFound(request.sessionId)
 
-    const breakpointMessageId = readMessageIdMeta(request._meta)
+    const cursorId = request.cursorId ?? undefined
     // Read before the file: Pi appends the user entry before reporting it, so a
     // true flag means the snapshot holds that entry. A false one at worst copies
     // a prompt Pi has just appended, unanswered.
     const parentHasUnsettledTurn = this.sessions.get(request.sessionId)?.connection.hasUnsettledTurnInStore ?? false
     const parentEntries = await readSessionEntries(parentPath)
-    // Read once: the same map decides the cut and seeds the fork's own sidecar.
-    // Read even without a breakpoint, or a head-only fork of a recorded parent
-    // would lose the breakpoints the client already holds echoes for.
-    const parentMap = readMessageMap(messageMapPathFor(parentPath))
     const entries =
-      breakpointMessageId === undefined
+      cursorId === undefined
         ? settledEntries(parentEntries, parentHasUnsettledTurn)
-        : breakpointCut({
-            entries: parentEntries,
-            map: parentMap,
-            messageId: breakpointMessageId,
-            sessionId: request.sessionId,
-          })
+        : cursorCut(parentEntries, cursorId, request.sessionId)
     const fork = writeForkFile({ dirs: this.options.sessionDirs, parentPath, entries, cwd: request.cwd })
 
     let established: EstablishedSession
     try {
-      // Inside the try so a failed sidecar write also removes the fork file.
-      if (parentMap !== null) writeSurvivingMessageMap(fork.path, parentMap, entries)
       established = await establishSession(request, this.setupDeps(context.client), {
         kind: 'open',
         sessionFile: fork.path,
@@ -358,7 +345,6 @@ export class PiAcpServer {
       // The client never receives the id, so a file left behind would be a
       // listable, resumable session nobody asked for.
       await unlink(fork.path)
-      await rm(messageMapPathFor(fork.path), { force: true })
       throw error
     }
     const session = await this.registerSession(established, request)
@@ -390,7 +376,6 @@ export class PiAcpServer {
       await session.connection.close()
     }
     await unlink(sessionFile)
-    await rm(messageMapPathFor(sessionFile), { force: true })
     return {}
   }
 
@@ -414,17 +399,11 @@ export class PiAcpServer {
     const session = this.sessions.get(context.params.sessionId)
     if (session === undefined) throw invalidParams(`unknown session "${context.params.sessionId}"`)
     const prompt = flattenPromptContent(context.params.prompt)
-    const messageId = readMessageIdMeta(context.params._meta)
-    const { stopReason, usage, acknowledgedMessageId } = await session.connection.runPrompt(prompt, context.signal, messageId)
+    const { stopReason, usage } = await session.connection.runPrompt(prompt, context.signal)
     // Only once a prompt resolves, never at create or for a prompt refused
     // mid-turn, so the spawn stays off a running turn's CPU.
     this.warmSpare?.refill(session.setup, this.setupDeps(context.client))
-    const response: PromptResponse = { stopReason, ...(usage === undefined ? {} : { usage }) }
-    if (acknowledgedMessageId === undefined) return response
-    return {
-      ...response,
-      _meta: { [META_KEY_BREAKPOINT_NAMESPACE]: { [META_KEY_MESSAGE_ID]: acknowledgedMessageId } },
-    }
+    return { stopReason, ...(usage === undefined ? {} : { usage }) }
   }
 
   cancel(params: CancelNotification): void {
@@ -512,6 +491,7 @@ export class PiAcpServer {
       rpcTimeoutMs: this.options.rpcTimeoutMs,
       notifier: client,
       clientSupportsNotices: this.clientSupportsNotices,
+      clientSupportsCursors: this.clientSupportsCursors,
       gateExtensionPath: this.options.gateExtensionPath,
       mcpExtensionPath: this.options.mcpExtensionPath,
       hiddenCommands: this.options.hiddenCommands,
@@ -530,17 +510,6 @@ export class PiAcpServer {
       throw toRequestError(error)
     }
   }
-}
-
-/** The breakpoint message id carried in an ACP `_meta`, or undefined for every
- * other shape: `_meta` and its namespace object are free-form, so a non-object at
- * either level, or a non-string id, reads as no breakpoint rather than an error. */
-function readMessageIdMeta(meta: unknown): string | undefined {
-  if (typeof meta !== 'object' || meta === null) return undefined
-  const stack = (meta as Record<string, unknown>)[META_KEY_BREAKPOINT_NAMESPACE]
-  if (typeof stack !== 'object' || stack === null) return undefined
-  const messageId = (stack as Record<string, unknown>)[META_KEY_MESSAGE_ID]
-  return typeof messageId === 'string' ? messageId : undefined
 }
 
 /** All three keys are required, and each replaces its whole part of the state.
@@ -608,44 +577,23 @@ function sameSet(left: ReadonlySet<string>, right: ReadonlySet<string>): boolean
   return left.size === right.size && [...left].every((entry) => right.has(entry))
 }
 
-/** The parent entries a breakpoint fork keeps: the ancestor path of the named
- * user entry, that entry excluded. Unlike the head-only copy this drops entries
- * off the kept path, so an abandoned Pi-side branch does not travel. */
-function breakpointCut(options: {
-  readonly entries: readonly SessionFileEntry[]
-  readonly map: Readonly<Record<string, string>> | null
-  readonly messageId: string
-  readonly sessionId: string
-}): readonly SessionFileEntry[] {
-  const entryId = options.map?.[options.messageId]
-  if (entryId === undefined) {
-    throw invalidParams(
-      `breakpoint message id "${options.messageId}" is not recorded for session "${options.sessionId}"`,
-    )
-  }
-  const named = options.entries.find((entry) => entry.id === entryId)
-  if (named === undefined || !isUserMessageEntry(named)) {
-    throw invalidParams(
-      `breakpoint message id "${options.messageId}" maps to entry "${entryId}", which is not a user message in session "${options.sessionId}"`,
-    )
-  }
-  return branchEntriesBefore(options.entries, entryId)
-}
-
-/** Carries the parent's breakpoints that survive the cut into the fork's own
- * sidecar, so the fork can itself be forked at an earlier prompt. */
-function writeSurvivingMessageMap(
-  forkPath: string,
-  parentMap: Readonly<Record<string, string>>,
+/** The parent entries a fork at `cursorId` keeps: the ancestor path of the user
+ * entry the cursor lies before, that entry excluded. Unlike the whole-session
+ * copy this drops entries off the kept path, so an abandoned Pi-side branch does
+ * not travel. Only a user entry on the current branch has a cursor, the branch
+ * ending at the file's last entry as Pi reads it; any other id is refused,
+ * never forked whole. */
+function cursorCut(
   entries: readonly SessionFileEntry[],
-): void {
-  const keptIds = new Set(entries.map((entry) => entry.id))
-  const surviving: Record<string, string> = {}
-  for (const [messageId, entryId] of Object.entries(parentMap)) {
-    if (keptIds.has(entryId)) surviving[messageId] = entryId
+  cursorId: string,
+  sessionId: string,
+): readonly SessionFileEntry[] {
+  const entryId = entryIdOfCursor(cursorId)
+  const leafId = entries.filter((entry) => entry.type !== SESSION_ENTRY_TYPE_HEADER).at(-1)?.id
+  if (entryId === undefined || typeof leafId !== 'string' || !branchUserEntryIds(entries, leafId).includes(entryId)) {
+    throw invalidParams(`cursor "${cursorId}" is not one session "${sessionId}" announced`)
   }
-  if (Object.keys(surviving).length === 0) return
-  writeMessageMap(messageMapPathFor(forkPath), surviving)
+  return branchEntriesBefore(entries, entryId)
 }
 
 function toSessionInfo(info: SessionFileInfo, manualSessionTitles: boolean): SessionInfo {

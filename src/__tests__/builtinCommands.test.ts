@@ -20,8 +20,6 @@ import {
   JSONRPC_INVALID_REQUEST,
   LAUNCH_ENV_METHOD,
   MANUAL_SESSION_TITLES_ON,
-  META_KEY_BREAKPOINT_NAMESPACE,
-  META_KEY_MESSAGE_ID,
   PI_COMPACTION_CANCELLED,
   PROTOCOL_VERSION,
   USAGE_COST_CURRENCY,
@@ -53,7 +51,6 @@ const CWD = '/workspace/project'
 const INIT_REQUEST = { protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} }
 const SESSION_FILE = '/sessions/2026-01-01T00-00-00-000Z_sess-1.jsonl'
 const SESSION_NAME = 'Login bug'
-const MESSAGE_ID = 'msg-1'
 const PI_NOTHING_TO_COMPACT = 'Nothing to compact (session too small)'
 const MAX_WAIT_TICKS = 100
 const LAUNCH = { command: 'pi', args: ['--mode', 'rpc'], source: 'test' }
@@ -176,11 +173,10 @@ async function startSession(spec: Partial<FakePiSpec> = {}): Promise<AcpTestFixt
   return fixture
 }
 
-function prompt(scenario: AcpTestFixture, text: string, messageId?: string): Promise<acp.PromptResponse> {
+function prompt(scenario: AcpTestFixture, text: string): Promise<acp.PromptResponse> {
   return scenario.client.request(acp.methods.agent.session.prompt, {
     sessionId: TEST_SESSION_ID,
     prompt: [{ type: 'text', text }],
-    ...(messageId === undefined ? {} : { _meta: { [META_KEY_BREAKPOINT_NAMESPACE]: { [META_KEY_MESSAGE_ID]: messageId } } }),
   })
 }
 
@@ -246,20 +242,18 @@ describe('built-in commands over the wire', () => {
     expect(sentTypes(scenario)).not.toContain('prompt')
   })
 
-  it('reports session info without a turn, a title, or a breakpoint echo', async () => {
+  it('reports session info without a turn or a title', async () => {
     const scenario = await startSession({ state: { ...defaultFakePiSpec().state, sessionFile: SESSION_FILE } })
 
-    const response = await prompt(scenario, '/session', MESSAGE_ID)
+    const response = await prompt(scenario, '/session')
     await scenario.flushAnnouncements()
 
-    // No `_meta`: Pi appends no user entry for a built-in, so there is nothing to fork from.
     expect(response).toEqual({ stopReason: 'end_turn' })
     expect(scenario.transcript()).toEqual([
       agentText(formatSessionInfo({ ...DEFAULT_STATS, sessionFile: SESSION_FILE, sessionId: TEST_SESSION_ID }, undefined)),
     ])
     expect(sentTypes(scenario)).not.toContain('prompt')
     expect(sentTypes(scenario)).not.toContain('set_session_name')
-    expect(sentTypes(scenario)).not.toContain('get_entries')
     expect(statsReads(scenario)).toHaveLength(1)
   })
 
@@ -466,6 +460,7 @@ describe('a running built-in', () => {
       rpcTimeoutMs: 1_000,
       notifier,
       clientSupportsNotices: false,
+      clientSupportsCursors: false,
       mcpExtensionPath: MCP_EXTENSION_PATH,
       hiddenCommands: new Set(),
       logStartupTiming: false,
@@ -486,7 +481,7 @@ describe('a running built-in', () => {
     await expect(connection.runPrompt(COMPACT, new AbortController().signal)).rejects.toMatchObject({ code: -32600 })
 
     compaction.finish(DEFAULT_COMPACTION)
-    await expect(pending).resolves.toEqual({ stopReason: 'end_turn', usage: DEFAULT_TURN_USAGE, acknowledgedMessageId: undefined })
+    await expect(pending).resolves.toEqual({ stopReason: 'end_turn', usage: DEFAULT_TURN_USAGE })
   })
 
   it('cancels through the prompt signal', async () => {
@@ -494,12 +489,12 @@ describe('a running built-in', () => {
     const { fake, connection } = await connect({ onCompact: compaction.onCompact })
     const controller = new AbortController()
 
-    const pending = connection.runPrompt(COMPACT, controller.signal, MESSAGE_ID)
+    const pending = connection.runPrompt(COMPACT, controller.signal)
     await waitFor(() => fake.calls.some((call) => call['type'] === 'compact'), 'the compact to reach Pi')
     controller.abort()
     compaction.finish(DEFAULT_COMPACTION)
 
-    await expect(pending).resolves.toEqual({ stopReason: 'cancelled', usage: DEFAULT_TURN_USAGE, acknowledgedMessageId: undefined })
+    await expect(pending).resolves.toEqual({ stopReason: 'cancelled', usage: DEFAULT_TURN_USAGE })
     expect(fake.calls.map((call) => call['type'])).toContain('abort')
   })
 

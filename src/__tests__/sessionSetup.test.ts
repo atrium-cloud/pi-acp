@@ -105,6 +105,7 @@ function makeDeps(fake: ReturnType<typeof makeFakePiClient>) {
     rpcTimeoutMs: 1_000,
     notifier: stubNotifier,
     clientSupportsNotices: false,
+    clientSupportsCursors: false,
     mcpExtensionPath: MCP_EXTENSION_PATH,
     hiddenCommands: new Set<string>(),
     logStartupTiming: false,

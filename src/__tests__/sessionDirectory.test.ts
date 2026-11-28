@@ -7,9 +7,6 @@ import {
   DEFAULT_PI_AGENT_DIR_SEGMENTS,
   ENV_PI_AGENT_DIR,
   ENV_PI_SESSION_DIR,
-  MESSAGE_MAP_KEY_MESSAGES,
-  MESSAGE_MAP_KEY_VERSION,
-  MESSAGE_MAP_VERSION,
   PI_SESSIONS_DIR_NAME,
   PI_SETTINGS_FILE_NAME,
 } from '../constants.js'
@@ -21,15 +18,12 @@ import {
   findSessionFile,
   isUserMessageEntry,
   listSessions,
-  messageMapPathFor,
-  readMessageMap,
   readSessionEntries,
   readSessionInfo,
   resolveSessionDirs,
   sessionDirForCwd,
   settledEntries,
   writeForkFile,
-  writeMessageMap,
 } from '../session/sessionDirectory.js'
 
 /** The fork writer mints an id and reads the clock, so both are pinned where the
@@ -494,77 +488,6 @@ describe('findSessionFile', () => {
 
     // A cwd narrows the scan to one directory, so the same id is unambiguous.
     expect(await findSessionFile({ dirs: perCwd(root), id: 'dup', cwd: first })).toBe(firstPath)
-  })
-})
-
-describe('messageMapPathFor', () => {
-  it('swaps the session extension for the sidecar suffix', () => {
-    expect(messageMapPathFor(join(root, `${FILE_TIMESTAMP}_abc.jsonl`))).toBe(join(root, `${FILE_TIMESTAMP}_abc.acp.json`))
-  })
-
-  it('throws for a path that is not a session file', () => {
-    expect(() => messageMapPathFor(join(root, 'abc.json'))).toThrow(/does not end in \.jsonl/)
-  })
-})
-
-describe('readMessageMap and writeMessageMap', () => {
-  let sidecarPath: string
-
-  beforeEach(() => {
-    sidecarPath = join(root, 'nested', `${FILE_TIMESTAMP}_abc.acp.json`)
-  })
-
-  it('round trips a map, creating the parent directory and writing the versioned shape', () => {
-    const messages = { 'msg-1': 'u1', 'msg-2': 'u4' }
-    writeMessageMap(sidecarPath, messages)
-
-    expect(readMessageMap(sidecarPath)).toEqual(messages)
-    expect(JSON.parse(readFileSync(sidecarPath, 'utf8'))).toEqual({
-      [MESSAGE_MAP_KEY_VERSION]: MESSAGE_MAP_VERSION,
-      [MESSAGE_MAP_KEY_MESSAGES]: messages,
-    })
-  })
-
-  it('rewrites the whole file rather than merging', () => {
-    writeMessageMap(sidecarPath, { 'msg-1': 'u1' })
-    writeMessageMap(sidecarPath, { 'msg-2': 'u4' })
-
-    expect(readMessageMap(sidecarPath)).toEqual({ 'msg-2': 'u4' })
-  })
-
-  it('round trips an empty map', () => {
-    writeMessageMap(sidecarPath, {})
-    expect(readMessageMap(sidecarPath)).toEqual({})
-  })
-
-  it('returns null when the sidecar does not exist', () => {
-    expect(readMessageMap(sidecarPath)).toBeNull()
-  })
-
-  it('throws on a malformed file, a version mismatch, or a non-string entry id', () => {
-    mkdirSync(join(root, 'nested'), { recursive: true })
-    const write = (body: string): void => writeFileSync(sidecarPath, body)
-
-    write('{ not json')
-    expect(() => readMessageMap(sidecarPath)).toThrow(/not valid JSON/)
-
-    write('[]')
-    expect(() => readMessageMap(sidecarPath)).toThrow(/not a JSON object/)
-
-    write(JSON.stringify({ [MESSAGE_MAP_KEY_VERSION]: 2, [MESSAGE_MAP_KEY_MESSAGES]: {} }))
-    expect(() => readMessageMap(sidecarPath)).toThrow(/expected 1/)
-
-    write(JSON.stringify({ [MESSAGE_MAP_KEY_MESSAGES]: {} }))
-    expect(() => readMessageMap(sidecarPath)).toThrow(/expected 1/)
-
-    write(JSON.stringify({ [MESSAGE_MAP_KEY_VERSION]: MESSAGE_MAP_VERSION }))
-    expect(() => readMessageMap(sidecarPath)).toThrow(/no messages object/)
-
-    write(JSON.stringify({ [MESSAGE_MAP_KEY_VERSION]: MESSAGE_MAP_VERSION, [MESSAGE_MAP_KEY_MESSAGES]: ['u1'] }))
-    expect(() => readMessageMap(sidecarPath)).toThrow(/no messages object/)
-
-    write(JSON.stringify({ [MESSAGE_MAP_KEY_VERSION]: MESSAGE_MAP_VERSION, [MESSAGE_MAP_KEY_MESSAGES]: { 'msg-1': 7 } }))
-    expect(() => readMessageMap(sidecarPath)).toThrow(/maps "msg-1" to a non-string entry id/)
   })
 })
 

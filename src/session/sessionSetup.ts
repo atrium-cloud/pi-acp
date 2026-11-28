@@ -68,6 +68,8 @@ export interface SessionSetupDeps {
   readonly notifier: AgentContext
   /** Whether the client advertised `session.notices` on initialize. */
   readonly clientSupportsNotices: boolean
+  /** Whether the client advertised `session.cursors` on initialize. */
+  readonly clientSupportsCursors: boolean
   /** Absolute path to the materialized permission gate, loaded with `-e`. Absent
    * in tests (the fake client ignores args), so no temp file is written. */
   readonly gateExtensionPath?: string | undefined
@@ -128,6 +130,7 @@ export async function establishSession(
     notifier: deps.notifier,
     cwd: request.cwd,
     clientSupportsNotices: deps.clientSupportsNotices,
+    clientSupportsCursors: deps.clientSupportsCursors,
     launchEnvironment: deps.launchEnvironment ?? (() => INHERITED_LAUNCH_ENVIRONMENT),
     relaunch: (target) => launchPi(connection, plan, target, 'wake'),
   })

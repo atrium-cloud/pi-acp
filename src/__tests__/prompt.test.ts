@@ -1,22 +1,9 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-
 import * as acp from '@agentclientprotocol/sdk/unstable'
-import type { AgentContext } from '@agentclientprotocol/sdk/unstable'
+import type { AgentContext, SessionUpdate } from '@agentclientprotocol/sdk/unstable'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import {
-  AGENT_NAME,
-  AGENT_START_GRACE_MS,
-  MESSAGE_MAP_KEY_MESSAGES,
-  MESSAGE_MAP_KEY_VERSION,
-  MESSAGE_MAP_VERSION,
-  META_KEY_BREAKPOINT_NAMESPACE,
-  META_KEY_MESSAGE_ID,
-} from '../constants.js'
+import { AGENT_NAME, AGENT_START_GRACE_MS, CURSOR_ID_PREFIX } from '../constants.js'
 import { PiAcpServer } from '../server/PiAcpServer.js'
-import { messageMapPathFor } from '../session/sessionDirectory.js'
 import { establishSession } from '../session/sessionSetup.js'
 import type { SessionConnection } from '../session/SessionConnection.js'
 import type { FlattenedPrompt } from '../turn/promptContent.js'
@@ -43,7 +30,7 @@ function baseSpec(onPrompt?: FakePiSpec['onPrompt']): FakePiSpec {
   }
 }
 
-async function connect(spec: FakePiSpec): Promise<{
+async function connect(spec: FakePiSpec, clientSupportsCursors = false): Promise<{
   fake: ReturnType<typeof makeFakePiClient>
   connection: SessionConnection
   notify: ReturnType<typeof vi.fn>
@@ -56,6 +43,7 @@ async function connect(spec: FakePiSpec): Promise<{
     rpcTimeoutMs: 1_000,
     notifier,
     clientSupportsNotices: false,
+    clientSupportsCursors,
     mcpExtensionPath: MCP_EXTENSION_PATH,
     hiddenCommands: new Set(),
     logStartupTiming: false,
@@ -115,7 +103,7 @@ describe('SessionConnection.runPrompt', () => {
   it('keeps the stop reason and the usage_update but reports no usage when the baseline read fails', async () => {
     const { connection, notify } = await connect({ ...baseSpec(fullTurn), failOnce: 'get_session_stats' })
     const outcome = await connection.runPrompt(HELLO, new AbortController().signal)
-    expect(outcome).toEqual({ stopReason: 'end_turn', usage: undefined, acknowledgedMessageId: undefined })
+    expect(outcome).toEqual({ stopReason: 'end_turn', usage: undefined })
     expect(notify).toHaveBeenCalledWith(acp.methods.client.session.update, { sessionId: 'sess-1', update: USAGE_UPDATE })
   })
 
@@ -128,7 +116,7 @@ describe('SessionConnection.runPrompt', () => {
     }
     const { connection, notify } = await connect(spec)
     const outcome = await connection.runPrompt(HELLO, new AbortController().signal)
-    expect(outcome).toEqual({ stopReason: 'end_turn', usage: undefined, acknowledgedMessageId: undefined })
+    expect(outcome).toEqual({ stopReason: 'end_turn', usage: undefined })
     expect(notify).not.toHaveBeenCalledWith(acp.methods.client.session.update, ANY_USAGE_UPDATE)
   })
 
@@ -192,7 +180,7 @@ describe('SessionConnection.runPrompt', () => {
     await Promise.resolve()
     controller.abort()
     fake.emit({ type: 'agent_settled', aborted: false } as never)
-    await expect(turn).resolves.toEqual({ stopReason: 'cancelled', usage: DEFAULT_TURN_USAGE, acknowledgedMessageId: undefined })
+    await expect(turn).resolves.toEqual({ stopReason: 'cancelled', usage: DEFAULT_TURN_USAGE })
     expect(fake.calls.map((call) => call['type'])).toContain('abort')
   })
 
@@ -200,11 +188,7 @@ describe('SessionConnection.runPrompt', () => {
     const { fake, connection } = await connect(baseSpec(fullTurn))
     const controller = new AbortController()
     controller.abort()
-    await expect(connection.runPrompt(HELLO, controller.signal)).resolves.toEqual({
-      stopReason: 'cancelled',
-      usage: undefined,
-      acknowledgedMessageId: undefined,
-    })
+    await expect(connection.runPrompt(HELLO, controller.signal)).resolves.toEqual({ stopReason: 'cancelled', usage: undefined })
     expect(meteringOrder(fake)).toEqual([])
   })
 
@@ -231,145 +215,158 @@ describe('SessionConnection.runPrompt', () => {
   })
 })
 
-// ── Breakpoint message ids ────────────────────────────────────────────────────
+// ── Prompt cursors ────────────────────────────────────────────────────────────
 
-const TEMP_PREFIX = 'pi-acp-prompt-'
-const SESSION_FILE_NAME = '2026-01-01T00-00-00-000Z_sess-1.jsonl'
-const MESSAGE_ID = 'msg-1'
-const SECOND_MESSAGE_ID = 'msg-2'
-const userEntry = (id: string, content: string): unknown => ({
+const SESSION_FILE = '/tmp/pi-acp-sessions/2026-01-01T00-00-00-000Z_sess-1.jsonl'
+const userEntry = (id: string, parentId: string | null): unknown => ({
   type: 'message',
   id,
-  parentId: null,
-  message: { role: 'user', content },
+  parentId,
+  message: { role: 'user', content: 'hi' },
 })
-const assistantEntry = (id: string): unknown => ({
+const assistantEntry = (id: string, parentId: string): unknown => ({
   type: 'message',
   id,
-  parentId: null,
-  message: { role: 'assistant', content: 'ok' },
+  parentId,
+  message: { role: 'assistant', content: 'Hello' },
 })
+const FIRST_TURN_ENTRIES = [userEntry('u1', null), assistantEntry('a1', 'u1')]
+const SECOND_TURN_ENTRIES = [...FIRST_TURN_ENTRIES, userEntry('u2', 'a1'), assistantEntry('a2', 'u2')]
 
-describe('breakpoint message id recording', () => {
-  let store: string
-  let sessionFile: string
+/** A reply with two anchorable messages: a thought, then the text after it. */
+const thinkingTurn = (emit: Emit): void => {
+  emit({ type: 'agent_start' } as never)
+  emit({ type: 'message_end', message: { role: 'user', content: 'hi' } } as never)
+  emit({ type: 'message_update', usage: {}, assistantMessageEvent: { type: 'thinking_delta', contentIndex: 0, delta: 'Hmm' } } as never)
+  emit({ type: 'message_update', usage: {}, assistantMessageEvent: { type: 'text_delta', contentIndex: 1, delta: 'Hello' } } as never)
+  emit({ type: 'message_end', message: { role: 'assistant', stopReason: 'stop' } } as never)
+  emit({ type: 'agent_settled', aborted: false } as never)
+}
 
-  beforeEach(() => {
-    store = mkdtempSync(join(tmpdir(), TEMP_PREFIX))
-    sessionFile = join(store, SESSION_FILE_NAME)
-    // Pi has written the file by the time it reports the turn's user message.
-    writeFileSync(sessionFile, '')
-  })
+const withoutUserMessage = (emit: Emit): void => {
+  emit({ type: 'agent_start' } as never)
+  emit({ type: 'message_end', message: { role: 'assistant', stopReason: 'aborted' } } as never)
+  emit({ type: 'agent_settled', aborted: false } as never)
+}
 
+function sentUpdates(notify: ReturnType<typeof vi.fn>): SessionUpdate[] {
+  const calls = notify.mock.calls as [string, acp.SessionNotification][]
+  return calls.filter(([method]) => method === acp.methods.client.session.update).map(([, params]) => params.update)
+}
+
+function cursorUpdates(notify: ReturnType<typeof vi.fn>): SessionUpdate[] {
+  return sentUpdates(notify).filter((update) => update.sessionUpdate === 'cursor_update')
+}
+
+describe('prompt cursors', () => {
   afterEach(() => {
-    rmSync(store, { recursive: true, force: true })
+    vi.restoreAllMocks()
   })
 
-  function specWithEntries(entries: FakePiSpec['entries'], overrides: Partial<FakePiSpec> = {}): FakePiSpec {
-    const spec = baseSpec(fullTurn)
-    spec.state.sessionFile = sessionFile
-    return { ...spec, ...(entries === undefined ? {} : { entries }), ...overrides }
-  }
-
-  function readSidecar(): unknown {
-    return JSON.parse(readFileSync(messageMapPathFor(sessionFile), 'utf8'))
-  }
-
-  it('records the last user entry of the turn and echoes the message id', async () => {
-    const { connection } = await connect(
-      specWithEntries([userEntry('u1', 'earlier'), assistantEntry('a1'), userEntry('u2', 'hi')]),
+  /** Two prompts on a persisted session; Pi's tree grows by one exchange between them. */
+  async function runTwoPrompts(options: {
+    clientSupportsCursors: boolean
+    secondTurn?: (emit: Emit) => void
+    thirdTurn?: (emit: Emit) => void
+    failOn?: string
+  }) {
+    let entries: readonly unknown[] = FIRST_TURN_ENTRIES
+    const turns = [thinkingTurn, options.secondTurn ?? fullTurn, options.thirdTurn ?? fullTurn]
+    let prompts = 0
+    const spec = baseSpec((emit) => turns[prompts++]?.(emit))
+    spec.state.sessionFile = SESSION_FILE
+    const session = await connect(
+      { ...spec, entries: () => entries, ...(options.failOn === undefined ? {} : { failOn: options.failOn }) },
+      options.clientSupportsCursors,
     )
+    await session.connection.runPrompt(HELLO, new AbortController().signal)
+    const afterFirst = sentUpdates(session.notify)
+    entries = SECOND_TURN_ENTRIES
+    const second = await session.connection.runPrompt(HELLO, new AbortController().signal)
+    return { ...session, afterFirst, second }
+  }
 
-    const outcome = await connection.runPrompt(HELLO, new AbortController().signal, MESSAGE_ID)
+  it("announces no cursor for the first prompt and one after its reply's last message for the second", async () => {
+    const { notify, afterFirst } = await runTwoPrompts({ clientSupportsCursors: true })
 
-    expect(outcome).toEqual({ stopReason: 'end_turn', usage: DEFAULT_TURN_USAGE, acknowledgedMessageId: MESSAGE_ID })
-    expect(readSidecar()).toEqual({
-      [MESSAGE_MAP_KEY_VERSION]: MESSAGE_MAP_VERSION,
-      [MESSAGE_MAP_KEY_MESSAGES]: { [MESSAGE_ID]: 'u2' },
-    })
+    const firstReply = afterFirst.find((update) => update.sessionUpdate === 'agent_message_chunk')
+    expect(firstReply).toMatchObject({ messageId: expect.any(String) })
+    expect(afterFirst.filter((update) => update.sessionUpdate === 'cursor_update')).toEqual([])
+    expect(cursorUpdates(notify)).toEqual([
+      {
+        sessionUpdate: 'cursor_update',
+        cursorId: `${CURSOR_ID_PREFIX}u2`,
+        capabilities: { fork: {} },
+        anchor: { type: 'agent_message', messageId: (firstReply as { messageId: string }).messageId, position: 'after' },
+      },
+    ])
   })
 
-  it('extends the map on a later prompt without re-reading the sidecar', async () => {
-    let entries: unknown[] = [userEntry('u1', 'hi')]
-    const { connection } = await connect(specWithEntries(() => entries))
+  it('sends no message ids or cursors and reads no entries for a client without cursors', async () => {
+    const { fake, notify } = await runTwoPrompts({ clientSupportsCursors: false })
 
-    await connection.runPrompt(HELLO, new AbortController().signal, MESSAGE_ID)
-    entries = [...entries, assistantEntry('a1'), userEntry('u2', 'again')]
-    const second = await connection.runPrompt(HELLO, new AbortController().signal, SECOND_MESSAGE_ID)
-
-    expect(second.acknowledgedMessageId).toBe(SECOND_MESSAGE_ID)
-    expect(readSidecar()).toEqual({
-      [MESSAGE_MAP_KEY_VERSION]: MESSAGE_MAP_VERSION,
-      [MESSAGE_MAP_KEY_MESSAGES]: { [MESSAGE_ID]: 'u1', [SECOND_MESSAGE_ID]: 'u2' },
-    })
-  })
-
-  it('reads no entries and writes no sidecar for a prompt with no message id', async () => {
-    const { fake, connection } = await connect(specWithEntries([userEntry('u1', 'hi')]))
-
-    const outcome = await connection.runPrompt(HELLO, new AbortController().signal)
-
-    expect(outcome.acknowledgedMessageId).toBeUndefined()
-    expect(fake.calls.map((call) => call['type'])).not.toContain('get_entries')
-    expect(existsSync(messageMapPathFor(sessionFile))).toBe(false)
-  })
-
-  it('records nothing for a session Pi persists no file for', async () => {
-    const spec = baseSpec(fullTurn)
-    const { fake, connection } = await connect({ ...spec, entries: [userEntry('u1', 'hi')] })
-
-    const outcome = await connection.runPrompt(HELLO, new AbortController().signal, MESSAGE_ID)
-
-    expect(outcome).toEqual({ stopReason: 'end_turn', usage: DEFAULT_TURN_USAGE, acknowledgedMessageId: undefined })
+    expect(cursorUpdates(notify)).toEqual([])
+    expect(sentUpdates(notify).filter((update) => 'messageId' in update)).toEqual([])
     expect(fake.calls.map((call) => call['type'])).not.toContain('get_entries')
   })
 
-  it('records nothing for a turn whose user message Pi never reported', async () => {
-    const withoutUserMessage = (emit: Emit): void => {
+  it('announces no cursor for a prompt cancelled before Pi reported its user message', async () => {
+    const { fake, notify, second } = await runTwoPrompts({ clientSupportsCursors: true, secondTurn: withoutUserMessage })
+
+    expect(second.stopReason).toBe('cancelled')
+    expect(cursorUpdates(notify)).toEqual([])
+    expect(fake.calls.map((call) => call['type'])).not.toContain('get_entries')
+  })
+
+  it('withholds the cursor of a prompt that follows one cancelled before any output', async () => {
+    const outputlessTurn = (emit: Emit): void => {
       emit({ type: 'agent_start' } as never)
-      emit({ type: 'message_end', message: { role: 'assistant', stopReason: 'aborted' } } as never)
-      emit({ type: 'agent_settled', aborted: false } as never)
+      emit({ type: 'message_end', message: { role: 'user', content: 'hi' } } as never)
+      emit({ type: 'agent_settled', aborted: true } as never)
     }
-    const { fake, connection } = await connect({ ...specWithEntries([userEntry('u1', 'hi')]), onPrompt: withoutUserMessage })
+    const { connection, notify, afterFirst, second } = await runTwoPrompts({
+      clientSupportsCursors: true,
+      secondTurn: outputlessTurn,
+      thirdTurn: fullTurn,
+    })
+    expect(second.stopReason).toBe('cancelled')
 
-    const outcome = await connection.runPrompt(HELLO, new AbortController().signal, MESSAGE_ID)
+    await connection.runPrompt(HELLO, new AbortController().signal)
 
-    expect(outcome).toEqual({ stopReason: 'cancelled', usage: DEFAULT_TURN_USAGE, acknowledgedMessageId: undefined })
-    expect(fake.calls.map((call) => call['type'])).not.toContain('get_entries')
-    expect(existsSync(messageMapPathFor(sessionFile))).toBe(false)
+    // The third prompt lies after the unseen second, not after the first reply.
+    const firstReply = afterFirst.find((update) => update.sessionUpdate === 'agent_message_chunk')
+    expect(cursorUpdates(notify)).toEqual([
+      {
+        sessionUpdate: 'cursor_update',
+        cursorId: `${CURSOR_ID_PREFIX}u2`,
+        capabilities: { fork: {} },
+        anchor: { type: 'agent_message', messageId: (firstReply as { messageId: string }).messageId, position: 'after' },
+      },
+    ])
   })
 
-  it('returns the stop reason without an echo when get_entries fails', async () => {
-    const { connection } = await connect(specWithEntries([userEntry('u1', 'hi')], { failOn: 'get_entries' }))
+  it('resolves the turn without a cursor when get_entries fails', async () => {
+    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => {})
 
-    const outcome = await connection.runPrompt(HELLO, new AbortController().signal, MESSAGE_ID)
+    const { notify, second } = await runTwoPrompts({ clientSupportsCursors: true, failOn: 'get_entries' })
 
-    expect(outcome).toEqual({ stopReason: 'end_turn', usage: DEFAULT_TURN_USAGE, acknowledgedMessageId: undefined })
-    expect(existsSync(messageMapPathFor(sessionFile))).toBe(false)
-  })
-
-  it('returns no echo when the session tree holds no user entry', async () => {
-    const { connection } = await connect(specWithEntries([assistantEntry('a1')]))
-
-    const outcome = await connection.runPrompt(HELLO, new AbortController().signal, MESSAGE_ID)
-
-    expect(outcome.acknowledgedMessageId).toBeUndefined()
-    expect(existsSync(messageMapPathFor(sessionFile))).toBe(false)
+    expect(second).toEqual({ stopReason: 'end_turn', usage: DEFAULT_TURN_USAGE })
+    expect(cursorUpdates(notify)).toEqual([])
+    expect(errorLog).toHaveBeenCalledTimes(1)
+    expect(String(errorLog.mock.calls[0]?.[0])).toMatch(/failed to announce the prompt's cursor: fake pi: get_entries failed/)
   })
 })
 
 const COMMAND_PROMPT: FlattenedPrompt = { message: '/extcmd', images: [], firstText: '/extcmd' }
 
 describe('prompt dispositions', () => {
-  it('resolves end_turn at once for a prompt Pi handled, with no title, usage or breakpoint', async () => {
+  it('resolves end_turn at once for a prompt Pi handled, with no title or usage', async () => {
     const { fake, connection } = await connect({ ...baseSpec(), promptDisposition: 'handled' })
 
-    const outcome = await connection.runPrompt(COMMAND_PROMPT, new AbortController().signal, MESSAGE_ID)
+    const outcome = await connection.runPrompt(COMMAND_PROMPT, new AbortController().signal)
 
-    expect(outcome).toEqual({ stopReason: 'end_turn', usage: undefined, acknowledgedMessageId: undefined })
-    const types = fake.calls.map((call) => call['type'])
-    expect(types).not.toContain('set_session_name')
-    expect(types).not.toContain('get_entries')
+    expect(outcome).toEqual({ stopReason: 'end_turn', usage: undefined })
+    expect(fake.calls.map((call) => call['type'])).not.toContain('set_session_name')
     // The baseline goes out before Pi says whether a run starts; nothing is read after.
     expect(meteringOrder(fake)).toEqual(['get_session_stats', 'prompt'])
   })
@@ -383,7 +380,7 @@ describe('prompt dispositions', () => {
 
     const outcome = await connection.runPrompt(COMMAND_PROMPT, controller.signal)
 
-    expect(outcome).toEqual({ stopReason: 'cancelled', usage: undefined, acknowledgedMessageId: undefined })
+    expect(outcome).toEqual({ stopReason: 'cancelled', usage: undefined })
     expect(fake.calls.map((call) => call['type'])).toContain('abort')
   })
 
@@ -446,46 +443,10 @@ describe('session/prompt over the wire', () => {
         })
       })
 
-    expect(result.stopReason).toBe('end_turn')
-    expect(result.usage).toEqual(DEFAULT_TURN_USAGE)
+    expect(result).toEqual({ stopReason: 'end_turn', usage: DEFAULT_TURN_USAGE })
     expect(chunks).toContainEqual({
       sessionId: 'sess-1',
       update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Hello' } },
     })
-  })
-
-  it('echoes the breakpoint message id back through the SDK', async () => {
-    const store = mkdtempSync(join(tmpdir(), TEMP_PREFIX))
-    const spec = baseSpec(fullTurn)
-    spec.state.sessionFile = join(store, SESSION_FILE_NAME)
-    writeFileSync(spec.state.sessionFile, '')
-    const fake = makeFakePiClient({ ...spec, entries: [userEntry('u1', 'hi')] })
-    const server = new PiAcpServer({
-      launch: LAUNCH,
-      rpcTimeoutMs: 1_000,
-      sessionDirs: { mode: 'flat', dir: store },
-      mcpExtensionPath: MCP_EXTENSION_PATH,
-      hiddenCommands: new Set(),
-      logStartupTiming: false,
-      createPiClient: fake.createPiClient,
-    })
-    const app = server.register(acp.agent({ name: AGENT_NAME }))
-
-    try {
-      const result = await acp.client({ name: 'test-client' }).connectWith(app, async (context) => {
-        await context.request(acp.methods.agent.initialize, { protocolVersion: 1, clientCapabilities: {} })
-        const created = await context.request(acp.methods.agent.session.new, { cwd: ABS_CWD, mcpServers: [] })
-        return context.request(acp.methods.agent.session.prompt, {
-          sessionId: created.sessionId,
-          prompt: [{ type: 'text', text: 'hi' }],
-          _meta: { [META_KEY_BREAKPOINT_NAMESPACE]: { [META_KEY_MESSAGE_ID]: MESSAGE_ID } },
-        })
-      })
-
-      expect(result.stopReason).toBe('end_turn')
-      expect(result._meta).toEqual({ [META_KEY_BREAKPOINT_NAMESPACE]: { [META_KEY_MESSAGE_ID]: MESSAGE_ID } })
-    } finally {
-      rmSync(store, { recursive: true, force: true })
-    }
   })
 })
