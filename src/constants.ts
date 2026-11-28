@@ -353,6 +353,11 @@ export const MESSAGE_MAP_VERSION = 1
 export const MESSAGE_MAP_KEY_VERSION = 'version'
 export const MESSAGE_MAP_KEY_MESSAGES = 'messages'
 
+// ── Session cursors ───────────────────────────────────────────────────────────
+
+/** A cursor id is this prefix plus the Pi entry id of the user message it lies before. */
+export const CURSOR_ID_PREFIX = 'before:'
+
 // ── Launch env (extension request) ────────────────────────────────────────────
 //
 // A parent process replaces the provider env every later Pi launch takes, without

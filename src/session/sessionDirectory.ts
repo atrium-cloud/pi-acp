@@ -504,6 +504,34 @@ export function writeMessageMap(sidecarPath: string, messages: Readonly<Record<s
   writeFileSync(sidecarPath, `${body}${ENTRY_LINE_SEPARATOR}`, { encoding: FILE_ENCODING })
 }
 
+/** The ids of the user message entries on the branch that ends at `leafId`,
+ * oldest first; none when the tree is empty. */
+export function branchUserEntryIds(entries: readonly SessionFileEntry[], leafId: string | null): string[] {
+  return branchUserEntries(entries, leafId).flatMap((entry) => (typeof entry.id === 'string' ? [entry.id] : []))
+}
+
+/** Finds the branch entry that stores exactly a given user message. The context
+ * Pi replays can omit or rewrite any entry, so a message that matches no entry,
+ * or more than one, has none. */
+export function branchUserEntryMatcher(
+  entries: readonly SessionFileEntry[],
+  leafId: string | null,
+): (message: unknown) => string | undefined {
+  const idByMessage = new Map<string, string | undefined>()
+  for (const entry of branchUserEntries(entries, leafId)) {
+    const key = JSON.stringify(entry.message)
+    idByMessage.set(key, idByMessage.has(key) || typeof entry.id !== 'string' ? undefined : entry.id)
+  }
+  return (message) => idByMessage.get(JSON.stringify(message))
+}
+
+function branchUserEntries(entries: readonly SessionFileEntry[], leafId: string | null): SessionFileEntry[] {
+  if (leafId === null) return []
+  const leaf = entries.find((entry) => entry.id === leafId)
+  if (leaf === undefined) throw new Error(`Session leaf "${leafId}" is not in the session entries`)
+  return [...branchEntriesBefore(entries, leafId), leaf].filter(isUserMessageEntry)
+}
+
 /** The cut for a breakpoint fork: the ancestors of `entryId` (its parent up to
  * the root) as the non-header entries in file order filtered to that set. The
  * last element is the named entry's parent, which Pi adopts as the leaf. Empty

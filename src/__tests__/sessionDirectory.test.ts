@@ -16,6 +16,8 @@ import {
 import type { SessionDirs, SessionFileEntry } from '../session/sessionDirectory.js'
 import {
   branchEntriesBefore,
+  branchUserEntryIds,
+  branchUserEntryMatcher,
   findSessionFile,
   isUserMessageEntry,
   listSessions,
@@ -623,5 +625,40 @@ describe('branchEntriesBefore', () => {
 
     expect(() => branchEntriesBefore(entries, 'absent')).toThrow(/"absent" is not in the session file/)
     expect(() => branchEntriesBefore(entries, 'u2')).toThrow(/names parent "gone"/)
+  })
+})
+
+describe('branchUserEntryIds', () => {
+  it('lists the user entries on the leaf branch, skipping an abandoned sibling', () => {
+    const entries = [
+      node('u1', null, 'user', 'first'),
+      node('a1', 'u1', 'assistant', 'answer one'),
+      node('u2', 'a1', 'user', 'abandoned'),
+      node('a2', 'u2', 'assistant', 'abandoned answer'),
+      node('u3', 'a1', 'user', 'retry'),
+      node('a3', 'u3', 'assistant', 'answer three'),
+    ]
+
+    expect(branchUserEntryIds(entries, 'a3')).toEqual(['u1', 'u3'])
+    expect(branchUserEntryIds(entries, 'u3')).toEqual(['u1', 'u3'])
+  })
+
+  it('returns nothing for an empty tree', () => {
+    expect(branchUserEntryIds([], null)).toEqual([])
+  })
+})
+
+describe('branchUserEntryMatcher', () => {
+  it('finds the entry storing exactly a message, and none for a rewritten or repeated one', () => {
+    const entries = [
+      node('u1', null, 'user', 'first'),
+      node('u2', 'u1', 'user', 'continue'),
+      node('u3', 'u2', 'user', 'continue'),
+    ]
+    const entryIdOf = branchUserEntryMatcher(entries, 'u3')
+
+    expect(entryIdOf(entries[0]?.message)).toBe('u1')
+    expect(entryIdOf({ role: 'user', content: 'first, rewritten' })).toBeUndefined()
+    expect(entryIdOf(entries[1]?.message)).toBeUndefined()
   })
 })

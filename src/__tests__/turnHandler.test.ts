@@ -8,10 +8,10 @@ import { TurnHandler } from '../turn/TurnHandler.js'
 const SESSION_ID = 'sess-1'
 const CWD = '/repo'
 
-function makeTurn(graceMs = 10_000) {
+function makeTurn(graceMs = 10_000, mintMessageId?: () => string) {
   const notify = vi.fn(async (_method: string, _params: { sessionId: string; update: SessionUpdate }) => {})
   const notifier = { notify } as unknown as AgentContext
-  const turn = new TurnHandler({ notifier, sessionId: SESSION_ID, cwd: CWD, graceMs })
+  const turn = new TurnHandler({ notifier, sessionId: SESSION_ID, cwd: CWD, graceMs, mintMessageId })
   return { turn, notify }
 }
 
@@ -46,6 +46,29 @@ describe('TurnHandler', () => {
     await expect(turn.settled).resolves.toBe('end_turn')
     expect(notify).toHaveBeenCalledWith(...chunkCall('agent_thought_chunk', 'pondering'))
     expect(notify).toHaveBeenCalledWith(...chunkCall('agent_message_chunk', 'answer'))
+  })
+
+  it('tags chunks with a minted message id, new per Pi message and per chunk kind', async () => {
+    let minted = 0
+    const { turn, notify } = makeTurn(10_000, () => `msg-${++minted}`)
+    turn.handleEvent(evt({ type: 'agent_start' }))
+    turn.handleEvent(evt({ type: 'message_start', message: { role: 'assistant' } }))
+    turn.handleEvent(messageUpdate({ type: 'thinking_delta', contentIndex: 0, delta: 'pondering' }))
+    turn.handleEvent(messageUpdate({ type: 'text_delta', contentIndex: 1, delta: 'Let me ' }))
+    turn.handleEvent(messageUpdate({ type: 'text_delta', contentIndex: 1, delta: 'check.' }))
+    turn.handleEvent(evt({ type: 'message_end', message: { role: 'assistant', stopReason: 'toolUse' } }))
+    turn.handleEvent(evt({ type: 'message_start', message: { role: 'assistant' } }))
+    turn.handleEvent(messageUpdate({ type: 'text_delta', contentIndex: 0, delta: 'Done.' }))
+    turn.handleEvent(evt({ type: 'message_end', message: { role: 'assistant', stopReason: 'stop' } }))
+    turn.handleEvent(evt({ type: 'agent_settled' }))
+
+    await expect(turn.settled).resolves.toBe('end_turn')
+    expect(notify.mock.calls.map(([, params]) => params.update)).toEqual([
+      { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'pondering' }, messageId: 'msg-1' },
+      { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Let me ' }, messageId: 'msg-2' },
+      { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'check.' }, messageId: 'msg-2' },
+      { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Done.' }, messageId: 'msg-3' },
+    ])
   })
 
   it('throws a RequestError carrying Pi\'s message on an errored turn', async () => {

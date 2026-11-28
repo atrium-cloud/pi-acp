@@ -4,6 +4,7 @@ import type { AgentContext, SessionUpdate, StopReason } from '@agentclientprotoc
 import { AGENT_NAME, AGENT_START_GRACE_MS, JSONRPC_INTERNAL_ERROR } from '../constants.js'
 import type { JsonAgentSessionEvent, PromptDisposition } from '../pi/types.js'
 import { asMessage, toRequestError } from '../server/errors.js'
+import { ChunkMessageIds } from './cursors.js'
 import { isShellTool, shellProgress, toolCallEnded, toolCallProgress, toolCallStarted } from './mappers.js'
 
 export interface AnnouncedToolCall {
@@ -43,6 +44,10 @@ export interface TurnHandlerOptions {
    * `session.abort` is a no-op while Pi is still in preflight, so an early cancel
    * has to be re-sent once `agent_start` proves the run is active. */
   readonly requestAbort?: () => void
+  /** Mints the `messageId` of each streamed message; absent sends chunks without one. */
+  readonly mintMessageId?: (() => string) | undefined
+  /** Sees each update as it is sent. */
+  readonly onUpdate?: (update: SessionUpdate) => void
 }
 
 /** Translates one Pi turn into ACP `session/update`s and a final `StopReason`.
@@ -60,6 +65,8 @@ export class TurnHandler implements TurnEventSink {
   private readonly cwd: string
   private readonly graceMs: number
   private readonly requestAbort: (() => void) | undefined
+  private readonly messageIds: ChunkMessageIds | undefined
+  private readonly onUpdate: ((update: SessionUpdate) => void) | undefined
 
   private done = false
   private startSeen = false
@@ -85,6 +92,8 @@ export class TurnHandler implements TurnEventSink {
     this.cwd = options.cwd
     this.graceMs = options.graceMs ?? AGENT_START_GRACE_MS
     this.requestAbort = options.requestAbort
+    this.messageIds = options.mintMessageId === undefined ? undefined : new ChunkMessageIds(options.mintMessageId)
+    this.onUpdate = options.onUpdate
     this.settled = new Promise<StopReason>((resolve, reject) => {
       this.resolve = resolve
       this.reject = reject
@@ -170,6 +179,7 @@ export class TurnHandler implements TurnEventSink {
         // The real per-message boundary on the wire: the stream's `start`
         // sub-event is hoisted to this top-level event, never a `message_update`.
         this.streamedIndices.clear()
+        this.messageIds?.startMessage()
         return
       case 'message_update':
         this.handleMessageUpdate(event.assistantMessageEvent)
@@ -272,11 +282,13 @@ export class TurnHandler implements TurnEventSink {
   }
 
   private emitChunk(sessionUpdate: 'agent_message_chunk' | 'agent_thought_chunk', text: string): void {
-    this.emitUpdate({ sessionUpdate, content: { type: 'text', text } })
+    const messageId = this.messageIds?.idFor(sessionUpdate)
+    this.emitUpdate({ sessionUpdate, content: { type: 'text', text }, ...(messageId === undefined ? {} : { messageId }) })
   }
 
   private emitUpdate(update: SessionUpdate): void {
     if (this.done) return
+    this.onUpdate?.(update)
     void this.notifier
       .notify(acp.methods.client.session.update, { sessionId: this.sessionId, update })
       .catch((error: unknown) => {

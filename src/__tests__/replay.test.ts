@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
+import { CURSOR_ID_PREFIX } from '../constants.js'
 import type { ReplayMessage } from '../session/replay.js'
 import { replayUpdates as replayUpdatesIn } from '../session/replay.js'
 import { toolCallEnded } from '../turn/mappers.js'
@@ -219,5 +220,68 @@ describe('replayUpdates', () => {
 
   it('returns nothing for an empty history', () => {
     expect(replayUpdates([])).toEqual([])
+  })
+})
+
+describe('replayUpdates for a client that handles cursors', () => {
+  /** `userEntries` pairs each stored user message with its Pi entry id. */
+  function replayWithIds(messages: readonly ReplayMessage[], userEntries: ReadonlyMap<ReplayMessage, string>) {
+    let minted = 0
+    return replayUpdatesIn(messages, CWD, {
+      userEntryId: (message) => userEntries.get(message),
+      mintMessageId: () => `msg-${++minted}`,
+    })
+  }
+
+  const cursorBefore = (entryId: string) => ({
+    sessionUpdate: 'cursor_update',
+    cursorId: `${CURSOR_ID_PREFIX}${entryId}`,
+    capabilities: { fork: {} },
+    anchor: { type: 'user_message', messageId: entryId, position: 'before' },
+  })
+
+  it('ids user chunks by their Pi entry, follows each user message with its cursor, and mints agent ids', () => {
+    const first = user([
+      { type: 'text', text: 'look at this' },
+      { type: 'image', data: 'YmFzZTY0', mimeType: 'image/png' },
+    ])
+    const second = user('again')
+    const updates = replayWithIds(
+      [
+        first,
+        assistant([
+          { type: 'thinking', thinking: 'pondering' },
+          { type: 'text', text: 'answer' },
+        ]),
+        second,
+        assistant([{ type: 'text', text: 'done' }]),
+      ],
+      new Map([
+        [first, 'u1'],
+        [second, 'u2'],
+      ]),
+    )
+
+    expect(updates).toEqual([
+      { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: 'look at this' }, messageId: 'u1' },
+      { sessionUpdate: 'user_message_chunk', content: { type: 'image', data: 'YmFzZTY0', mimeType: 'image/png' }, messageId: 'u1' },
+      cursorBefore('u1'),
+      { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'pondering' }, messageId: 'msg-1' },
+      { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'answer' }, messageId: 'msg-2' },
+      { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: 'again' }, messageId: 'u2' },
+      cursorBefore('u2'),
+      { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'done' }, messageId: 'msg-3' },
+    ])
+  })
+
+  it('sends a user message no entry stores exactly without an id or a cursor', () => {
+    const stored = user('kept')
+    const updates = replayWithIds([user('rewritten by a context edit'), stored], new Map([[stored, 'u2']]))
+
+    expect(updates).toEqual([
+      { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: 'rewritten by a context edit' } },
+      { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: 'kept' }, messageId: 'u2' },
+      cursorBefore('u2'),
+    ])
   })
 })
