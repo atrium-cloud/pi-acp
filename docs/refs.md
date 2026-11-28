@@ -7,14 +7,14 @@
 - Protocol docs: https://agentclientprotocol.com/protocol
 - TypeScript SDK: `@agentclientprotocol/sdk` 2.12.0 (schema v1.35.0), imported from `@agentclientprotocol/sdk/unstable` everywhere
     - The default entrypoint carries stable v1 only (since 2.0.0); `/unstable` is the full v1 surface and still speaks protocol version 1
-    - Unstable v1 surface the adapter uses: `session/fork`, `PromptResponse.usage`, `configOptions` on the `session/new`, `session/load` and `session/resume` responses
+    - Unstable v1 surface the adapter uses: `session/fork`, `cursor_update`, `PromptResponse.usage`, `configOptions` on the `session/new`, `session/load` and `session/resume` responses
     - The SDK refuses every request that precedes a successful `initialize` with `invalid_request`, `_acpStack/launch_env` included (`dist/v1/bindings.js` `agentInitializationGate`)
     - The SDK client reports a `resource_not_found` answer to `session/close` and `session/delete` as success (`dist/core/jsonrpc.js` `treatSessionNotFoundAsSuccess`, applied to the outgoing request); the adapter still answers `resource_not_found` on the wire
     - Migration guide: `node_modules/@agentclientprotocol/sdk/MIGRATION_STABLE_UNSTABLE.md`
     - Generated types: `node_modules/@agentclientprotocol/sdk/dist/v1/unstable/schema/types.gen.d.ts`
     - Authoritative method list: `dist/v1/methods.d.ts` `methods`, which `dist/v1/acp.d.ts` and `dist/v1/unstable/acp.d.ts` re-export
     - The connection reads one incoming message per event-loop task, so a message takes effect before the next is dispatched (`dist/core/jsonrpc.js` `nextTask`)
-    - `session/fork` (unstable): head-only by default, or cut at an earlier prompt named by `_meta.acpStack.messageId`, a `_meta` extension (docs/todos.md, the Fork entry under Delivered)
+    - `session/fork` (unstable): the whole session by default, or cut at the `cursorId` of a `cursor_update` (unstable, `clientCapabilities.session.cursors`; docs/todos.md, the Fork entry under Delivered)
     - `_acpStack/launch_env`: an extension request, registered with the SDK's custom-method `onRequest` and advertised as `agentCapabilities._meta.acpStack.launchEnv` (docs/todos.md, the Launch env entry under Delivered)
     - `SessionConfigOptionCategory` includes `thought_level` (docs/todos.md, the Config options entry under Delivered)
     - `notice` session update (stable since schema v1.25.0): sent only to a client that advertises `clientCapabilities.session.notices` (docs/todos.md, the Other extension UI requests entry)

@@ -58,7 +58,6 @@ Pi upstream ships an ACP agent on current schemas with session resume, thought-l
 
 ## Planned
 
-- [ ] Session cursors (unstable, Session Cursors RFD): `cursor_update` and `session/fork` `cursorId`, replacing the `_meta.acpStack.messageId` breakpoint fork.
 - [ ] `session/set_title` (unstable), applied with Pi's `set_session_name`.
 - [ ] `configOptions` on `session/fork` (unstable), applied in list order after the fork opens.
 - [ ] ACP v2 alongside v1: scope a dual-stack phase (steering, `state_update`) on the SDK's `/experimental/v2`.
@@ -204,7 +203,7 @@ Pi upstream ships an ACP agent on current schemas with session resume, thought-l
         - A fork taken while one runs keeps the whole file: a built-in leaves no partial turn, and a compaction entry lands whole.
         - Output is one `agent_message_chunk`.
         - `/compact` also sends a `usage_update`, and `/name <name>` a `session_info_update`.
-        - No title is derived and no breakpoint id is echoed, since Pi appends no user entry for a built-in.
+        - No title is derived and no cursor is announced, since Pi appends no user entry for a built-in.
         - `/name <name>` sets the name and reports the one Pi stored; a bare `/name` shows the current name.
         - When Pi normalizes the name, the TUI's normalization note comes first.
         - `/session` mirrors the TUI report, minus cache warming, the per-model breakdown and cache re-billing.
@@ -266,24 +265,26 @@ Pi upstream ships an ACP agent on current schemas with session resume, thought-l
     - A parent Pi never flushed (no turn ever started) has no file and is `resource_not_found`, the same reading `session/resume` and `session/delete` take.
     - The fork is returned live and promptable (`{ sessionId, configOptions }`, commands announced after the response, as on `session/new`); history is not replayed, since replay is `session/load`'s contract.
     - `sessionCapabilities.fork` is advertised; the method is in the SDK's unstable v1 profile, which the adapter imports.
-    - Without a breakpoint the fork starts from the parent's last file entry.
-    - Breakpoint fork: a client can name an earlier prompt to cut at, through a `_meta` extension.
-        - `initialize` advertises it as `sessionCapabilities.fork._meta.acpStack.messageId`, an empty object, the shape a client probes for.
-        - `session/prompt` may carry `_meta.acpStack.messageId`, a client-minted id for that prompt.
-        - The response echoes that id back under the same keys once the prompt's Pi entry is recorded; no echo means the prompt cannot be forked from.
-        - `session/fork` carrying the same `_meta` cuts at the named prompt; without it the fork is head-only as before.
-        - The id map is a `<stem>.acp.json` sidecar beside `<stem>.jsonl`: `{ "version": 1, "messages": { "<message id>": "<Pi entry id>" } }`.
-        - The `.json` suffix keeps it out of both Pi's session scanner and the adapter's, which match on `.jsonl` only.
-        - It is rewritten after each acknowledged prompt, and a resumed or forked session extends the map it inherited rather than replacing it.
-        - `session/delete` unlinks the sidecar with the session file; a missing sidecar is not an error.
-        - A fork's own sidecar keeps only the ids whose entries survived the cut, and is written only when at least one did.
-        - The cut is the ancestor path of the named user entry, exclusive: the fork's last entry is that entry's parent, which Pi adopts as the leaf.
-        - Abandoned branches and labels off that path are dropped, unlike the head-only copy, which takes the whole tree.
-        - Naming the session's first prompt forks to a session with no conversation.
-        - A failed map write costs that prompt its echo only; the turn still resolves with its own stop reason, and one stderr line names the failure.
-        - A message id that was never recorded is `invalid_params`, and so is one mapped to an entry that is not a user message.
-        - A prompt cancelled after Pi reported its user message still records and echoes its message id (the user entry is already in Pi's tree, so the fork point stands); one cancelled before that report records nothing, since the last user entry would be the previous prompt's.
-        - The sidecar is rewritten whole under a single adapter process; two adapter processes sharing one session store can clobber each other's maps, which is not supported.
+    - Without a `cursorId` the fork starts from the parent's last file entry.
+    - Fork at a cursor (unstable, Session Cursors RFD; `src/turn/cursors.ts`): `session/fork` with a `cursorId` cuts at an earlier prompt.
+        - A cursor lies before one user message; its id is `before:` plus that message's Pi entry id.
+            - The id is derived from Pi's own tree, so it holds across connections and adapter restarts, and the adapter stores nothing for it.
+        - `cursor_update` goes only to a client that advertised `clientCapabilities.session.cursors`, live and in a replay.
+            - For that client, agent message and thought chunks carry a `messageId`, a new one per Pi message and per kind.
+            - Every cursor carries `capabilities.fork`.
+        - A `session/load` replay sends each user message with its Pi entry id as `messageId`, then that message's cursor anchored `before` it.
+            - A replayed user message is matched to the branch entry that stores exactly it; one Pi's context rewrote, or one stored twice alike, goes out with no id and no cursor.
+        - A live prompt is never reported to the client that sent it, so its cursor is anchored `after` the last message or tool call the client holds, announced once the turn settles.
+            - A session's first live prompt, and the first prompt after a `session/resume`, follow nothing the client holds and get no cursor until a replay.
+            - A prompt cancelled after Pi reported its user message still gets its cursor; one cancelled before that report gets none.
+            - A stored prompt whose turn showed the client no message or tool call leaves the next prompt nothing to anchor to, so that next prompt gets no cursor until a replay.
+            - A failed `get_entries` costs that prompt its cursor until the next replay; the turn still resolves, and one stderr line names the failure.
+        - The cut is the ancestor path of the cursor's user entry, exclusive: the fork's last entry is that entry's parent, which Pi adopts as the leaf.
+        - Abandoned branches and labels off that path are dropped, unlike the whole-session copy, which takes the whole tree.
+        - The cursor before the session's first prompt forks to a session with no conversation.
+        - A `cursorId` that names no user entry on the parent's current branch (the one ending at the file's last entry) is `invalid_params`, never a whole-session fork.
+        - The fork announces its own cursors; the parent's ids happen to name the same copied entries.
+        - Verified live against Pi 1.6.1.
 - [x] MCP through Pi's built-in support (Pi 0.99.0; the adapter's own bundled MCP client, shipped 2026-08-29, was dropped on 2026-09-30)
     - A pi-acp-owned Pi extension of a few lines, built from a source string like the gate and loaded with a second `-e` by a session whose request carries servers, calls `pi.registerMcpServer(name, config)` for each server; Pi's built-in `builtin:mcp` extension connects them on `session_start` and registers their tools as `mcp__<server>__<tool>`, every call running through Pi's tool pipeline.
     - The translated server list is handed over in `PI_ACP_MCP_SERVERS`, which the extension parses and deletes as its first action: Pi spawns every stdio server with the whole `process.env`, so an undeleted payload would hand each server every other server's headers and env.

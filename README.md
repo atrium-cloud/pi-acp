@@ -23,7 +23,7 @@ The release is a single executable, `pi-acp`; put it on PATH or point your ACP c
 
 ## ACP support
 
-The adapter supports rich prompts, streamed message and tool updates, permissions, model and thinking-level configuration, slash commands, MCP servers (stdio, streamable HTTP) through Pi's own MCP support, session list/resume/load/close/delete, and forks either from the last settled turn or from an earlier prompt the client names.
+The adapter supports rich prompts, streamed message and tool updates, permissions, model and thinking-level configuration, slash commands, MCP servers (stdio, streamable HTTP) through Pi's own MCP support, session list/resume/load/close/delete, and forks either from the last settled turn or at the session cursor of an earlier prompt.
 
 The adapter refreshes Pi's model catalog in a Pi subprocess of its own, 60 s after it starts and hourly after that, so each session started afterward offers the models Pi saved from the latest refresh.
 
